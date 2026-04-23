@@ -6,6 +6,13 @@ import plotly.graph_objects as go
 from io import BytesIO
 from auth import require_login
 
+# ─── Helper functions ──────────────────────────────────────────────────────────
+def format_bn(val):
+    if val >= 1e12: return f"{val/1e12:.2f}T"
+    if val >= 1e9:  return f"{val/1e9:.2f}B"
+    if val >= 1e6:  return f"{val/1e6:.2f}M"
+    return f"{val:.0f}"
+
 # ─── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="NaroIX Benchmark Series",
