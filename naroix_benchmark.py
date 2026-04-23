@@ -972,12 +972,6 @@ def apply_post_filter(df):
             (df["3M ADTV Y2025"] >= new_adtv_dm) & (df["6M ADTV Y2025"] >= new_adtv_dm)) | \
            ((df["Classification"]=="EM") &
             (df["3M ADTV Y2025"] >= new_adtv_em) & (df["6M ADTV Y2025"] >= new_adtv_em))
-    return df[mask].copy()
-
-# Pre-compute V1 segments for Tab 2
-_df_dm_post = apply_post_filter(df_dm_full)
-_df_em_post = apply_post_filter(df_em_full)
-_seg_dm_v1 = compute_variant1(_df_dm_post, large_thr, mid_thr, small_thr)
 
 
 # ─── Header ─────────────────────────────────────────────────────────────────
