@@ -4,14 +4,18 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
+from auth import require_login
 
 # ─── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NaroIX Index Construction Tool",
+    page_title="NaroIX Benchmark Series",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ─── Auth ──────────────────────────────────────────────────────────────────────
+_github_user = require_login()
 
 # ─── Styling ───────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -887,7 +891,24 @@ with st.sidebar:
     except: new_eumss_ff_ratio = 0.50
 
     st.markdown("---")
-    st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Index Construction Tool<br/>© 2025 NaroIX</div>", unsafe_allow_html=True)
+    _avatar = st.session_state.get("github_avatar", "")
+    _name   = st.session_state.get("github_name", _github_user)
+    if _avatar:
+        st.markdown(f"""
+<div style='display:flex;align-items:center;gap:10px;padding:8px 0;'>
+  <img src='{_avatar}' width='32' style='border-radius:50%;border:2px solid #2979ff;'>
+  <div>
+    <div style='color:#e8eaf6;font-size:13px;font-weight:600;'>{_name}</div>
+    <div style='color:#8892b0;font-size:11px;'>@{_github_user}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+    if st.button("🚪 Logout", use_container_width=True, key="logout_btn"):
+        for k in ["github_user","github_name","github_avatar"]:
+            st.session_state.pop(k, None)
+        st.rerun()
+    st.markdown("---")
+    st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
 
 
 # ─── Load Data ─────────────────────────────────────────────────────────────────
