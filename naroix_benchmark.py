@@ -173,13 +173,26 @@ def load_excel(file):
 def load_historical_data():
     """Load Historical_Classification, Selection_Dates, and China_Inclusion_Factor.
 
+    Akzeptiert Dateinamen sowohl mit Unterstrich als auch mit Leerzeichen.
+
     Returns:
         hc_df: DataFrame mit Country als Spalte + date-Objekten als Spaltenköpfen für Klassifikationen
         selection_dates: sortierte Liste aller Selection Dates (als date-Objekte)
         china_if_map: Dict {date: China Inclusion Factor (0.0-1.0)}
     """
+    def _try_read(candidates, **kwargs):
+        """Versuche Excel zu laden aus einer Liste von Kandidaten-Dateinamen."""
+        _last_err = None
+        for name in candidates:
+            try:
+                return pd.read_excel(name, **kwargs)
+            except FileNotFoundError as e:
+                _last_err = e
+                continue
+        raise FileNotFoundError(f"Keine der Varianten gefunden: {candidates}") from _last_err
+
     try:
-        hc = pd.read_excel("Historical_Classification.xlsx")
+        hc = _try_read(["Historical_Classification.xlsx", "Historical Classification.xlsx"])
 
         # Spalten-Header normalisieren (gemischt datetime/string → date)
         new_cols = ["Country"]
@@ -192,13 +205,13 @@ def load_historical_data():
         hc["Country"] = hc["Country"].astype(str).str.upper().str.strip()
 
         # Selection Dates
-        sd = pd.read_excel("Selection_Dates.xlsx", usecols=[0])
+        sd = _try_read(["Selection_Dates.xlsx", "Selection Dates.xlsx"], usecols=[0])
         sd.columns = ["Selection Date"]
         sd["Selection Date"] = pd.to_datetime(sd["Selection Date"]).dt.date
         selection_dates = sorted(sd["Selection Date"].dropna().unique())
 
         # China Inclusion Factor
-        ci = pd.read_excel("China_Inclusion_Factor.xlsx")
+        ci = _try_read(["China_Inclusion_Factor.xlsx", "China Inclusion Factor.xlsx"])
         ci["Selection Date"] = pd.to_datetime(ci["Selection Date"]).dt.date
         china_if_map = dict(zip(ci["Selection Date"], ci["China Inclusion Factor"].astype(float)))
 
