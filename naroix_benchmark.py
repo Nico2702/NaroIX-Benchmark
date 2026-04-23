@@ -239,6 +239,95 @@ def get_classification_dict(hc_df, selection_date):
     return hc_df.set_index("Country")[selection_date].dropna().to_dict()
 
 
+@st.cache_data
+def load_ineligible_list():
+    """Load In-Eligible.xlsx — Liste von ISINs die zu bestimmten Zeiträumen vom Index ausgeschlossen werden.
+
+    Schema: ISIN | Company Name | Country Mapping | From | To | Reason
+    - Leeres To → Stock ist aktuell noch ineligible (wird als 9999-12-31 interpretiert)
+    - Mehrere Einträge pro ISIN erlaubt (z.B. zwei separate Sperrzeiträume)
+
+    Returns:
+        DataFrame mit normalisierten From/To als pd.Timestamp, oder leerer DataFrame falls File fehlt.
+    """
+    from datetime import date as _date
+
+    candidates = ["In-Eligible.xlsx", "In_Eligible.xlsx", "In Eligible.xlsx", "Ineligible.xlsx"]
+    ie_df = None
+    for name in candidates:
+        try:
+            ie_df = pd.read_excel(name)
+            break
+        except FileNotFoundError:
+            continue
+
+    if ie_df is None or ie_df.empty:
+        return pd.DataFrame(columns=["ISIN","Company Name","Country Mapping","From","To","Reason"])
+
+    # Normalize: strip whitespace, uppercase ISIN
+    ie_df["ISIN"] = ie_df["ISIN"].astype(str).str.strip().str.upper()
+    ie_df = ie_df[ie_df["ISIN"].notna() & (ie_df["ISIN"] != "") & (ie_df["ISIN"] != "NAN")].copy()
+
+    # Parse dates
+    ie_df["From"] = pd.to_datetime(ie_df["From"], errors="coerce")
+    ie_df["To"]   = pd.to_datetime(ie_df["To"],   errors="coerce")
+    # Leeres To → 9999-12-31 (noch ineligible)
+    ie_df["To"]   = ie_df["To"].fillna(pd.Timestamp("9999-12-31"))
+    # Leeres From → 1900-01-01 (sicherheitshalber, falls User vergisst)
+    ie_df["From"] = ie_df["From"].fillna(pd.Timestamp("1900-01-01"))
+
+    # Reason default
+    if "Reason" not in ie_df.columns:
+        ie_df["Reason"] = ""
+    ie_df["Reason"] = ie_df["Reason"].fillna("").astype(str)
+
+    return ie_df[["ISIN","Company Name","Country Mapping","From","To","Reason"]].reset_index(drop=True)
+
+
+def apply_ineligible_filter(df_complete, ie_df, selection_date):
+    """Entferne Stocks aus df_complete deren ISIN zum Selection Date auf der Ineligible-Liste steht.
+
+    Args:
+        df_complete: DataFrame mit Index-Konstituenten (muss Spalte "ISIN" enthalten)
+        ie_df: Ineligible-Liste (from load_ineligible_list())
+        selection_date: datetime.date
+
+    Returns:
+        (df_kept, df_removed, active_rules):
+            df_kept:      gefilteter DataFrame
+            df_removed:   entfernte Rows (inkl. neuer Spalten: Ineligible_Reason, Ineligible_From, Ineligible_To)
+            active_rules: Teilmenge von ie_df die zum Selection Date aktiv ist (für UI-Anzeige)
+    """
+    if ie_df is None or ie_df.empty or "ISIN" not in df_complete.columns:
+        return df_complete.copy(), df_complete.iloc[0:0].copy(), ie_df.iloc[0:0].copy() if ie_df is not None else pd.DataFrame()
+
+    sd_ts = pd.Timestamp(selection_date)
+    active_rules = ie_df[(ie_df["From"] <= sd_ts) & (sd_ts <= ie_df["To"])].copy()
+
+    if active_rules.empty:
+        return df_complete.copy(), df_complete.iloc[0:0].copy(), active_rules
+
+    # Normalize ISINs on the data side for matching
+    df = df_complete.copy()
+    df["_ISIN_norm"] = df["ISIN"].astype(str).str.strip().str.upper()
+
+    blocked_isins = set(active_rules["ISIN"].tolist())
+    mask_blocked = df["_ISIN_norm"].isin(blocked_isins)
+
+    df_removed = df[mask_blocked].copy()
+    df_kept    = df[~mask_blocked].drop(columns=["_ISIN_norm"]).copy()
+
+    # Annotate removed rows with reason / from / to (first matching rule per ISIN)
+    if not df_removed.empty:
+        rule_first = active_rules.drop_duplicates(subset=["ISIN"], keep="first").set_index("ISIN")
+        df_removed["Ineligible_Reason"] = df_removed["_ISIN_norm"].map(rule_first["Reason"])
+        df_removed["Ineligible_From"]   = df_removed["_ISIN_norm"].map(rule_first["From"])
+        df_removed["Ineligible_To"]     = df_removed["_ISIN_norm"].map(rule_first["To"])
+        df_removed = df_removed.drop(columns=["_ISIN_norm"])
+
+    return df_kept, df_removed, active_rules
+
+
 def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
                        excl_hk_cny, excl_cor_na, excl_naics, excl_euro, excl_etf,
                        china_if, india_if, vietnam_if, saudi_if,
@@ -817,6 +906,9 @@ if not selection_dates:
     st.error("❌ Historical_Classification.xlsx / Selection_Dates.xlsx / China_Inclusion_Factor.xlsx konnten nicht geladen werden. Bitte im Repo-Root ablegen.")
     st.stop()
 
+# Ineligible List (optional — fehlt das File, wird der Filter automatisch deaktiviert)
+ineligible_df = load_ineligible_list()
+
 
 
 with st.sidebar:
@@ -869,6 +961,15 @@ with st.sidebar:
         exclude_etf_sicav       = st.checkbox("Name: ETF / SICAV / %", value=True, key="excl_etf")
         exclude_delisted        = st.checkbox("Listing Status = inaktiv (1)", value=True, key="excl_delisted",
             help="Deaktivieren für historische Snapshots — delisted Stocks waren zum Snapshot-Datum ggf. noch aktiv handelbar.")
+
+    _ie_default = not ineligible_df.empty
+    apply_ineligible = st.checkbox(
+        "Ineligible-Filter anwenden",
+        value=_ie_default,
+        key="apply_ineligible",
+        disabled=ineligible_df.empty,
+        help=f"Wendet In-Eligible.xlsx zum Selection Date an — Stocks mit passender ISIN werden am Ende der Pipeline entfernt, Gewichte werden proportional umverteilt.\n\n{'Liste enthält '+str(len(ineligible_df))+' Regeln.' if not ineligible_df.empty else 'Kein In-Eligible.xlsx im Repo gefunden — Filter inaktiv.'}"
+    )
 
     st.markdown("---")
     st.markdown("### 📊 Size Segmentation")
@@ -1274,6 +1375,43 @@ with tab_overview:
     else:
         st.success("Alle Stocks haben ein DM/EM Mapping erhalten.")
 
+    # ── Ineligible List (Audit-Trail zum aktiven Selection Date) ──────────────
+    st.markdown("---")
+    st.markdown("**Ineligible List — Ausschlüsse zum Selection Date**")
+    st.caption(f"Basis: In-Eligible.xlsx | Selection Date: {_active_selection_date.strftime('%d.%m.%Y')} | Filter: {'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'}")
+
+    if ineligible_df.empty:
+        st.info("ℹ️ Kein In-Eligible.xlsx im Repo gefunden — Filter inaktiv.")
+    else:
+        _sd_ts = pd.Timestamp(_active_selection_date)
+        _active = ineligible_df[(ineligible_df["From"] <= _sd_ts) & (_sd_ts <= ineligible_df["To"])].copy()
+
+        if _active.empty:
+            st.success(f"Keine aktiven Ineligible-Regeln zum {_active_selection_date.strftime('%d.%m.%Y')}. Gesamt in Datei: {len(ineligible_df)} Regel(n).")
+        else:
+            # Show active rules with impact
+            _active_display = _active.copy()
+            _active_display["From"] = _active_display["From"].dt.strftime("%Y-%m-%d")
+            _active_display["To"]   = _active_display["To"].apply(
+                lambda x: "(noch aktiv)" if x >= pd.Timestamp("9999-12-31") else x.strftime("%Y-%m-%d"))
+
+            # Match against universe to see which are in-scope
+            _blocked_isins = set(_active["ISIN"].tolist())
+            if "ISIN" in df_raw_all.columns:
+                _in_universe = df_raw_all[df_raw_all["ISIN"].astype(str).str.strip().str.upper().isin(_blocked_isins)].copy()
+                _isin_to_ffmcap = _in_universe.groupby(_in_universe["ISIN"].astype(str).str.strip().str.upper())["Free Float MCap Y2025"].sum().to_dict()
+                _active_display["FF MCap (im Universe)"] = _active_display["ISIN"].map(_isin_to_ffmcap).fillna(0).apply(lambda x: format_bn(x) if x > 0 else "—")
+            else:
+                _active_display["FF MCap (im Universe)"] = "—"
+
+            st.caption(f"**{len(_active)} aktive Regel(n)** zum Selection Date (von {len(ineligible_df)} gesamt):")
+            st.dataframe(
+                _active_display[["ISIN","Company Name","Country Mapping","From","To","Reason","FF MCap (im Universe)"]],
+                use_container_width=True, hide_index=True)
+
+            if not apply_ineligible:
+                st.warning("⚠️ Filter ist deaktiviert — diese Stocks werden trotz Treffer im Index aufgenommen.")
+
 
 
 
@@ -1353,6 +1491,15 @@ with tab_gimi:
         _gm_complete = pd.concat([_gm_final, _gm_small, _gm_above85, _gm_micro], ignore_index=True)
         _gm_complete = _gm_complete.drop_duplicates(subset=["Symbol"]).copy()
 
+        # ── Ineligible-Filter (final step): ISINs auf Sperrliste entfernen ──────
+        _gm_count_before_ie = len(_gm_complete)
+        if apply_ineligible and not ineligible_df.empty:
+            _gm_complete, _gm_ie_removed, _gm_ie_active_rules = apply_ineligible_filter(
+                _gm_complete, ineligible_df, _active_selection_date)
+        else:
+            _gm_ie_removed = _gm_complete.iloc[0:0].copy()
+            _gm_ie_active_rules = ineligible_df.iloc[0:0].copy() if not ineligible_df.empty else pd.DataFrame()
+
         _gm_tot_adj = _gm_complete["Adj_FF_MCap"].sum()
         _gm_complete["Index_Weight"] = _gm_complete["Adj_FF_MCap"]/_gm_tot_adj*100 if _gm_tot_adj>0 else 0
 
@@ -1364,6 +1511,7 @@ with tab_gimi:
             {"Schritt":"3 — Liquiditätsfilter (Pre)","DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
             {"Schritt":f"4 — {mid_thr}% Coverage","DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
             {"Schritt":"5 — Secondary Listings re-added (+)","DM":(_gm_final["Classification"]=="DM").sum(),"EM":(_gm_final["Classification"]=="EM").sum(),"Total":len(_gm_final),"Δ":f"+{len(_gm_final)-len(_gm_std):,}"},
+            {"Schritt":f"6 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
         ]
         _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode}"
         _gm_eumss_extra = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}%"
@@ -1375,7 +1523,10 @@ with tab_gimi:
             "Coverage (%)":f"{mid_thr}%","Large Cap (%)":large_thr,
             "DM ADTV (USD)":f"{new_adtv_dm:,.0f}","EM ADTV (USD)":f"{new_adtv_em:,.0f}",
             "DM ATVR (%)":f"{new_atvr_dm*100:.0f}%","EM ATVR (%)":f"{new_atvr_em*100:.0f}%",
-            "Max Price (USD)":f"{max_closing_price:,.0f}" if max_closing_price else "—"}
+            "Max Price (USD)":f"{max_closing_price:,.0f}" if max_closing_price else "—",
+            "Ineligible-Filter":"aktiv" if apply_ineligible and not ineligible_df.empty else "inaktiv",
+            "Ineligible — Regeln aktiv": len(_gm_ie_active_rules) if apply_ineligible and not ineligible_df.empty else 0,
+            "Ineligible — Stocks entfernt": len(_gm_ie_removed)}
 
         # Full universe for download: _gm_u with segment labels + re-added secondaries
         _gm_seg_map = dict(zip(_gm_complete["Symbol"], _gm_complete["Segment_New"]))
