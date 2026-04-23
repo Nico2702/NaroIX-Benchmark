@@ -97,6 +97,23 @@ SEGMENT_COLORS = {
 }
 
 
+# ─── Europe Index Constituents (geographisch) ──────────────────────────────────
+# Die DM/EM-Filterung pro Selection Date erfolgt dynamisch über Historical_Classification.xlsx.
+# D.h. POLAND ist vor 2024-02-21 EM und landet nicht im (DM-basierten) Europe Index,
+# GREECE/HUNGARY/CZECH REPUBLIC sind aktuell EM und werden analog ausgefiltert.
+EUROPE_COUNTRIES = {
+    # Westeuropa / Nordeuropa (DM)
+    "AUSTRIA", "BELGIUM", "DENMARK", "FINLAND", "FRANCE",
+    "GERMANY", "IRELAND", "ITALY", "NETHERLANDS", "NORWAY",
+    "PORTUGAL", "SPAIN", "SWEDEN", "SWITZERLAND", "UNITED KINGDOM",
+    # Osteuropa / Südeuropa (Status wechselnd DM/EM)
+    "POLAND",         # DM ab 2024-02-21
+    "GREECE",         # aktuell EM
+    "HUNGARY",        # aktuell EM
+    "CZECH REPUBLIC", # aktuell EM
+}
+
+
 
 @st.cache_data
 def load_excel(file):
@@ -153,13 +170,60 @@ def load_excel(file):
         return pd.DataFrame(), "Y2025"
 
 @st.cache_data
-def load_classification(path="Country_Classification.xlsx"):
+def load_historical_data():
+    """Load Historical_Classification, Selection_Dates, and China_Inclusion_Factor.
+
+    Returns:
+        hc_df: DataFrame mit Country als Spalte + date-Objekten als Spaltenköpfen für Klassifikationen
+        selection_dates: sortierte Liste aller Selection Dates (als date-Objekte)
+        china_if_map: Dict {date: China Inclusion Factor (0.0-1.0)}
+    """
     try:
-        df = pd.read_excel(path, usecols=["Exchange Country Name", "Classification"])
-        return df.set_index("Exchange Country Name")["Classification"].to_dict()
+        hc = pd.read_excel("Historical_Classification.xlsx")
+
+        # Spalten-Header normalisieren (gemischt datetime/string → date)
+        new_cols = ["Country"]
+        for col in hc.columns[1:]:
+            try:
+                new_cols.append(pd.to_datetime(col).date())
+            except Exception:
+                new_cols.append(col)
+        hc.columns = new_cols
+        hc["Country"] = hc["Country"].astype(str).str.upper().str.strip()
+
+        # Selection Dates
+        sd = pd.read_excel("Selection_Dates.xlsx", usecols=[0])
+        sd.columns = ["Selection Date"]
+        sd["Selection Date"] = pd.to_datetime(sd["Selection Date"]).dt.date
+        selection_dates = sorted(sd["Selection Date"].dropna().unique())
+
+        # China Inclusion Factor
+        ci = pd.read_excel("China_Inclusion_Factor.xlsx")
+        ci["Selection Date"] = pd.to_datetime(ci["Selection Date"]).dt.date
+        china_if_map = dict(zip(ci["Selection Date"], ci["China Inclusion Factor"].astype(float)))
+
+        return hc, selection_dates, china_if_map
+
     except Exception as e:
-        st.error(f"Country_Classification.xlsx konnte nicht geladen werden: {e}")
+        st.error(f"Fehler beim Laden der Historical-Referenzfiles: {e}")
+        return pd.DataFrame(), [], {}
+
+
+def get_selection_date_for_snapshot(snapshot_date, selection_dates):
+    """Finde das letzte Selection Date, das ≤ snapshot_date ist.
+    Liefert None wenn snapshot_date vor dem ersten Selection Date liegt.
+    """
+    eligible = [d for d in selection_dates if d <= snapshot_date]
+    return max(eligible) if eligible else None
+
+
+def get_classification_dict(hc_df, selection_date):
+    """Erzeuge {Country: Classification} Dict für ein konkretes Selection Date.
+    Länder mit NaN zu diesem Datum werden ausgeschlossen (nicht im Universum).
+    """
+    if hc_df.empty or selection_date not in hc_df.columns:
         return {}
+    return hc_df.set_index("Country")[selection_date].dropna().to_dict()
 
 
 def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
@@ -732,6 +796,16 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
 
 
 
+# ─── Load Historical Reference Data (Classification, Selection Dates, China IF) ──
+# Wird hier schon geladen, damit die Sidebar historische Defaults (z.B. China IF) anzeigen kann.
+hc_df, selection_dates, china_if_map = load_historical_data()
+
+if not selection_dates:
+    st.error("❌ Historical_Classification.xlsx / Selection_Dates.xlsx / China_Inclusion_Factor.xlsx konnten nicht geladen werden. Bitte im Repo-Root ablegen.")
+    st.stop()
+
+
+
 with st.sidebar:
     st.markdown("### 📁 Datenquelle")
     uploaded = st.file_uploader("FactSet Export (.xlsx)", type=["xlsx","xls"])
@@ -745,6 +819,17 @@ with st.sidebar:
         help="Datum des FactSet Exports — wird für Labels, Info-Boxen und Excel-Dateinamen verwendet."
     )
     _snapshot_label = snapshot_date.strftime("%d.%m.%Y")
+
+    # Aktives Selection Date ermitteln (letztes Selection Date ≤ snapshot_date)
+    _active_selection_date = get_selection_date_for_snapshot(snapshot_date, selection_dates)
+    if _active_selection_date is None:
+        st.error(f"❌ Snapshot Datum liegt vor dem ersten Selection Date ({selection_dates[0]}).")
+        st.stop()
+
+    # Historischer China IF zu diesem Selection Date
+    _china_if_historical = float(china_if_map.get(_active_selection_date, 0.20))
+
+    st.caption(f"📅 Aktives Selection Date: **{_active_selection_date.strftime('%d.%m.%Y')}**  \n🇨🇳 Historischer China IF: **{_china_if_historical*100:.1f}%**")
 
     st.markdown("---")
     st.markdown("### 🌍 Universe & Exclusions")
@@ -845,9 +930,27 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### ⚖️ Inclusion Factors")
-    _cna, _cnb = st.columns([4,2])
-    with _cna: use_china_factor = st.checkbox("China A-Shares", value=True, key="use_china_factor")
-    with _cnb: _china_raw = st.text_input("China", value="20", key="china_factor_input", label_visibility="collapsed", disabled=not use_china_factor)
+
+    # China IF: Auto (aus Historie) vs Manuell
+    china_if_mode = st.radio(
+        "China A-Shares IF:",
+        ["Auto (historisch)", "Manuell"],
+        index=0,
+        horizontal=True,
+        key="china_if_mode",
+        help=f"Auto: übernimmt den historischen IF zum Selection Date ({_china_if_historical*100:.1f}% zum {_active_selection_date.strftime('%d.%m.%Y')}).\nManuell: eigener Wert für What-if Szenarien."
+    )
+    if china_if_mode == "Auto (historisch)":
+        china_inclusion_factor = _china_if_historical
+        use_china_factor = _china_if_historical > 0
+        st.caption(f"→ aktiv: **{_china_if_historical*100:.1f}%**")
+    else:
+        _cna, _cnb = st.columns([4,2])
+        with _cna: use_china_factor = st.checkbox("China A-Shares aktiv", value=True, key="use_china_factor")
+        with _cnb: _china_raw = st.text_input("China", value=f"{_china_if_historical*100:.1f}", key="china_factor_input", label_visibility="collapsed", disabled=not use_china_factor)
+        try:    china_inclusion_factor = float(_china_raw) / 100 if use_china_factor else 1.0
+        except: china_inclusion_factor = _china_if_historical
+
     _ina, _inb = st.columns([4,2])
     with _ina: use_india_factor = st.checkbox("Indien", value=True, key="use_india_factor")
     with _inb: _india_raw = st.text_input("Indien", value="75", key="india_factor_input_v2", label_visibility="collapsed", disabled=not use_india_factor)
@@ -858,8 +961,6 @@ with st.sidebar:
     with _saa: use_saudi_factor = st.checkbox("Saudi-Arabien", value=True, key="use_saudi_factor")
     with _sab: _saudi_raw = st.text_input("Saudi", value="50", key="saudi_factor_input", label_visibility="collapsed", disabled=not use_saudi_factor)
 
-    try:    china_inclusion_factor   = float(_china_raw)   / 100 if use_china_factor   else 1.0
-    except: china_inclusion_factor   = 0.20
     try:    india_inclusion_factor   = float(_india_raw)   / 100 if use_india_factor   else 1.0
     except: india_inclusion_factor   = 0.75
     try:    vietnam_inclusion_factor = float(_vietnam_raw) / 100 if use_vietnam_factor else 1.0
@@ -918,21 +1019,15 @@ for _col in ["Total MCap Y2025","Free Float MCap Y2025","Free Float Percent",
         df_raw[_col] = pd.to_numeric(df_raw[_col], errors="coerce").fillna(0)
         df_raw_original[_col] = df_raw[_col]
 
-# Classification + Europe flag
-try:
-    _cls_df = pd.read_excel("Country_Classification.xlsx", usecols=["Exchange Country Name","Classification","Europe"])
-    country_cls = _cls_df.set_index("Exchange Country Name")["Classification"].to_dict()
-    europe_countries = set(
-        _cls_df[_cls_df["Europe"].fillna("").str.upper() == "YES"]["Exchange Country Name"].tolist()
-    )
-except:
-    try:
-        _cls_df = pd.read_excel("Country_Classification.xlsx", usecols=["Exchange Country Name","Classification"])
-        country_cls = _cls_df.set_index("Exchange Country Name")["Classification"].to_dict()
-        europe_countries = set()
-    except:
-        country_cls = {}
-        europe_countries = set()
+# Classification-Lookup für aktives Selection Date (hc_df / selection_dates / china_if_map
+# wurden bereits vor der Sidebar geladen; _active_selection_date wurde in der Sidebar berechnet)
+country_cls = get_classification_dict(hc_df, _active_selection_date)
+if not country_cls:
+    st.error(f"❌ Keine Klassifikationen für Selection Date {_active_selection_date} gefunden.")
+    st.stop()
+
+# Europe Countries = hardcoded (geografisch). DM/EM-Filterung erfolgt dynamisch per Selection Date.
+europe_countries = EUROPE_COUNTRIES
 
 # Apply Mapping Country + Classification to BOTH df_raw and df_raw_original
 # This must happen before any exclusions or filters so every stock — including
@@ -986,7 +1081,7 @@ st.markdown(f"""
 <div style='text-align:center;padding:10px 0 5px'>
   <span style='font-size:28px;font-weight:700;color:#A0B4FF;letter-spacing:2px;'>NaroIX</span>
   <span style='font-size:18px;color:#8892b0;'> — Benchmark Series</span>
-  <br><span style='font-size:12px;color:#8892b0;'>Snapshot: {_snapshot_label} &nbsp;|&nbsp; Datenjahr: {_year_suffix}</span>
+  <br><span style='font-size:12px;color:#8892b0;'>Snapshot: {_snapshot_label} &nbsp;|&nbsp; Datenjahr: {_year_suffix} &nbsp;|&nbsp; Selection Date: {_active_selection_date.strftime('%d.%m.%Y')} &nbsp;|&nbsp; China IF: {china_inclusion_factor*100:.1f}%</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1148,7 +1243,7 @@ with tab_overview:
     # ── Ungemappte Länder ─────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("**Länder ohne DM/EM Mapping**")
-    st.caption("Stocks die alle Exclusions bestanden haben, aber kein Mapping in Country_Classification.xlsx erhalten haben.")
+    st.caption("Stocks die alle Exclusions bestanden haben, aber kein Mapping in Historical_Classification.xlsx erhalten haben.")
 
     _unmapped = _exc_df[(_exc_df["_Reason"] == "Kein DM/EM Mapping")].copy()
     if len(_unmapped) > 0:
@@ -1302,10 +1397,10 @@ with tab_gimi:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_europe:
     st.markdown("## 🇪🇺 Europe Index")
-    st.caption("Basis: GIMI Method — World Index (DM Large+Mid), gefiltert auf europäische Länder (Country_Classification.xlsx, Spalte 'Europe = YES')")
+    st.caption("Basis: GIMI Method — World Index (DM Large+Mid), gefiltert auf europäische Länder (hardcoded EUROPE_COUNTRIES-Liste + dynamische DM-Klassifikation pro Selection Date)")
 
     if not europe_countries:
-        st.warning("⚠️ Keine europäischen Länder gefunden. Bitte prüfe ob die Spalte 'Europe' (YES/NO) in Country_Classification.xlsx vorhanden ist.")
+        st.warning("⚠️ Keine europäischen Länder gefunden. Bitte prüfe die EUROPE_COUNTRIES-Konstante im Code.")
     else:
         st.markdown(f"""
 <div class="info-box">
