@@ -914,27 +914,65 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     return df
 
 
-def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em):
-    """Apply ADTV + ATVR filter."""
-    mask = ((df["Classification"]=="DM") &
-            (df["3M ADTV Y2025"]>=adtv_dm) &
-            (df["6M ADTV Y2025"]>=adtv_dm) &
-            (df["ATVR"]>=atvr_dm)) | \
-           ((df["Classification"]=="EM") &
-            (df["3M ADTV Y2025"]>=adtv_em) &
-            (df["6M ADTV Y2025"]>=adtv_em) &
-            (df["ATVR"]>=atvr_em))
-    return df[mask].copy()
+def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
+                         incumbents_isin=None,
+                         m_adtv_dm=None, m_adtv_em=None, m_atvr_dm=None, m_atvr_em=None):
+    """Apply ADTV + ATVR filter with optional Buffer-Rules.
+
+    Entry-Schwellen (adtv_dm/em, atvr_dm/em) gelten für neue Kandidaten.
+    Wenn incumbents_isin non-empty → Stocks mit ISIN in dieser Menge bekommen
+    die weicheren Maintenance-Schwellen (m_adtv_dm/em, m_atvr_dm/em).
+    Wenn m_* None, fallen Maintenance-Schwellen auf Entry zurück (kein Buffer-Effekt).
+    """
+    # Fallback: Maintenance = Entry wenn nicht explizit gesetzt
+    if m_adtv_dm is None: m_adtv_dm = adtv_dm
+    if m_adtv_em is None: m_adtv_em = adtv_em
+    if m_atvr_dm is None: m_atvr_dm = atvr_dm
+    if m_atvr_em is None: m_atvr_em = atvr_em
+
+    # Pro-Stock Schwelle wählen: Incumbent → Maintenance, sonst → Entry
+    if incumbents_isin is None:
+        incumbents_isin = set()
+
+    _isin = df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    _is_incumbent = _isin.isin(incumbents_isin)
+
+    _adtv_dm_thr = np.where(_is_incumbent, m_adtv_dm, adtv_dm)
+    _adtv_em_thr = np.where(_is_incumbent, m_adtv_em, adtv_em)
+    _atvr_dm_thr = np.where(_is_incumbent, m_atvr_dm, atvr_dm)
+    _atvr_em_thr = np.where(_is_incumbent, m_atvr_em, atvr_em)
+
+    _cls = df["Classification"].fillna("")
+    _a3m = df["3M ADTV Y2025"]
+    _a6m = df["6M ADTV Y2025"]
+    _atvr = df["ATVR"]
+
+    mask_dm = (_cls=="DM") & (_a3m >= _adtv_dm_thr) & (_a6m >= _adtv_dm_thr) & (_atvr >= _atvr_dm_thr)
+    mask_em = (_cls=="EM") & (_a3m >= _adtv_em_thr) & (_a6m >= _adtv_em_thr) & (_atvr >= _atvr_em_thr)
+
+    return df[mask_dm | mask_em].copy()
 
 
 def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, atvr_em,
                              max_price, thailand_mode, china_if,
                              min_ff_pct=0.15, atvr_mcap_col="Free Float MCap Y2025",
                              excl_hk_cny=True,
-                             fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True):
+                             fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True,
+                             incumbents_isin=None,
+                             m_min_ff_pct=None, m_adtv_dm=None, m_adtv_em=None,
+                             m_atvr_dm=None, m_atvr_em=None):
     """Add secondary share classes for selected entities.
     Secondaries must pass the same liquidity, FF% and price checks as primaries.
+    Buffer-aware: Incumbent-Secondaries (ISIN in incumbents_isin) bekommen Maintenance-Schwellen.
     """
+    # Fallback: Maintenance = Entry wenn nicht gesetzt
+    if m_min_ff_pct is None: m_min_ff_pct = min_ff_pct
+    if m_adtv_dm is None:    m_adtv_dm = adtv_dm
+    if m_adtv_em is None:    m_adtv_em = adtv_em
+    if m_atvr_dm is None:    m_atvr_dm = atvr_dm
+    if m_atvr_em is None:    m_atvr_em = atvr_em
+    if incumbents_isin is None:
+        incumbents_isin = set()
     selected_entities = set(df_selected["Entity ID"].dropna().unique())
     df_sec = df_raw_orig[
         (df_raw_orig["Listing"].fillna("") == "Secondary") &
@@ -968,8 +1006,11 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
     # FF MCap > 0
     df_sec = df_sec[df_sec["Free Float MCap Y2025"] > 0].copy()
 
-    # Free Float %
-    df_sec = df_sec[df_sec["Free Float Percent"] >= min_ff_pct].copy()
+    # Free Float % — buffer-aware
+    _sec_isin = df_sec["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    _sec_is_incumbent = _sec_isin.isin(incumbents_isin)
+    _sec_ff_thr = np.where(_sec_is_incumbent, m_min_ff_pct, min_ff_pct)
+    df_sec = df_sec[df_sec["Free Float Percent"] >= _sec_ff_thr].copy()
 
     # Max Price
     if max_price:
@@ -999,16 +1040,23 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
         df_sec["Classification"] = df_sec["Entity ID"].map(cls_map)
     df_sec = df_sec[df_sec["Classification"].notna()].copy()
 
-    # Liquidity filter: 3M ADTV + 6M ADTV + ATVR
+    # Liquidity filter: 3M ADTV + 6M ADTV + ATVR — buffer-aware
+    _sec_isin2 = df_sec["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    _sec_is_inc2 = _sec_isin2.isin(incumbents_isin)
+    _sec_adtv_dm_thr = np.where(_sec_is_inc2, m_adtv_dm, adtv_dm)
+    _sec_adtv_em_thr = np.where(_sec_is_inc2, m_adtv_em, adtv_em)
+    _sec_atvr_dm_thr = np.where(_sec_is_inc2, m_atvr_dm, atvr_dm)
+    _sec_atvr_em_thr = np.where(_sec_is_inc2, m_atvr_em, atvr_em)
+
     liq_mask = (
         ((df_sec["Classification"]=="DM") &
-         (df_sec["3M ADTV Y2025"] >= adtv_dm) &
-         (df_sec["6M ADTV Y2025"] >= adtv_dm) &
-         (df_sec["ATVR"] >= atvr_dm)) |
+         (df_sec["3M ADTV Y2025"] >= _sec_adtv_dm_thr) &
+         (df_sec["6M ADTV Y2025"] >= _sec_adtv_dm_thr) &
+         (df_sec["ATVR"] >= _sec_atvr_dm_thr)) |
         ((df_sec["Classification"]=="EM") &
-         (df_sec["3M ADTV Y2025"] >= adtv_em) &
-         (df_sec["6M ADTV Y2025"] >= adtv_em) &
-         (df_sec["ATVR"] >= atvr_em))
+         (df_sec["3M ADTV Y2025"] >= _sec_adtv_em_thr) &
+         (df_sec["6M ADTV Y2025"] >= _sec_adtv_em_thr) &
+         (df_sec["ATVR"] >= _sec_atvr_em_thr))
     )
     df_sec = df_sec[liq_mask].copy()
 
@@ -1674,6 +1722,100 @@ with st.sidebar:
     if_sort_col_size = "Total MCap Y2025"  # sort always on Total MCap
 
     st.markdown("---")
+    st.markdown("### 🛡️ Buffer Rules")
+
+    _buffer_default = (data_mode == "Master File (Multi-Period)")
+    apply_buffer = st.checkbox(
+        "Buffer Rules aktivieren",
+        value=_buffer_default,
+        key="apply_buffer",
+        help="Bestehende Konstituenten (Incumbents) werden mit weicheren Maintenance-Schwellen geprüft.\n\n"
+             "Neue Kandidaten müssen die strengeren Entry-Schwellen (oben konfiguriert) erfüllen.\n\n"
+             "Im Single-Snapshot-Modus gibt es keine Incumbents — Buffer greift erst wenn man eine "
+             "Incumbents-Liste bereitstellt. Im Master-Modus (Phase 2c) greift Buffer automatisch "
+             "ab Period 2."
+    )
+
+    if apply_buffer:
+        st.caption("Entry-Schwellen = oben konfigurierte Werte | Maintenance-Schwellen = weicher (unten)")
+
+        # Min FF% Maintenance
+        _bfa, _bfb = st.columns([3,4])
+        with _bfa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min FF% Maint. (%)</div>", unsafe_allow_html=True)
+        with _bfb: _bf_ff_raw = st.text_input("Min FF Maint.", value="7.5", key="buffer_min_ff", label_visibility="collapsed")
+
+        # Coverage Maintenance
+        _bca, _bcb = st.columns([3,4])
+        with _bca: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Coverage Maint. (%)</div>", unsafe_allow_html=True)
+        with _bcb: _bf_cov_raw = st.text_input("Coverage Maint.", value="90", key="buffer_coverage", label_visibility="collapsed")
+
+        # ADTV Maintenance DM
+        _bda, _bdb = st.columns([3,4])
+        with _bda: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV DM Maint.</div>", unsafe_allow_html=True)
+        with _bdb: _bf_adtv_dm_raw = st.text_input("ADTV DM Maint.", value="1000000", key="buffer_adtv_dm", label_visibility="collapsed")
+
+        # ADTV Maintenance EM
+        _bea, _beb = st.columns([3,4])
+        with _bea: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV EM Maint.</div>", unsafe_allow_html=True)
+        with _beb: _bf_adtv_em_raw = st.text_input("ADTV EM Maint.", value="500000", key="buffer_adtv_em", label_visibility="collapsed")
+
+        # ATVR Maintenance DM / EM
+        _bta, _btb = st.columns([3,4])
+        with _bta: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR DM Maint. (%)</div>", unsafe_allow_html=True)
+        with _btb: _bf_atvr_dm_raw = st.text_input("ATVR DM Maint.", value="15", key="buffer_atvr_dm", label_visibility="collapsed")
+
+        _bua, _bub = st.columns([3,4])
+        with _bua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR EM Maint. (%)</div>", unsafe_allow_html=True)
+        with _bub: _bf_atvr_em_raw = st.text_input("ATVR EM Maint.", value="10", key="buffer_atvr_em", label_visibility="collapsed")
+
+        # Parse
+        try:    buffer_min_ff = float(_bf_ff_raw) / 100
+        except: buffer_min_ff = 0.075
+        try:    buffer_coverage = int(_bf_cov_raw)
+        except: buffer_coverage = 90
+        try:    buffer_adtv_dm = float(_bf_adtv_dm_raw)
+        except: buffer_adtv_dm = 1_000_000
+        try:    buffer_adtv_em = float(_bf_adtv_em_raw)
+        except: buffer_adtv_em = 500_000
+        try:    buffer_atvr_dm = float(_bf_atvr_dm_raw) / 100
+        except: buffer_atvr_dm = 0.15
+        try:    buffer_atvr_em = float(_bf_atvr_em_raw) / 100
+        except: buffer_atvr_em = 0.10
+    else:
+        # Buffer inaktiv → Maintenance = Entry (keine Unterscheidung)
+        buffer_min_ff = min_ff_pct
+        buffer_coverage = 85  # will be overridden by mid_thr later where used
+        buffer_adtv_dm = new_adtv_dm
+        buffer_adtv_em = new_adtv_em
+        buffer_atvr_dm = new_atvr_dm
+        buffer_atvr_em = new_atvr_em
+        st.caption("→ Buffer inaktiv — alle Stocks durchlaufen Entry-Schwellen.")
+
+    # Incumbents-Upload (optional, für Single-Snapshot-Modus)
+    incumbents_isin_set = set()
+    if apply_buffer and data_mode == "Single Snapshot":
+        with st.expander("📥 Incumbents-Liste (optional)", expanded=False):
+            st.caption("Liste der ISINs die im vorigen Selection Date im Index waren. Wenn leer → alle als Entry-Kandidaten.")
+            _incumb_file = st.file_uploader("Incumbents-Liste (.xlsx/.csv mit Spalte 'ISIN')",
+                                            type=["xlsx","xls","csv"],
+                                            key="incumbents_upload")
+            if _incumb_file is not None:
+                try:
+                    if _incumb_file.name.lower().endswith(".csv"):
+                        _incumb_df = pd.read_csv(_incumb_file)
+                    else:
+                        _incumb_df = pd.read_excel(_incumb_file)
+                    if "ISIN" in _incumb_df.columns:
+                        incumbents_isin_set = set(
+                            _incumb_df["ISIN"].dropna().astype(str).str.strip().str.upper()
+                        )
+                        st.success(f"✅ {len(incumbents_isin_set)} Incumbent-ISINs geladen")
+                    else:
+                        st.error("Spalte 'ISIN' fehlt in der Datei")
+                except Exception as e:
+                    st.error(f"Fehler: {e}")
+
+    st.markdown("---")
     st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
 
 
@@ -2104,16 +2246,26 @@ with tab_gimi:
         _gm_eumss_full = _gm_eumss_rows.iloc[0]["Total MCap Y2025"]
         _gm_eumss_ff   = _gm_eumss_full * new_eumss_ff_ratio
 
-        # EUMSS filter
+        # EUMSS filter — buffer-aware Min FF%
+        _gm_isin = _gm_u["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        _gm_is_incumbent = _gm_isin.isin(incumbents_isin_set) if apply_buffer else pd.Series(False, index=_gm_u.index)
+        _gm_min_ff_thr = np.where(_gm_is_incumbent, buffer_min_ff, min_ff_pct)
+
         _gm_mask_eumss = ((_gm_u["Total MCap Y2025"] >= _gm_eumss_full) &
                           (_gm_u["Free Float MCap Y2025"] >= _gm_eumss_ff) &
-                          (_gm_u["Free Float Percent"] >= min_ff_pct))
+                          (_gm_u["Free Float Percent"] >= _gm_min_ff_thr))
         _gm_eumss = _gm_u[_gm_mask_eumss].copy()
 
-        # Pre-liquidity filter
-        _gm_liq = apply_liquidity_new(_gm_eumss, new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em)
+        # Pre-liquidity filter — buffer-aware ADTV + ATVR
+        _gm_liq = apply_liquidity_new(
+            _gm_eumss, new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+            incumbents_isin=incumbents_isin_set if apply_buffer else None,
+            m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
+            m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
+        )
 
-        # Coverage per country → Standard Index
+        # Coverage per country → Standard Index — buffer-aware Coverage-Schwelle
+        # Neue: mid_thr (85%); Incumbents: buffer_coverage (90%)
         # Sort: Total MCap (MSCI-konform), Cumulative: if_cum_col (Adj_FF_MCap or FF MCap)
         _gm_results = []
         for _ctry, _grp in _gm_liq.groupby("Mapping Country"):
@@ -2121,10 +2273,22 @@ with tab_gimi:
             _tot = _grp[if_cum_col].sum()
             if _tot == 0: continue
             _grp["_c"] = _grp[if_cum_col].cumsum() / _tot * 100
-            _cut = _grp[_grp["_c"] >= mid_thr].index
-            _inc = _grp.loc[:_cut[0]] if len(_cut)>0 else _grp
+
+            if apply_buffer and len(incumbents_isin_set) > 0:
+                # Dynamische Coverage-Entscheidung pro Stock:
+                # Ein Stock gilt als "im Cut" wenn seine _c ≤ mid_thr ist (Entry) ODER
+                # (er ist Incumbent AND seine _c ≤ buffer_coverage).
+                _grp_isin = _grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
+                _grp_is_inc = _grp_isin.isin(incumbents_isin_set)
+                _in_cut = (_grp["_c"] <= mid_thr) | (_grp_is_inc & (_grp["_c"] <= buffer_coverage))
+                _inc = _grp[_in_cut].copy()
+            else:
+                # Klassischer Cut bei mid_thr
+                _cut = _grp[_grp["_c"] >= mid_thr].index
+                _inc = _grp.loc[:_cut[0]] if len(_cut)>0 else _grp
+                _inc = _inc.copy()
+
             _tot_inc = _inc[if_cum_col].sum()
-            _inc = _inc.copy()
             _inc["_cp2"] = _inc[if_cum_col].cumsum() / _tot_inc * 100 if _tot_inc>0 else 0
             _inc["Segment_New"] = np.where(_inc["_cp2"] <= large_thr, "Large Cap", "Mid Cap")
             _gm_results.append(_inc)
@@ -2153,7 +2317,10 @@ with tab_gimi:
             china_inclusion_factor,
             min_ff_pct=min_ff_pct, atvr_mcap_col=atvr_mcap_col, excl_hk_cny=exclude_hk_cny,
             fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
-            fol_enabled=apply_fol)
+            fol_enabled=apply_fol,
+            incumbents_isin=incumbents_isin_set if apply_buffer else None,
+            m_min_ff_pct=buffer_min_ff, m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
+            m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em)
 
         _gm_complete = pd.concat([_gm_final, _gm_small, _gm_above85, _gm_micro], ignore_index=True)
         _gm_complete = _gm_complete.drop_duplicates(subset=["Symbol"]).copy()
@@ -2171,16 +2338,28 @@ with tab_gimi:
         _gm_complete["Index_Weight"] = _gm_complete["Adj_FF_MCap"]/_gm_tot_adj*100 if _gm_tot_adj>0 else 0
 
         _gm_all = df_raw_all[df_raw_all["Classification"].notna()]
+
+        # Buffer-Diagnostik: wie viele Incumbents haben's ins finale Index geschafft, wie viele neue Entries?
+        _buffer_info = ""
+        if apply_buffer and len(incumbents_isin_set) > 0 and len(_gm_complete) > 0:
+            _final_isin = _gm_complete["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            _n_total_final   = len(_gm_complete)
+            _n_incumbents_kept = _final_isin.isin(incumbents_isin_set).sum()
+            _n_new_entries     = _n_total_final - _n_incumbents_kept
+            _n_incumbents_lost = len(incumbents_isin_set) - _n_incumbents_kept
+            _buffer_info = (f" | 🛡️ Buffer: {_n_incumbents_kept:,} Incumbents gehalten, "
+                            f"{_n_new_entries:,} Neue hinzu, {_n_incumbents_lost:,} Incumbents verloren")
+
         _gm_diag = [
             {"Schritt":"0 — Universe (Primary + Secondary)","DM":(_gm_all["Classification"]=="DM").sum(),"EM":(_gm_all["Classification"]=="EM").sum(),"Total":len(_gm_all),"Δ":"—"},
             {"Schritt":"1 — Universe (Primary only)","DM":(_gm_u["Classification"]=="DM").sum(),"EM":(_gm_u["Classification"]=="EM").sum(),"Total":len(_gm_u),"Δ":f"-{len(_gm_all)-len(_gm_u):,}"},
             {"Schritt":f"2 — EUMSS Filter ({_gm_eumss_full/1e6:.0f}M)","DM":(_gm_eumss["Classification"]=="DM").sum(),"EM":(_gm_eumss["Classification"]=="EM").sum(),"Total":len(_gm_eumss),"Δ":f"-{len(_gm_u)-len(_gm_eumss):,}"},
             {"Schritt":"3 — Liquiditätsfilter (Pre)","DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
-            {"Schritt":f"4 — {mid_thr}% Coverage","DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
+            {"Schritt":f"4 — {mid_thr}% Coverage" + (f" (+ Buffer {buffer_coverage}% für Incumbents)" if apply_buffer and len(incumbents_isin_set)>0 else ""),"DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
             {"Schritt":"5 — Secondary Listings re-added (+)","DM":(_gm_final["Classification"]=="DM").sum(),"EM":(_gm_final["Classification"]=="EM").sum(),"Total":len(_gm_final),"Δ":f"+{len(_gm_final)-len(_gm_std):,}"},
             {"Schritt":f"6 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
         ]
-        _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}"
+        _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}{_buffer_info}"
         _gm_eumss_extra = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}%"
 
         _gm_params = {"Methodik":"GIMI Method","Listing":"Primary only + Secondary Listings (re-added)",
