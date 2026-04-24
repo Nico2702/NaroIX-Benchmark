@@ -856,13 +856,28 @@ def render_new_tab(tab_name, df_included, large_pct, mid_pct,
             _parts = [p.strip() for p in diag_caption.split("|") if any(k in p for k in ["EUMSS_FULL","EUMSS_FF","FF Ratio"])]
             if _parts:
                 _eumss_line = "<br>" + " &nbsp;|&nbsp; ".join(_parts)
+
+        # Dynamische IF-Zusammenfassung aus dem DataFrame
+        _if_parts = [f"China {china_if*100:.0f}%"]
+        if "IF_Source" in df_included.columns:
+            _non_cn = df_included[~df_included["Exchange Country Name"].fillna("").str.upper().eq("CHINA")]
+            _fol_applied = _non_cn[_non_cn["IF_Source"].astype(str).isin(["Industry", "Sector (strengster)", "Country Default"])]
+            if len(_fol_applied) > 0:
+                _if_parts.append(f"FOL Matrix: {len(_fol_applied)} Stocks gemappt")
+                _capped = _fol_applied[_fol_applied["IF"] < 1.0]
+                if len(_capped) > 0:
+                    _if_parts.append(f"davon gecappt (IF<1): {len(_capped)}")
+            else:
+                _if_parts.append("FOL Matrix: inaktiv")
+        _if_line = " &nbsp;|&nbsp; ".join(_if_parts)
+
         st.markdown(f"""
 <div class="info-box">
 <b>Selektionskriterien</b><br>
 Listing: {params_dict.get('Listing','—')} &nbsp;|&nbsp; Filter: {params_dict.get('Filter','—')} &nbsp;|&nbsp; IF: {if_mode}<br>
 ADTV DM: {adtv_dm:,.0f} USD &nbsp;|&nbsp; ADTV EM: {adtv_em:,.0f} USD &nbsp;|&nbsp; ATVR DM: {atvr_dm*100:.0f}% &nbsp;|&nbsp; ATVR EM: {atvr_em*100:.0f}%<br>
 Large: {large_pct}% &nbsp;|&nbsp; Mid: {mid_pct}% &nbsp;|&nbsp; Small: {small_pct}% &nbsp;|&nbsp; Min FF: {min_ff*100:.0f}%<br>
-Inclusion Factor: China {china_if*100:.0f}% &nbsp;|&nbsp; Indien {india_if*100:.0f}% &nbsp;|&nbsp; Vietnam {vietnam_if*100:.0f}% &nbsp;|&nbsp; Saudi {saudi_if*100:.0f}%{("<br><br>" + _eumss_line[4:]) if _eumss_line else ""}
+Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else ""}
 </div>
 """, unsafe_allow_html=True)
         with st.expander("🔍 Pipeline Diagnostik", expanded=False):
@@ -1244,6 +1259,9 @@ with st.sidebar:
     _ffa, _ffb = st.columns([3,4])
     with _ffa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min FF% (%)</div>", unsafe_allow_html=True)
     with _ffb: _ff_raw = st.text_input("Min FF", value="10", key="min_ff_input", label_visibility="collapsed")
+    _eua, _eub = st.columns([3,4])
+    with _eua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EUMSS FF Ratio (%)</div>", unsafe_allow_html=True)
+    with _eub: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio", label_visibility="collapsed")
 
     try:    large_thr  = int(_large_raw)
     except: large_thr  = 70
@@ -1253,6 +1271,8 @@ with st.sidebar:
     except: small_thr  = 99
     try:    min_ff_pct = float(_ff_raw) / 100
     except: min_ff_pct = 0.15
+    try:    new_eumss_ff_ratio = float(_eumss_ff_raw) / 100
+    except: new_eumss_ff_ratio = 0.50
     # Legacy aliases
     min_ff_pct_leg = min_ff_pct
     dm_ff_gt0 = True
@@ -1363,35 +1383,29 @@ with st.sidebar:
     use_vietnam_factor = False
     use_saudi_factor = False
 
-    st.caption("IF Anwendung (Tabs 3–5)")
+    st.markdown("**IF Anwendungsmodus**")
     if_selection_mode = st.radio(
         "IF greift bei:",
         ["Selektion", "Gewichtung"],
         index=0,
         horizontal=True,
         key="if_selection_mode",
-        help="Selektion: Adj_FF_MCap bestimmt Segment-Zuteilung (Large/Mid/Small).\nGewichtung: FF MCap bestimmt Selektion, IF wird nur für finale Indexgewichte angewendet."
+        help="Selektion (MSCI-konform): Adj_FF_MCap bestimmt Segment-Zuteilung (Large/Mid/Small) und Coverage.\nGewichtung (nur für What-if): FF MCap bestimmt Selektion, IF wird nur für finale Indexgewichte angewendet. Nicht MSCI-konform."
     )
+    if if_selection_mode == "Gewichtung":
+        st.caption("⚠️ Research-Modus — nicht MSCI-konform")
     if_sort_col = "Adj_FF_MCap" if if_selection_mode == "Selektion" else "Free Float MCap Y2025"
     # Sort always on Total MCap (MSCI-konform), cumulative on if_sort_col
     if_cum_col = if_sort_col  # cumulative basis (Adj_FF_MCap or FF MCap)
     if_sort_col_size = "Total MCap Y2025"  # sort always on Total MCap
 
     st.markdown("---")
-    st.markdown("### 🔧 Tab-spezifisch")
-    st.caption("Tab 2 — ACWI")
+    st.markdown("### 🎯 ACWI Index")
     _ema, _emb = st.columns([3,4])
     with _ema: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EM Threshold (%)</div>", unsafe_allow_html=True)
     with _emb: _em_thr_raw = st.text_input("EM Threshold", value="33.3", key="em_threshold_input", label_visibility="collapsed")
     try:    em_threshold_pct = float(_em_thr_raw)
     except: em_threshold_pct = 33.3
-
-    st.caption("Tab 5 — GIMI Method")
-    _gimi_a, _gimi_b = st.columns([3,4])
-    with _gimi_a: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EUMSS FF Ratio (%)</div>", unsafe_allow_html=True)
-    with _gimi_b: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio", label_visibility="collapsed")
-    try:    new_eumss_ff_ratio = float(_eumss_ff_raw) / 100
-    except: new_eumss_ff_ratio = 0.50
 
     st.markdown("---")
     st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
