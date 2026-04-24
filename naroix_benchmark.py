@@ -361,24 +361,48 @@ def load_fol_matrix():
             "industries": {(sector, industry): {"fol_automatic": float, ...}, ...}
         }
         version: Versionsstring aus YAML, oder None
+        debug_info: Liste mit getesteten Pfaden (für Diagnostik)
     """
     import yaml as _yaml
-    candidates = [
+    import os as _os
+
+    # Script directory als Basis (Streamlit Cloud startet ggf. aus anderem CWD)
+    _script_dir = _os.path.dirname(_os.path.abspath(__file__)) if "__file__" in globals() else _os.getcwd()
+
+    candidates_rel = [
         "Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml",
         "Historical_FOL_Register/NaroIX_FOL_Master_Aggregated.yaml",
         "NaroIX_FOL_Master_Aggregated.yaml",
     ]
+
+    # Alle Pfade: relative (CWD) + absolute (Script-Dir)
+    candidates = []
+    for rel in candidates_rel:
+        candidates.append(rel)
+        candidates.append(_os.path.join(_script_dir, rel))
+
     raw = None
+    tried = []
+    used_path = None
     for name in candidates:
+        tried.append(name)
         try:
             with open(name, "r", encoding="utf-8") as f:
                 raw = _yaml.safe_load(f)
+            used_path = name
             break
         except FileNotFoundError:
             continue
 
+    debug_info = {
+        "cwd": _os.getcwd(),
+        "script_dir": _script_dir,
+        "tried_paths": tried,
+        "used_path": used_path,
+    }
+
     if raw is None:
-        return {}, None
+        return {}, None, debug_info
 
     root = raw.get("naroix_pit_fol_master", {})
     version = root.get("version")
@@ -405,7 +429,7 @@ def load_fol_matrix():
                 "industries": industries_lookup,
             }
 
-    return fol_matrix, version
+    return fol_matrix, version, debug_info
 
 
 @st.cache_data
@@ -1141,7 +1165,7 @@ if not selection_dates:
 ineligible_df = load_ineligible_list()
 
 # FOL Matrix (optional — fehlt das File, wird die Matrix deaktiviert)
-fol_matrix, fol_version = load_fol_matrix()
+fol_matrix, fol_version, _fol_debug = load_fol_matrix()
 fol_sector_fb = build_sector_fallback_table(fol_matrix) if fol_matrix else {}
 
 
@@ -1320,6 +1344,14 @@ with st.sidebar:
         st.caption("→ FOL Matrix deaktiviert: alle Nicht-China-Stocks bekommen IF=1.0")
     else:
         st.caption("⚠️ YAML nicht gefunden — Matrix inaktiv")
+        with st.expander("🔍 Debug: welche Pfade wurden versucht?", expanded=False):
+            st.code(
+                f"CWD: {_fol_debug.get('cwd')}\n"
+                f"Script-Dir: {_fol_debug.get('script_dir')}\n\n"
+                f"Getestete Pfade:\n" +
+                "\n".join(f"  - {p}" for p in _fol_debug.get('tried_paths', [])),
+                language="text"
+            )
 
     # Legacy Country-IFs (deprecated, werden nicht mehr verwendet — behalten als NOP für Kompatibilität)
     india_inclusion_factor   = 1.0
