@@ -1759,14 +1759,14 @@ with st.sidebar:
         with _bea: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV EM Maint.</div>", unsafe_allow_html=True)
         with _beb: _bf_adtv_em_raw = st.text_input("ADTV EM Maint.", value="500000", key="buffer_adtv_em", label_visibility="collapsed")
 
-        # ATVR Maintenance DM / EM
+        # ATVR Maintenance DM / EM — Default 0 (identisch mit Entry; bei 0 ist ATVR-Filter deaktiviert)
         _bta, _btb = st.columns([3,4])
         with _bta: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR DM Maint. (%)</div>", unsafe_allow_html=True)
-        with _btb: _bf_atvr_dm_raw = st.text_input("ATVR DM Maint.", value="15", key="buffer_atvr_dm", label_visibility="collapsed")
+        with _btb: _bf_atvr_dm_raw = st.text_input("ATVR DM Maint.", value="0", key="buffer_atvr_dm", label_visibility="collapsed")
 
         _bua, _bub = st.columns([3,4])
         with _bua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR EM Maint. (%)</div>", unsafe_allow_html=True)
-        with _bub: _bf_atvr_em_raw = st.text_input("ATVR EM Maint.", value="10", key="buffer_atvr_em", label_visibility="collapsed")
+        with _bub: _bf_atvr_em_raw = st.text_input("ATVR EM Maint.", value="0", key="buffer_atvr_em", label_visibility="collapsed")
 
         # Parse
         try:    buffer_min_ff = float(_bf_ff_raw) / 100
@@ -1778,9 +1778,9 @@ with st.sidebar:
         try:    buffer_adtv_em = float(_bf_adtv_em_raw)
         except: buffer_adtv_em = 500_000
         try:    buffer_atvr_dm = float(_bf_atvr_dm_raw) / 100
-        except: buffer_atvr_dm = 0.15
+        except: buffer_atvr_dm = 0.0
         try:    buffer_atvr_em = float(_bf_atvr_em_raw) / 100
-        except: buffer_atvr_em = 0.10
+        except: buffer_atvr_em = 0.0
     else:
         # Buffer inaktiv → Maintenance = Entry (keine Unterscheidung)
         buffer_min_ff = min_ff_pct
