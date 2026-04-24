@@ -575,7 +575,7 @@ def apply_fol_matrix(df, fol_matrix, sector_fallback, year, thailand_mode,
 
 def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
                        excl_hk_cny, excl_cor_na, excl_naics, excl_euro, excl_etf,
-                       china_if, india_if, vietnam_if, saudi_if,
+                       china_if,
                        atvr_mcap_col="Free Float MCap Y2025",
                        excl_delisted=True,
                        fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True):
@@ -654,20 +654,9 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     df["Classification"] = df["Mapping Country"].map(country_cls)
     df = df[df["Classification"].notna()].copy()
 
-    # Step 5: Inclusion Factors — via FOL Matrix (oder Fallback auf pauschale IFs)
-    if fol_matrix is not None and fol_year is not None:
-        df = apply_fol_matrix(df, fol_matrix, fol_sector_fb, fol_year, thailand_mode,
-                              fol_enabled=fol_enabled, china_if=china_if)
-    else:
-        # Legacy Fallback: pauschale Country-IFs
-        ecn = df["Exchange Country Name"].fillna("")
-        df["IF"] = np.where(ecn.str.upper()=="CHINA",        china_if,
-                   np.where(ecn.str.upper()=="INDIA",        india_if,
-                   np.where(ecn.str.upper()=="VIETNAM",      vietnam_if,
-                   np.where(ecn.str.upper()=="SAUDI ARABIA", saudi_if, 1.0))))
-        df["IF_Source"] = "Legacy (pauschal)"
-        df["FOL_Value"] = np.nan
-        df["Adj_FF_MCap"] = df["Free Float MCap Y2025"] * df["IF"]
+    # Step 5: Inclusion Factors via FOL Matrix (Pflicht — Hard-Stop passiert bereits beim Laden)
+    df = apply_fol_matrix(df, fol_matrix, fol_sector_fb, fol_year, thailand_mode,
+                          fol_enabled=fol_enabled, china_if=china_if)
 
     # ADTV best for ATVR
     df["ADTV_Best"] = df["12M ADTV Y2025"].where(df["12M ADTV Y2025"]>0,
@@ -714,7 +703,7 @@ def assign_segments_new(df, large_pct, mid_pct, small_pct, group_col="Mapping Co
 
 
 def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, atvr_em,
-                             max_price, thailand_mode, china_if, india_if, vietnam_if, saudi_if,
+                             max_price, thailand_mode, china_if,
                              min_ff_pct=0.15, atvr_mcap_col="Free Float MCap Y2025",
                              excl_hk_cny=True,
                              fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True):
@@ -765,18 +754,9 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
         return df_selected
 
     # Inclusion Factors + Adj_FF_MCap — via FOL Matrix (oder Legacy Fallback)
-    if fol_matrix is not None and fol_year is not None:
-        df_sec = apply_fol_matrix(df_sec, fol_matrix, fol_sector_fb, fol_year, thailand_mode,
-                                   fol_enabled=fol_enabled, china_if=china_if)
-    else:
-        ecn = df_sec["Exchange Country Name"].fillna("")
-        df_sec["IF"] = np.where(ecn.str.upper()=="CHINA",        china_if,
-                       np.where(ecn.str.upper()=="INDIA",        india_if,
-                       np.where(ecn.str.upper()=="VIETNAM",      vietnam_if,
-                       np.where(ecn.str.upper()=="SAUDI ARABIA", saudi_if, 1.0))))
-        df_sec["IF_Source"] = "Legacy (pauschal)"
-        df_sec["FOL_Value"] = np.nan
-        df_sec["Adj_FF_MCap"] = df_sec["Free Float MCap Y2025"] * df_sec["IF"]
+    # Inclusion Factors + Adj_FF_MCap via FOL Matrix (Pflicht)
+    df_sec = apply_fol_matrix(df_sec, fol_matrix, fol_sector_fb, fol_year, thailand_mode,
+                               fol_enabled=fol_enabled, china_if=china_if)
 
     # ADTV_Best + ATVR
     df_sec["ADTV_Best"] = df_sec["12M ADTV Y2025"].where(df_sec["12M ADTV Y2025"]>0,
@@ -824,7 +804,7 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
 
 
 def render_new_tab(tab_name, df_included, large_pct, mid_pct,
-                   china_if, india_if, vietnam_if, saudi_if,
+                   china_if,
                    params_dict,
                    diag_rows=None, diag_caption=None,
                    adtv_dm=0, adtv_em=0, atvr_dm=0, atvr_em=0,
@@ -1088,43 +1068,67 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
     with _d2:
         st.markdown("**Inclusion Factor Impact**")
         _acwi_if = df_included[df_included["Segment_New"].isin(["Large Cap","Mid Cap"])].copy()
-        _if_entries = [
-            (f"China A-Shares (IF {china_if*100:.0f}%)",
-             _acwi_if["Exchange Country Name"].fillna("").str.upper()=="CHINA", china_if),
-            ("China H-Shares / Red Chips (IF 100%)",
-             (_acwi_if["Mapping Country"].fillna("").str.upper()=="CHINA") &
-             (_acwi_if["Exchange Country Name"].fillna("").str.upper()!="CHINA"), 1.0),
-            (f"Indien (IF {india_if*100:.0f}%)",
-             _acwi_if["Exchange Country Name"].fillna("").str.upper()=="INDIA", india_if),
-            (f"Vietnam (IF {vietnam_if*100:.0f}%)",
-             _acwi_if["Exchange Country Name"].fillna("").str.upper()=="VIETNAM", vietnam_if),
-            (f"Saudi-Arabien (IF {saudi_if*100:.0f}%)",
-             _acwi_if["Exchange Country Name"].fillna("").str.upper()=="SAUDI ARABIA", saudi_if),
-        ]
-        _if_rows = []
         _tot_ff  = _acwi_if["Free Float MCap Y2025"].sum()
         _tot_adj2 = _acwi_if["Adj_FF_MCap"].sum()
-        for _nm, _msk, _fac in _if_entries:
-            _ff  = _acwi_if.loc[_msk, "Free Float MCap Y2025"].sum()
-            _adj = _acwi_if.loc[_msk, "Adj_FF_MCap"].sum()
-            if _ff > 0:
-                _if_rows.append({"Land":_nm, "Factor":f"{_fac*100:.0f}%",
-                    "Weight (vor)":  round(_ff  / _tot_ff   * 100, 4) if _tot_ff   > 0 else 0,
-                    "Weight (nach)": round(_adj / _tot_adj2 * 100, 4) if _tot_adj2 > 0 else 0,
-                    "Δ": round(_adj/_tot_adj2*100 - _ff/_tot_ff*100, 4) if _tot_ff>0 and _tot_adj2>0 else 0})
+
+        # Gruppiere auf Basis von IF_Source (kommt aus apply_fol_matrix)
+        # Reihenfolge: China (A+H separat), Thailand NVDR, dann FOL-Matrix-Buckets, dann Rest
+        _if_rows = []
+
+        _ecn = _acwi_if["Exchange Country Name"].fillna("").str.upper()
+        _map_ctry = _acwi_if["Mapping Country"].fillna("").str.upper()
+        _src = _acwi_if.get("IF_Source", pd.Series([""]*len(_acwi_if))).fillna("").astype(str)
+
+        _buckets = [
+            (f"China A-Shares (IF {china_if*100:.0f}%)",
+             _ecn=="CHINA"),
+            ("China H-Shares / Red Chips (IF 100%)",
+             (_map_ctry=="CHINA") & (_ecn!="CHINA")),
+            ("Thailand NVDR (IF 100%)",
+             (_ecn=="THAILAND") & _src.str.contains("Thailand", na=False)),
+            ("FOL Matrix — Industry-Match",
+             _src.eq("Industry")),
+            ("FOL Matrix — Sector-Fallback",
+             _src.eq("Sector (strengster)")),
+            ("FOL Matrix — Country-Default",
+             _src.eq("Country Default")),
+            ("FOL pre_investable (IF 0%)",
+             _src.str.startswith("pre_investable", na=False)),
+        ]
+
+        for _nm, _msk in _buckets:
+            _sub = _acwi_if[_msk]
+            if len(_sub) == 0:
+                continue
+            _ff  = _sub["Free Float MCap Y2025"].sum()
+            _adj = _sub["Adj_FF_MCap"].sum()
+            if _ff <= 0 and _adj <= 0:
+                continue
+            _median_if = _sub["IF"].median() if "IF" in _sub.columns and len(_sub) > 0 else 1.0
+            _if_rows.append({
+                "Bucket": _nm,
+                "Stocks": len(_sub),
+                "Median IF": f"{_median_if*100:.1f}%",
+                "Weight (vor)":  round(_ff  / _tot_ff   * 100, 4) if _tot_ff   > 0 else 0,
+                "Weight (nach)": round(_adj / _tot_adj2 * 100, 4) if _tot_adj2 > 0 else 0,
+                "Δ":             round(_adj/_tot_adj2*100 - _ff/_tot_ff*100, 4) if _tot_ff>0 and _tot_adj2>0 else 0,
+            })
+
         if _if_rows:
             _if_df = pd.DataFrame(_if_rows)
             _if_df = pd.concat([_if_df, pd.DataFrame([{
-                "Land":"Total","Factor":"—",
+                "Bucket":"Total","Stocks": _if_df["Stocks"].sum(), "Median IF":"—",
                 "Weight (vor)":  round(_if_df["Weight (vor)"].sum(),  4),
                 "Weight (nach)": round(_if_df["Weight (nach)"].sum(), 4),
                 "Δ":             round(_if_df["Δ"].sum(), 4)}])], ignore_index=True)
             def _sif(df):
                 def rs(row):
-                    if row["Land"]=="Total": return ["background-color:#1a2a4a;font-weight:600;"]*len(row)
+                    if row["Bucket"]=="Total": return ["background-color:#1a2a4a;font-weight:600;"]*len(row)
                     return [""]*len(row)
                 return df.style.apply(rs, axis=1)
             st.dataframe(_sif(_if_df), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Keine gecappten Stocks im Index.")
 
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -1184,9 +1188,20 @@ if not selection_dates:
 # Ineligible List (optional — fehlt das File, wird der Filter automatisch deaktiviert)
 ineligible_df = load_ineligible_list()
 
-# FOL Matrix (optional — fehlt das File, wird die Matrix deaktiviert)
+# FOL Matrix (PFLICHT — ohne YAML läuft der Index-Aufbau nicht)
 fol_matrix, fol_version, _fol_debug = load_fol_matrix()
-fol_sector_fb = build_sector_fallback_table(fol_matrix) if fol_matrix else {}
+if not fol_matrix:
+    st.error("❌ FOL Matrix konnte nicht geladen werden. Die Datei 'Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml' ist für den Index-Aufbau zwingend erforderlich.")
+    with st.expander("🔍 Debug: welche Pfade wurden versucht?", expanded=True):
+        st.code(
+            f"CWD: {_fol_debug.get('cwd')}\n"
+            f"Script-Dir: {_fol_debug.get('script_dir')}\n\n"
+            f"Getestete Pfade:\n" +
+            "\n".join(f"  - {p}" for p in _fol_debug.get('tried_paths', [])),
+            language="text"
+        )
+    st.stop()
+fol_sector_fb = build_sector_fallback_table(fol_matrix)
 
 
 
@@ -1278,10 +1293,6 @@ with st.sidebar:
     except: min_ff_pct = 0.15
     try:    new_eumss_ff_ratio = float(_eumss_ff_raw) / 100
     except: new_eumss_ff_ratio = 0.50
-    # Legacy aliases
-    min_ff_pct_leg = min_ff_pct
-    dm_ff_gt0 = True
-    em_ff_gt0 = True
 
     st.markdown("---")
     st.markdown("### 💧 Liquidität")
@@ -1319,13 +1330,6 @@ with st.sidebar:
     )
     atvr_mcap_col = "Free Float MCap Y2025" if atvr_denominator == "Free Float MCap" else "Total MCap Y2025"
 
-    # Legacy aliases for old code
-    dm_min_adtv_3m = new_adtv_dm; dm_min_adtv_6m = new_adtv_dm
-    em_min_adtv_3m = new_adtv_em; em_min_adtv_6m = new_adtv_em
-    dm_min_adtv_1m = 0; dm_min_adtv_12m = 0
-    em_min_adtv_1m = 0; em_min_adtv_12m = 0
-    liq_ratio_min = 0.0
-
     st.markdown("---")
     st.markdown("### ⚖️ Inclusion Factors")
 
@@ -1349,44 +1353,22 @@ with st.sidebar:
         try:    china_inclusion_factor = float(_china_raw) / 100 if use_china_factor else 1.0
         except: china_inclusion_factor = _china_if_historical
 
-    # FOL Matrix (IN, VN, SA, QA, AE, MY, KW, ID, KR, PH, TH)
-    _fol_available = bool(fol_matrix)
+    # FOL Matrix (IN, VN, SA, QA, AE, MY, KW, ID, KR, PH, TH) — YAML ist bereits beim Laden validiert
     apply_fol = st.checkbox(
         "FOL Matrix anwenden",
         value=True,
         key="apply_fol",
-        disabled=not _fol_available,
         help=f"Wendet Foreign Ownership Limits aus 'Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml' an.\n\n"
              f"FIF-Formel: IF = min(1, FOL / Free Float %)\n"
              f"Fallback: Industry → Sector (strengster) → Country Default → 1.0\n\n"
              f"Betroffene Länder: IN, VN, SA, QA, AE, MY, KW, ID, KR, PH, TH\n"
              f"Thailand: FOL greift nur bei 'SHARE only', NVDR-Modi umgehen FOL.\n\n"
-             f"{'YAML Version: '+str(fol_version) if fol_version else 'Keine YAML gefunden — Matrix inaktiv.'}"
+             f"YAML Version: {fol_version}"
     )
-    # Effektiv: nur aktiv wenn YAML da UND Checkbox an
-    apply_fol = apply_fol and _fol_available
-    if _fol_available and apply_fol:
+    if apply_fol:
         st.caption(f"→ aktiv: YAML {fol_version} | Snapshot-Jahr: **{_active_selection_date.year}**")
-    elif _fol_available:
-        st.caption("→ FOL Matrix deaktiviert: alle Nicht-China-Stocks bekommen IF=1.0")
     else:
-        st.caption("⚠️ YAML nicht gefunden — Matrix inaktiv")
-        with st.expander("🔍 Debug: welche Pfade wurden versucht?", expanded=False):
-            st.code(
-                f"CWD: {_fol_debug.get('cwd')}\n"
-                f"Script-Dir: {_fol_debug.get('script_dir')}\n\n"
-                f"Getestete Pfade:\n" +
-                "\n".join(f"  - {p}" for p in _fol_debug.get('tried_paths', [])),
-                language="text"
-            )
-
-    # Legacy Country-IFs (deprecated, werden nicht mehr verwendet — behalten als NOP für Kompatibilität)
-    india_inclusion_factor   = 1.0
-    vietnam_inclusion_factor = 1.0
-    saudi_inclusion_factor   = 1.0
-    use_india_factor = False
-    use_vietnam_factor = False
-    use_saudi_factor = False
+        st.caption("→ FOL Matrix deaktiviert: alle Nicht-China-Stocks bekommen IF=1.0 (nur für What-if)")
 
     st.markdown("**IF Anwendungsmodus**")
     if_selection_mode = st.radio(
@@ -1777,7 +1759,27 @@ with tab_overview:
             if _audit_rows:
                 _audit_df = pd.DataFrame(_audit_rows)
                 st.dataframe(_audit_df, use_container_width=True, hide_index=True)
-                st.caption(f"Median FOL = Median `fol_automatic` aus YAML | Median IF = Median des finalen Inclusion Factors nach FIF-Formel `min(1, FOL/FF%)`.{' Thailand-IFs berücksichtigen den aktuellen Thailand-Modus.' if _thai_caveat else ''}")
+
+                with st.expander("ℹ️ Spalten-Definitionen", expanded=False):
+                    st.markdown("""
+**Stocks** — Anzahl aller Aktien aus diesem Land im Universe (vor Segment-Filterung).
+
+**Industry-Match** — Stocks deren `(FactSet Sector, FactSet Industry)`-Paar exakt in der YAML gefunden wurde. Präzisester Lookup.
+
+**Sector-Fallback** — Stocks bei denen die exakte Industry nicht in der YAML steht, aber der Sector existiert. Fällt auf den **strengsten** `fol_automatic`-Wert im Sector zurück (konservativ).
+
+**Country-Default** — Stocks bei denen weder Industry noch Sector gemappt werden konnten. Fällt auf `default_fol` des Landes zurück.
+
+**Other/Override** — Spezialfälle außerhalb der YAML-Lookup-Kette: Thailand im NVDR-Modus (IF=1.0), Saudi pre_investable (IF=0), etc.
+
+**Median FOL** — Median des `fol_automatic`-Werts aus der YAML für dieses Land. Zeigt was die YAML regulatorisch "sagt".
+
+**Min IF** — Kleinster finaler Inclusion Factor nach FIF-Formel `min(1, FOL/FF%)`. Zeigt den stärksten Cap-Fall im Land. IF=1.0 bedeutet dass kein Stock gecappt wurde (FOL bindet nicht).
+
+**Median IF** — Median finaler Inclusion Factor. IF=1.0 bedeutet für die typische Aktie bindet die FOL nicht (Free Float liegt ohnehin unter der FOL-Schwelle).
+""")
+                    if _thai_caveat:
+                        st.info("Hinweis: Thailand-Werte in der Tabelle berücksichtigen den aktuellen Thailand-Modus ('NVDR only' oder 'SHARE → NVDR' → IF=1.0 per Override).")
 
 
 
@@ -1791,7 +1793,7 @@ with tab_gimi:
 
     _gm_u = build_new_universe(df_raw_original, country_cls, thailand_sec_type, max_closing_price,
         exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
-        china_inclusion_factor, india_inclusion_factor, vietnam_inclusion_factor, saudi_inclusion_factor,
+        china_inclusion_factor,
         atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
         fol_enabled=apply_fol)
@@ -1854,7 +1856,7 @@ with tab_gimi:
         # Add secondary listings for standard index only
         _gm_final = add_secondary_listings(_gm_std, df_raw_original, new_adtv_dm, new_adtv_em,
             new_atvr_dm, new_atvr_em, max_closing_price, thailand_sec_type,
-            china_inclusion_factor, india_inclusion_factor, vietnam_inclusion_factor, saudi_inclusion_factor,
+            china_inclusion_factor,
             min_ff_pct=min_ff_pct, atvr_mcap_col=atvr_mcap_col, excl_hk_cny=exclude_hk_cny,
             fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
             fol_enabled=apply_fol)
@@ -1917,7 +1919,7 @@ with tab_gimi:
             _gm_u_full = pd.concat([_gm_u_full, _gm_secondaries], ignore_index=True)
 
         render_new_tab("GIMI Method", _gm_complete, large_thr, mid_thr,
-            china_inclusion_factor, india_inclusion_factor, vietnam_inclusion_factor, saudi_inclusion_factor,
+            china_inclusion_factor,
             _gm_params, diag_rows=_gm_diag,
             diag_caption=_gm_diag_caption,
             adtv_dm=new_adtv_dm, adtv_em=new_adtv_em, atvr_dm=new_atvr_dm, atvr_em=new_atvr_em,
