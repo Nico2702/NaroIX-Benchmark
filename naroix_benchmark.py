@@ -345,11 +345,61 @@ def load_master_excel(file, valid_selection_dates_iso):
                     period_df[target] = df[col_name]
             periods[d] = period_df
 
-        # Validierung: Duplicate ISINs
-        if "ISIN" in static_df.columns:
-            n_isin_dup = static_df["ISIN"].dropna().duplicated().sum()
-            if n_isin_dup > 0:
-                warnings_list.append(f"{n_isin_dup} doppelte ISIN-Einträge im Master-File.")
+        # Validierung: Duplikate
+        # Strategie: (1) Exchange Ticker-Duplikate → echter Fehler, (2) ISIN-Duplikate klassifiziert
+        # in harmlos (Primary+Secondary-Paar) vs. verdächtig (2x Primary oder 2x Secondary)
+        # Exchange Ticker ist stock-level-eindeutig — @NA (FactSet-Platzhalter) wird als leer behandelt.
+        if "Exchange Ticker" in static_df.columns:
+            _et = static_df["Exchange Ticker"].fillna("").astype(str).str.strip()
+            _et_valid = _et[(_et != "") & (_et != "@NA")]
+            n_et_dup = _et_valid.duplicated().sum()
+            if n_et_dup > 0:
+                warnings_list.append(
+                    f"⚠️ {n_et_dup} Zeile(n) mit dupliziertem Exchange Ticker — "
+                    f"echter Datenfehler, bitte prüfen (Stocks würden doppelt gewichtet)."
+                )
+
+        if "ISIN" in static_df.columns and "Listing" in static_df.columns:
+            _isin = static_df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            _listing = static_df["Listing"].fillna("").astype(str).str.strip()
+
+            # Gruppiere pro ISIN: zähle Primary und Secondary Zeilen
+            _isin_mask = _isin != ""
+            _groups = pd.DataFrame({
+                "ISIN": _isin[_isin_mask],
+                "Listing": _listing[_isin_mask],
+            }).groupby("ISIN")["Listing"].agg(list)
+
+            # Nur Gruppen mit >1 Zeile sind Duplikate
+            _dups = _groups[_groups.apply(len) > 1]
+
+            benign_pairs = 0    # 1 Primary + N Secondary (beliebige N)
+            suspicious = 0      # 2+ Primary ODER 0 Primary + 2+ Secondary (oder unklare Labels)
+            suspicious_isins = []
+
+            for isin, listings in _dups.items():
+                n_prim = sum(1 for l in listings if l.lower() == "primary")
+                n_sec  = sum(1 for l in listings if l.lower() == "secondary")
+                # Muster: genau 1 Primary + ≥1 Secondary → harmlos
+                if n_prim == 1 and n_sec == len(listings) - 1 and n_sec >= 1:
+                    benign_pairs += 1
+                else:
+                    suspicious += 1
+                    if len(suspicious_isins) < 5:
+                        suspicious_isins.append(f"{isin} ({n_prim}× Primary, {n_sec}× Secondary)")
+
+            if benign_pairs > 0 and suspicious == 0:
+                warnings_list.append(
+                    f"ℹ️ {benign_pairs} ISIN(s) mit Primary+Secondary-Paar — ist erwartet, kein Problem."
+                )
+            elif suspicious > 0:
+                _sample = ", ".join(suspicious_isins)
+                _rest = f" (+ {suspicious - 5} weitere)" if suspicious > 5 else ""
+                warnings_list.append(
+                    f"⚠️ {suspicious} ISIN(s) mit verdächtiger Duplikat-Struktur "
+                    f"(mehrfach Primary oder keine Primary-Zeile): {_sample}{_rest}"
+                    + (f" | zusätzlich {benign_pairs} harmlose Primary+Secondary-Paare." if benign_pairs > 0 else "")
+                )
 
         return {
             "static_df": static_df,
