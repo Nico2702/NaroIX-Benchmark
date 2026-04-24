@@ -170,7 +170,9 @@ def load_excel(file):
             # Column name differences between FactSet export versions
             "Country Name":                  "Exchange Country Name",
             "Float PCT":                     "Free Float Percent",
-            "Inudstry":                      "Industry",   # typo in some exports
+            "Sector":                        "FactSet Econ Sector",
+            "Industry":                      "FactSet Industry",    # correct spelling in newer exports
+            "Inudstry":                      "FactSet Industry",    # typo in older exports
         }
         df = df.rename(columns=rename_map)
 
