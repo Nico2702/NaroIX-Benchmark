@@ -1724,10 +1724,15 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🛡️ Buffer Rules")
 
+    # Wenn sich der Modus seit letztem Run geändert hat, muss der Default neu greifen.
+    # Streamlit ignoriert sonst den value=... Parameter zugunsten des gecachten Session-State.
     _buffer_default = (data_mode == "Master File (Multi-Period)")
+    if st.session_state.get("_last_data_mode") != data_mode:
+        st.session_state["apply_buffer"] = _buffer_default
+        st.session_state["_last_data_mode"] = data_mode
+
     apply_buffer = st.checkbox(
         "Buffer Rules aktivieren",
-        value=_buffer_default,
         key="apply_buffer",
         help="Bestehende Konstituenten (Incumbents) werden mit weicheren Maintenance-Schwellen geprüft.\n\n"
              "Neue Kandidaten müssen die strengeren Entry-Schwellen (oben konfiguriert) erfüllen.\n\n"
