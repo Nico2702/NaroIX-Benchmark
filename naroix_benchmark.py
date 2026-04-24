@@ -1071,32 +1071,31 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
         _tot_ff  = _acwi_if["Free Float MCap Y2025"].sum()
         _tot_adj2 = _acwi_if["Adj_FF_MCap"].sum()
 
-        # Gruppiere auf Basis von IF_Source (kommt aus apply_fol_matrix)
-        # Reihenfolge: China (A+H separat), Thailand NVDR, dann FOL-Matrix-Buckets, dann Rest
+        # Pro Land aufschlüsseln (nur Länder mit echtem IF-Impact anzeigen)
+        # Reihenfolge: China A/H zuerst, dann FOL-Länder, dann Thailand
         _if_rows = []
 
         _ecn = _acwi_if["Exchange Country Name"].fillna("").str.upper()
         _map_ctry = _acwi_if["Mapping Country"].fillna("").str.upper()
         _src = _acwi_if.get("IF_Source", pd.Series([""]*len(_acwi_if))).fillna("").astype(str)
 
-        _buckets = [
-            (f"China A-Shares (IF {china_if*100:.0f}%)",
-             _ecn=="CHINA"),
-            ("China H-Shares / Red Chips (IF 100%)",
-             (_map_ctry=="CHINA") & (_ecn!="CHINA")),
-            ("Thailand NVDR (IF 100%)",
-             (_ecn=="THAILAND") & _src.str.contains("Thailand", na=False)),
-            ("FOL Matrix — Industry-Match",
-             _src.eq("Industry")),
-            ("FOL Matrix — Sector-Fallback",
-             _src.eq("Sector (strengster)")),
-            ("FOL Matrix — Country-Default",
-             _src.eq("Country Default")),
-            ("FOL pre_investable (IF 0%)",
-             _src.str.startswith("pre_investable", na=False)),
+        # China separat (A-Shares via Exchange=CHINA, H-Shares/Red Chips via Mapping=CHINA aber Exchange!=CHINA)
+        _country_entries = [
+            ("China A-Shares",              _ecn=="CHINA"),
+            ("China H-Shares / Red Chips",  (_map_ctry=="CHINA") & (_ecn!="CHINA")),
+            ("Indien (FOL)",                _ecn=="INDIA"),
+            ("Saudi-Arabien (FOL)",         _ecn=="SAUDI ARABIA"),
+            ("Qatar (FOL)",                 _ecn=="QATAR"),
+            ("UAE (FOL)",                   _ecn=="UNITED ARAB EMIRATES"),
+            ("Malaysia (FOL)",              _ecn=="MALAYSIA"),
+            ("Kuwait (FOL)",                _ecn=="KUWAIT"),
+            ("Indonesien (FOL)",            _ecn=="INDONESIA"),
+            ("Süd-Korea (FOL)",             _ecn=="SOUTH KOREA"),
+            ("Philippinen (FOL)",           _ecn=="PHILIPPINES"),
+            ("Thailand (NVDR/SHARE)",       _ecn=="THAILAND"),
         ]
 
-        for _nm, _msk in _buckets:
+        for _nm, _msk in _country_entries:
             _sub = _acwi_if[_msk]
             if len(_sub) == 0:
                 continue
@@ -1104,11 +1103,9 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
             _adj = _sub["Adj_FF_MCap"].sum()
             if _ff <= 0 and _adj <= 0:
                 continue
-            _median_if = _sub["IF"].median() if "IF" in _sub.columns and len(_sub) > 0 else 1.0
             _if_rows.append({
-                "Bucket": _nm,
+                "Land": _nm,
                 "Stocks": len(_sub),
-                "Median IF": f"{_median_if*100:.1f}%",
                 "Weight (vor)":  round(_ff  / _tot_ff   * 100, 4) if _tot_ff   > 0 else 0,
                 "Weight (nach)": round(_adj / _tot_adj2 * 100, 4) if _tot_adj2 > 0 else 0,
                 "Δ":             round(_adj/_tot_adj2*100 - _ff/_tot_ff*100, 4) if _tot_ff>0 and _tot_adj2>0 else 0,
@@ -1117,18 +1114,19 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
         if _if_rows:
             _if_df = pd.DataFrame(_if_rows)
             _if_df = pd.concat([_if_df, pd.DataFrame([{
-                "Bucket":"Total","Stocks": _if_df["Stocks"].sum(), "Median IF":"—",
+                "Land":"Total (IF-betroffen)",
+                "Stocks": _if_df["Stocks"].sum(),
                 "Weight (vor)":  round(_if_df["Weight (vor)"].sum(),  4),
                 "Weight (nach)": round(_if_df["Weight (nach)"].sum(), 4),
                 "Δ":             round(_if_df["Δ"].sum(), 4)}])], ignore_index=True)
             def _sif(df):
                 def rs(row):
-                    if row["Bucket"]=="Total": return ["background-color:#1a2a4a;font-weight:600;"]*len(row)
+                    if row["Land"]=="Total (IF-betroffen)": return ["background-color:#1a2a4a;font-weight:600;"]*len(row)
                     return [""]*len(row)
                 return df.style.apply(rs, axis=1)
             st.dataframe(_sif(_if_df), use_container_width=True, hide_index=True)
         else:
-            st.caption("Keine gecappten Stocks im Index.")
+            st.caption("Keine IF-betroffenen Länder im Index.")
 
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
