@@ -1103,9 +1103,11 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
             _adj = _sub["Adj_FF_MCap"].sum()
             if _ff <= 0 and _adj <= 0:
                 continue
+            _capped = int((_sub["IF"] < 1.0).sum()) if "IF" in _sub.columns else 0
             _if_rows.append({
                 "Land": _nm,
                 "Stocks": len(_sub),
+                "davon gecappt": _capped,
                 "Weight (vor)":  round(_ff  / _tot_ff   * 100, 4) if _tot_ff   > 0 else 0,
                 "Weight (nach)": round(_adj / _tot_adj2 * 100, 4) if _tot_adj2 > 0 else 0,
                 "Δ":             round(_adj/_tot_adj2*100 - _ff/_tot_ff*100, 4) if _tot_ff>0 and _tot_adj2>0 else 0,
@@ -1116,6 +1118,7 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
             _if_df = pd.concat([_if_df, pd.DataFrame([{
                 "Land":"Total (IF-betroffen)",
                 "Stocks": _if_df["Stocks"].sum(),
+                "davon gecappt": _if_df["davon gecappt"].sum(),
                 "Weight (vor)":  round(_if_df["Weight (vor)"].sum(),  4),
                 "Weight (nach)": round(_if_df["Weight (nach)"].sum(), 4),
                 "Δ":             round(_if_df["Δ"].sum(), 4)}])], ignore_index=True)
