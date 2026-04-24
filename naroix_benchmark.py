@@ -1400,14 +1400,6 @@ with st.sidebar:
     if_sort_col_size = "Total MCap Y2025"  # sort always on Total MCap
 
     st.markdown("---")
-    st.markdown("### 🎯 ACWI Index")
-    _ema, _emb = st.columns([3,4])
-    with _ema: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EM Threshold (%)</div>", unsafe_allow_html=True)
-    with _emb: _em_thr_raw = st.text_input("EM Threshold", value="33.3", key="em_threshold_input", label_visibility="collapsed")
-    try:    em_threshold_pct = float(_em_thr_raw)
-    except: em_threshold_pct = 33.3
-
-    st.markdown("---")
     st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
 
 
