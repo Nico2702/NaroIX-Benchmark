@@ -1328,7 +1328,7 @@ with st.sidebar:
     _fol_available = bool(fol_matrix)
     apply_fol = st.checkbox(
         "FOL Matrix anwenden",
-        value=_fol_available,
+        value=True,
         key="apply_fol",
         disabled=not _fol_available,
         help=f"Wendet Foreign Ownership Limits aus 'Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml' an.\n\n"
@@ -1338,6 +1338,8 @@ with st.sidebar:
              f"Thailand: FOL greift nur bei 'SHARE only', NVDR-Modi umgehen FOL.\n\n"
              f"{'YAML Version: '+str(fol_version) if fol_version else 'Keine YAML gefunden — Matrix inaktiv.'}"
     )
+    # Effektiv: nur aktiv wenn YAML da UND Checkbox an
+    apply_fol = apply_fol and _fol_available
     if _fol_available and apply_fol:
         st.caption(f"→ aktiv: YAML {fol_version} | Snapshot-Jahr: **{_active_selection_date.year}**")
     elif _fol_available:
