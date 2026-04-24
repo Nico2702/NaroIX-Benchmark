@@ -534,11 +534,14 @@ def apply_fol_matrix(df, fol_matrix, sector_fallback, year, thailand_mode,
     df["FOL_Value"] = fol_values
     df["IF_Source"] = sources
 
-    # FIF-Formel: IF = min(1.0, FOL / FF%)
-    ff_pct = df["Free Float Percent"].astype(float) / 100.0
+    # FIF-Formel: IF = min(1.0, FOL / FF_Ratio)
+    # Hinweis: "Free Float Percent" ist trotz des Namens im Code als Dezimalwert 0.0–1.0
+    # gespeichert (so liefert es FactSet, so wird min_ff_pct in der Sidebar verglichen).
+    # FOL_Value aus YAML ist ebenfalls 0.0–1.0 → direkte Division korrekt.
+    ff_ratio = df["Free Float Percent"].astype(float)
     df["IF"] = np.where(
-        ff_pct > 0,
-        np.minimum(1.0, df["FOL_Value"].astype(float) / ff_pct.where(ff_pct>0, np.nan)),
+        ff_ratio > 0,
+        np.minimum(1.0, df["FOL_Value"].astype(float) / ff_ratio.where(ff_ratio>0, np.nan)),
         1.0,
     )
 
@@ -1735,7 +1738,8 @@ with tab_overview:
                 for _, r in _c_stocks.iterrows():
                     sec = str(r.get("FactSet Econ Sector","") or "")
                     ind = str(r.get("FactSet Industry","") or "")
-                    ff_pct = (r.get("Free Float Percent", 0) or 0) / 100.0
+                    # Free Float Percent ist bereits als Dezimalwert 0.0–1.0 gespeichert (siehe Hinweis bei apply_fol_matrix)
+                    ff_ratio = float(r.get("Free Float Percent", 0) or 0)
 
                     fol_v, src = _resolve_fol_row(cc_upper, sec, ind, _fol_year, fol_matrix, fol_sector_fb)
 
@@ -1745,7 +1749,7 @@ with tab_overview:
                         src = f"Thailand {thailand_sec_type} (NVDR)"
                         _thai_caveat = True
                     else:
-                        _if = min(1.0, fol_v / ff_pct) if ff_pct > 0 else 1.0
+                        _if = min(1.0, fol_v / ff_ratio) if ff_ratio > 0 else 1.0
                         if src.startswith("pre_investable"):
                             _if = 0.0
 
