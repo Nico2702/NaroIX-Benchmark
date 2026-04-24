@@ -62,13 +62,6 @@ st.markdown("""
 
 # ─── Helper Functions ──────────────────────────────────────────────────────────
 
-def to_excel_download(df, sheet_name="Index"):
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-    return buf.getvalue()
-
-
 def to_excel_multi(sheets: dict):
     """Export multiple DataFrames as sheets. sheets = {sheet_name: df}"""
     buf = BytesIO()
@@ -130,7 +123,6 @@ FOL_COUNTRY_CODE_MAP = {
     "PHILIPPINES":        "PH",
     "THAILAND":           "TH",
 }
-
 
 
 @st.cache_data
@@ -648,9 +640,12 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
         df = df[df["Listing Status"].fillna("0").astype(str).str.strip() != "1"].copy()
 
     # Step 4: Classification
-    df["Mapping Country"] = df.apply(
-        lambda r: r["Country of Incorp"] if r.get("Exchange Country Name","") == r.get("Country of Incorp","")
-                  else r.get("Country of Risk",""), axis=1)
+    # Mapping-Regel: wenn Exchange Country == Country of Incorp, dann Country of Incorp;
+    # ansonsten Country of Risk. Vektorisiert + NaN-sicher.
+    _ecn = df["Exchange Country Name"].fillna("")
+    _coi = df["Country of Incorp"].fillna("")
+    _cor = df["Country of Risk"].fillna("")
+    df["Mapping Country"] = np.where(_ecn == _coi, _coi, _cor)
     df["Classification"] = df["Mapping Country"].map(country_cls)
     df = df[df["Classification"].notna()].copy()
 
@@ -679,27 +674,6 @@ def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em):
             (df["6M ADTV Y2025"]>=adtv_em) &
             (df["ATVR"]>=atvr_em))
     return df[mask].copy()
-
-
-def assign_segments_new(df, large_pct, mid_pct, small_pct, group_col="Mapping Country",
-                        sort_col="Total MCap Y2025", cum_col="Adj_FF_MCap"):
-    """Assign Large/Mid/Small/Micro Cap segments per group.
-    Sort on sort_col (Total MCap), cumulative on cum_col (Adj_FF_MCap) — MSCI-konform.
-    """
-    results = []
-    for grp_val, grp in df.groupby(group_col):
-        grp = grp.sort_values(sort_col, ascending=False).copy()
-        total = grp[cum_col].sum()
-        if total == 0:
-            grp["Segment_New"] = "Micro Cap"
-            results.append(grp)
-            continue
-        grp["_cum_pct"] = grp[cum_col].cumsum() / total * 100
-        grp["Segment_New"] = np.where(grp["_cum_pct"] <= large_pct, "Large Cap",
-                             np.where(grp["_cum_pct"] <= mid_pct,   "Mid Cap",
-                             np.where(grp["_cum_pct"] <= small_pct, "Small Cap", "Micro Cap")))
-        results.append(grp)
-    return pd.concat(results, ignore_index=True)
 
 
 def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, atvr_em,
@@ -1177,7 +1151,6 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
     )
 
 
-
 # ─── Load Historical Reference Data (Classification, Selection Dates, China IF) ──
 # Wird hier schon geladen, damit die Sidebar historische Defaults (z.B. China IF) anzeigen kann.
 hc_df, selection_dates, china_if_map = load_historical_data()
@@ -1203,7 +1176,6 @@ if not fol_matrix:
         )
     st.stop()
 fol_sector_fb = build_sector_fallback_table(fol_matrix)
-
 
 
 with st.sidebar:
@@ -1354,7 +1326,8 @@ with st.sidebar:
         try:    china_inclusion_factor = float(_china_raw) / 100 if use_china_factor else 1.0
         except: china_inclusion_factor = _china_if_historical
 
-    # FOL Matrix (IN, VN, SA, QA, AE, MY, KW, ID, KR, PH, TH) — YAML ist bereits beim Laden validiert
+    # FOL Matrix — YAML ist bereits beim Laden validiert
+    _fol_iso_list = ", ".join(sorted(FOL_COUNTRY_CODE_MAP.values()))
     apply_fol = st.checkbox(
         "FOL Matrix anwenden",
         value=True,
@@ -1362,7 +1335,7 @@ with st.sidebar:
         help=f"Wendet Foreign Ownership Limits aus 'Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml' an.\n\n"
              f"FIF-Formel: IF = min(1, FOL / Free Float %)\n"
              f"Fallback: Industry → Sector (strengster) → Country Default → 1.0\n\n"
-             f"Betroffene Länder: IN, VN, SA, QA, AE, MY, KW, ID, KR, PH, TH\n"
+             f"Betroffene Länder: {_fol_iso_list}\n"
              f"Thailand: FOL greift nur bei 'SHARE only', NVDR-Modi umgehen FOL.\n\n"
              f"YAML Version: {fol_version}"
     )
@@ -1456,13 +1429,6 @@ df_raw_all = df_raw_all[df_raw_all["Classification"].notna()].copy()
 
 df_dm_full = df_raw_all[df_raw_all["Classification"] == "DM"].copy()
 df_em_full = df_raw_all[df_raw_all["Classification"] == "EM"].copy()
-
-# Apply post-filter (for Tab 2)
-def apply_post_filter(df):
-    mask = ((df["Classification"]=="DM") &
-            (df["3M ADTV Y2025"] >= new_adtv_dm) & (df["6M ADTV Y2025"] >= new_adtv_dm)) | \
-           ((df["Classification"]=="EM") &
-            (df["3M ADTV Y2025"] >= new_adtv_em) & (df["6M ADTV Y2025"] >= new_adtv_em))
 
 
 # ─── Header ─────────────────────────────────────────────────────────────────
@@ -1707,7 +1673,8 @@ with tab_overview:
         _fol_stocks = df_raw_all[_fol_mask].copy()
 
         if _fol_stocks.empty:
-            st.info("Keine Stocks aus FOL-Ländern (IN/VN/SA/QA/AE/MY/KW/ID/KR/PH/TH) im Universe.")
+            _fol_iso_msg = "/".join(sorted(FOL_COUNTRY_CODE_MAP.values()))
+            st.info(f"Keine Stocks aus FOL-Ländern ({_fol_iso_msg}) im Universe.")
         else:
             # Resolve FOL pro Stock (ohne Thailand-/China-Override — reine YAML-Diagnostik)
             _audit_rows = []
@@ -1781,8 +1748,6 @@ with tab_overview:
 """)
                     if _thai_caveat:
                         st.info("Hinweis: Thailand-Werte in der Tabelle berücksichtigen den aktuellen Thailand-Modus ('NVDR only' oder 'SHARE → NVDR' → IF=1.0 per Override).")
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1930,12 +1895,8 @@ with tab_gimi:
         st.error("Keine DM Stocks gefunden.")
 
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3: Europe Index
-# ══════════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_europe:
     st.markdown("## 🇪🇺 Europe Index")
