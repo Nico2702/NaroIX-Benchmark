@@ -181,6 +181,207 @@ def load_excel(file):
         st.error(f"Fehler beim Laden der Datei: {e}")
         return pd.DataFrame(), "Y2025"
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Master-File Loader (Multi-Period)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Dynamische Feld-Prefixe (alle Felder mit YYYY-MM-DD Suffix)
+MASTER_DYNAMIC_PREFIXES = [
+    "Total MCap",
+    "Free Float MCap",
+    "Float PCT",
+    "Free Float Percent",
+    "Closing Price",
+    "1M ADTV",
+    "3M ADTV",
+    "6M ADTV",
+    "12M ADTV",
+    "Listing Status",
+]
+
+# Pflicht-Statische Felder
+MASTER_STATIC_REQUIRED = [
+    "Symbol", "Name", "Listing", "Sec Type", "ISIN", "Entity ID", "NAICS",
+    "Exchange Ticker", "Trading Currency", "Exchange Name",
+    "Country of Incorp", "Country of Risk",
+    # Klassifikations-Felder — werden im Loader auf normalisierte Namen gemappt
+]
+
+
+@st.cache_data
+def load_master_excel(file, valid_selection_dates_iso):
+    """Load Master-File with multi-period dynamic columns.
+
+    Expected format:
+        - Static columns (Symbol, Name, ISIN, Sector, Industry, ...) — no date suffix
+        - Dynamic columns with YYYY-MM-DD suffix (e.g. "Total MCap 2024-02-21")
+        - All dates in dynamic columns must match an entry in Selection_Dates.xlsx
+
+    Args:
+        file: Uploaded Excel file
+        valid_selection_dates_iso: Set of ISO-format date strings from Selection_Dates.xlsx
+
+    Returns dict with:
+        - "static_df": DataFrame with static columns only
+        - "periods": {date_iso_str: DataFrame with dynamic columns for that date (re-named to Y2025 suffix)}
+        - "detected_dates": sorted list of date strings found in the file
+        - "extra_static_cols": list of static column names beyond the required/standard set
+        - "warnings": list of non-critical issues to display
+        - "error": error message (if loading failed) or None
+    """
+    import re as _re
+    warnings_list = []
+
+    try:
+        # Auto-detect header row
+        header_row = 0
+        for i in range(10):
+            _probe = pd.read_excel(file, header=i, nrows=1, dtype=str)
+            if "Symbol" in _probe.columns:
+                header_row = i
+                break
+
+        df = pd.read_excel(file, header=header_row, dtype=str)
+
+        if "Symbol" not in df.columns:
+            return {"error": "Master-File enthält keine 'Symbol'-Spalte."}
+
+        # Finde alle Spalten mit YYYY-MM-DD Suffix
+        date_pattern = _re.compile(r'^(.+?)\s+(\d{4}-\d{2}-\d{2})$')
+        dynamic_cols = {}    # {date_iso: {prefix: col_name}}
+        static_cols = []
+        unknown_prefixes = set()
+
+        for col in df.columns:
+            m = date_pattern.match(col.strip())
+            if m:
+                prefix, date_iso = m.group(1).strip(), m.group(2)
+                # Prüfe ob Prefix erlaubt ist
+                if prefix not in MASTER_DYNAMIC_PREFIXES:
+                    unknown_prefixes.add(prefix)
+                    continue
+                dynamic_cols.setdefault(date_iso, {})[prefix] = col
+            else:
+                static_cols.append(col)
+
+        if unknown_prefixes:
+            warnings_list.append(
+                f"Unbekannte dynamische Feld-Prefixe ignoriert: {sorted(unknown_prefixes)}"
+            )
+
+        if not dynamic_cols:
+            return {"error": "Keine dynamischen Spalten mit YYYY-MM-DD-Suffix gefunden. "
+                             "Erwartetes Format z.B.: 'Total MCap 2024-02-21'."}
+
+        # Validiere Dates gegen Selection_Dates.xlsx
+        detected_dates = sorted(dynamic_cols.keys())
+        invalid_dates = [d for d in detected_dates if d not in valid_selection_dates_iso]
+        if invalid_dates:
+            warnings_list.append(
+                f"{len(invalid_dates)} Date(s) im Master-File nicht in Selection_Dates.xlsx gefunden — werden ignoriert: "
+                f"{invalid_dates[:5]}{'...' if len(invalid_dates) > 5 else ''}"
+            )
+            for d in invalid_dates:
+                dynamic_cols.pop(d, None)
+            detected_dates = sorted(dynamic_cols.keys())
+
+        if not detected_dates:
+            return {"error": "Keine Selection Dates aus dem Master-File stimmen mit Selection_Dates.xlsx überein."}
+
+        # Prüfe pro Date: sind die Pflicht-Kernfelder da?
+        required_per_date = ["Total MCap", "Free Float MCap", "Closing Price"]
+        for d in detected_dates:
+            missing = [p for p in required_per_date if p not in dynamic_cols[d]]
+            if missing:
+                warnings_list.append(f"Selection Date {d}: fehlende Pflichtfelder {missing} — Stocks dieser Periode evtl. unvollständig")
+
+        # Baue static_df
+        static_df = df[static_cols].copy()
+
+        # Normalisiere Spalten-Namen auf den internen Standard (analog load_excel)
+        rename_static = {
+            "Country Name":  "Exchange Country Name",
+            "Sector":        "FactSet Econ Sector",
+            "Industry":      "FactSet Industry",
+            "Inudstry":      "FactSet Industry",  # Typo-Toleranz
+        }
+        static_df = static_df.rename(columns=rename_static)
+
+        if "Exchange Country Name" not in static_df.columns:
+            if "Country of Risk" in static_df.columns:
+                static_df["Exchange Country Name"] = static_df["Country of Risk"].fillna("")
+            else:
+                static_df["Exchange Country Name"] = ""
+
+        # Identifiziere extra statische Spalten (über die Standard-Felder hinaus)
+        standard_static = set(MASTER_STATIC_REQUIRED) | {
+            "Exchange Country Name", "FactSet Econ Sector", "FactSet Industry",
+            "Sec Type Inclusion", "SIC", "Perm ID", "MSCI Ansatz", "BBG Ansatz",
+            "Country HQ", "Region by Exchange", "Region by Primary Listing",
+        }
+        extra_static_cols = [c for c in static_df.columns if c not in standard_static]
+
+        # Baue periods Dict: für jedes Date ein DataFrame mit dynamischen Spalten,
+        # renamed auf internen Y2025-Standard
+        periods = {}
+        for d, prefix_map in dynamic_cols.items():
+            period_df = pd.DataFrame(index=df.index)
+            rename_map_dynamic = {
+                "Total MCap":       "Total MCap Y2025",
+                "Free Float MCap":  "Free Float MCap Y2025",
+                "Float PCT":        "Free Float Percent",
+                "Free Float Percent": "Free Float Percent",
+                "Closing Price":    "Closing Price",
+                "1M ADTV":          "1M ADTV Y2025",
+                "3M ADTV":          "3M ADTV Y2025",
+                "6M ADTV":          "6M ADTV Y2025",
+                "12M ADTV":         "12M ADTV Y2025",
+                "Listing Status":   "Listing Status",
+            }
+            for prefix, col_name in prefix_map.items():
+                target = rename_map_dynamic.get(prefix)
+                if target:
+                    period_df[target] = df[col_name]
+            periods[d] = period_df
+
+        # Validierung: Duplicate ISINs
+        if "ISIN" in static_df.columns:
+            n_isin_dup = static_df["ISIN"].dropna().duplicated().sum()
+            if n_isin_dup > 0:
+                warnings_list.append(f"{n_isin_dup} doppelte ISIN-Einträge im Master-File.")
+
+        return {
+            "static_df": static_df,
+            "periods": periods,
+            "detected_dates": detected_dates,
+            "extra_static_cols": extra_static_cols,
+            "warnings": warnings_list,
+            "error": None,
+        }
+
+    except Exception as e:
+        return {"error": f"Fehler beim Laden des Master-Files: {e}"}
+
+
+def build_snapshot_from_master(master_data, selection_date_iso):
+    """Kombiniert static_df + dynamische Spalten für ein bestimmtes Selection Date
+    zu einem DataFrame, der aussieht wie ein normaler FactSet-Export (Single-Snapshot).
+
+    Returns: DataFrame mit allen Spalten (static + dynamic normalisiert auf Y2025)
+    """
+    if selection_date_iso not in master_data["periods"]:
+        raise ValueError(f"Selection Date {selection_date_iso} nicht im Master-File vorhanden.")
+
+    static_df = master_data["static_df"]
+    period_df = master_data["periods"][selection_date_iso]
+
+    # Concat auf Spalten-Ebene (beide haben gleichen Index)
+    combined = pd.concat([static_df.reset_index(drop=True),
+                          period_df.reset_index(drop=True)], axis=1)
+    return combined
+
+
 @st.cache_data
 def load_historical_data():
     """Load Historical_Classification, Selection_Dates, and China_Inclusion_Factor.
@@ -1180,16 +1381,78 @@ fol_sector_fb = build_sector_fallback_table(fol_matrix)
 
 with st.sidebar:
     st.markdown("### 📁 Datenquelle")
-    uploaded = st.file_uploader("FactSet Export (.xlsx)", type=["xlsx","xls"])
+
+    data_mode = st.radio(
+        "Input-Modus:",
+        ["Single Snapshot", "Master File (Multi-Period)"],
+        index=0,
+        key="data_mode",
+        horizontal=False,
+        help="Single Snapshot: Ein FactSet-Export pro Selection Date (bisheriger Modus).\n\n"
+             "Master File: Ein File mit allen Perioden; dynamische Spalten haben YYYY-MM-DD-Suffix "
+             "(z.B. 'Total MCap 2024-02-21'). Aktiviert Buffer-Rule-Verarbeitung über mehrere Perioden."
+    )
 
     from datetime import date as _date
-    snapshot_date = st.date_input(
-        "Snapshot Datum",
-        value=_date(2025, 12, 31),
-        format="DD.MM.YYYY",
-        key="snapshot_date",
-        help="Datum des FactSet Exports — wird für Labels, Info-Boxen und Excel-Dateinamen verwendet."
-    )
+
+    # Für Master-Modus brauchen wir die ISO-Strings der Selection Dates zur Validierung
+    _selection_dates_iso_set = {d.strftime("%Y-%m-%d") for d in selection_dates}
+
+    master_data = None  # wird im Master-Modus befüllt
+    uploaded = None
+
+    if data_mode == "Single Snapshot":
+        uploaded = st.file_uploader("FactSet Export (.xlsx)", type=["xlsx","xls"],
+                                     key="uploaded_single")
+        snapshot_date = st.date_input(
+            "Snapshot Datum",
+            value=_date(2025, 12, 31),
+            format="DD.MM.YYYY",
+            key="snapshot_date",
+            help="Datum des FactSet Exports — wird für Labels, Info-Boxen und Excel-Dateinamen verwendet."
+        )
+    else:
+        # Master-File-Modus
+        uploaded_master = st.file_uploader("Master File (.xlsx)", type=["xlsx","xls"],
+                                            key="uploaded_master",
+                                            help="Master-File mit allen Perioden. Spalten-Format: 'Feldname YYYY-MM-DD'.")
+        if uploaded_master is not None:
+            master_data = load_master_excel(uploaded_master, _selection_dates_iso_set)
+            if master_data.get("error"):
+                st.error(f"❌ {master_data['error']}")
+                st.stop()
+
+            # Warnings anzeigen
+            for w in master_data.get("warnings", []):
+                st.warning(f"⚠️ {w}")
+
+            _detected = master_data["detected_dates"]
+            st.success(f"✅ Master-File geladen: **{len(_detected)}** Selection Dates erkannt "
+                       f"({_detected[0]} bis {_detected[-1]})")
+
+            with st.expander("🔍 Details", expanded=False):
+                st.write(f"**Detected Selection Dates ({len(_detected)}):**")
+                st.code("\n".join(_detected), language="text")
+                _extra = master_data.get("extra_static_cols", [])
+                if _extra:
+                    st.write(f"**Zusätzliche statische Spalten ({len(_extra)}):**")
+                    st.code(", ".join(_extra), language="text")
+
+            # Snapshot Date = default letztes Date aus dem Master
+            _default_iso = _detected[-1]
+            _default_date = _date.fromisoformat(_default_iso)
+            snapshot_date = st.date_input(
+                "Aktive Period (für Tab-Anzeige)",
+                value=_default_date,
+                format="DD.MM.YYYY",
+                key="snapshot_date_master",
+                help="Welches Selection Date aus dem Master-File soll in Tab 1/2/3 angezeigt werden? "
+                     "(Multi-Period-Backtest-Lauf kommt in Phase 2c.)"
+            )
+        else:
+            st.info("⬆️ Bitte Master-File hochladen.")
+            st.stop()
+
     _snapshot_label = snapshot_date.strftime("%d.%m.%Y")
 
     # Aktives Selection Date ermitteln (letztes Selection Date ≤ snapshot_date)
@@ -1366,11 +1629,26 @@ with st.sidebar:
 
 # ─── Load Data ─────────────────────────────────────────────────────────────────
 
-if uploaded:
-    df_raw, _year_suffix = load_excel(uploaded)
+if data_mode == "Single Snapshot":
+    if uploaded:
+        df_raw, _year_suffix = load_excel(uploaded)
+    else:
+        st.info("👆 Bitte eine Excel-Datei hochladen um zu starten.")
+        st.stop()
 else:
-    st.info("👆 Bitte eine Excel-Datei hochladen um zu starten.")
-    st.stop()
+    # Master-File-Modus: baue Snapshot für das aktive Selection Date
+    _active_iso = _active_selection_date.strftime("%Y-%m-%d")
+    if _active_iso not in master_data["periods"]:
+        # Fallback: nimm das nächste verfügbare Date ≤ active
+        _avail = [d for d in master_data["detected_dates"] if d <= _active_iso]
+        if not _avail:
+            st.error(f"❌ Keine Daten im Master-File für Selection Date ≤ {_active_iso} verfügbar.")
+            st.stop()
+        _active_iso = _avail[-1]
+        st.warning(f"⚠️ Für {_active_selection_date.strftime('%d.%m.%Y')} keine Daten im Master-File. "
+                   f"Nutze stattdessen **{_active_iso}**.")
+    df_raw = build_snapshot_from_master(master_data, _active_iso)
+    _year_suffix = "Y2025"  # Master-File normalisiert intern auf Y2025
 
 df_raw_original = df_raw.copy()
 
