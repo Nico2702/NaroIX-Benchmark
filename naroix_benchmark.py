@@ -1082,8 +1082,13 @@ def render_new_tab(tab_name, df_included, large_pct, mid_pct,
                    diag_rows=None, diag_caption=None,
                    adtv_dm=0, adtv_em=0, atvr_dm=0, atvr_em=0,
                    small_pct=99, min_ff=0.15, if_mode="Selektion",
-                   df_universe=None):
-    """Render standard visuals for a new index tab."""
+                   df_universe=None, buffer_breakdown=None):
+    """Render standard visuals for a new index tab.
+
+    buffer_breakdown: optional dict with keys n_total_final, n_incumbents_total, n_kept_total,
+                      n_kept_via_entry, n_saved_by_buffer, n_lost, n_new_entries.
+                      Wenn gesetzt, wird ein Buffer-Audit-Block angezeigt.
+    """
 
     df_dm = df_included[df_included["Classification"]=="DM"].copy()
     df_em = df_included[df_included["Classification"]=="EM"].copy()
@@ -1142,6 +1147,60 @@ Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else 
             st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
             if diag_caption:
                 st.caption(diag_caption)
+
+    # ── Buffer Rules Audit ──────────────────────────────────────────────────
+    if buffer_breakdown is not None:
+        st.markdown("---")
+        st.markdown("### 🛡️ Buffer Rules — Aufschlüsselung")
+        bb = buffer_breakdown
+        _ba, _bb, _bc = st.columns(3)
+        with _ba:
+            st.metric("Aktien insgesamt im Index", f"{bb['n_total_final']:,}")
+        with _bb:
+            st.metric("Davon waren bereits im Index", f"{bb['n_kept_total']:,}",
+                      f"{bb['n_kept_total']/max(bb['n_incumbents_total'],1)*100:.1f}% der Incumbents")
+        with _bc:
+            st.metric("Neu im Index (durch Entry)", f"{bb['n_new_entries']:,}",
+                      f"{bb['n_new_entries']/max(bb['n_total_final'],1)*100:.1f}% des Index")
+
+        _bd, _be = st.columns(2)
+        with _bd:
+            st.metric("Incumbents — durch Buffer gerettet", f"{bb['n_saved_by_buffer']:,}",
+                      help="Diese Aktien hätten die Entry-Schwellen NICHT geschafft, sind aber dank "
+                           "weicherer Maintenance-Schwellen drin geblieben.")
+        with _be:
+            st.metric("Incumbents — aus Index gefallen", f"{bb['n_lost']:,}",
+                      f"-{bb['n_lost']/max(bb['n_incumbents_total'],1)*100:.1f}% Drop-Out",
+                      delta_color="inverse",
+                      help="Diese Aktien waren in der vorherigen Periode im Index, haben aber selbst "
+                           "die weicheren Maintenance-Schwellen nicht geschafft.")
+
+        _df_bb = pd.DataFrame([
+            {"Kategorie": "✅ Aktien insgesamt im Index", "Anzahl": bb["n_total_final"], "Anteil": "100.0%"},
+            {"Kategorie": "  └─ davon Incumbents (waren letzte Periode drin)",
+             "Anzahl": bb["n_kept_total"],
+             "Anteil": f"{bb['n_kept_total']/max(bb['n_total_final'],1)*100:.1f}%"},
+            {"Kategorie": "      ├─ via Entry-Regeln gehalten (auch ohne Buffer drin)",
+             "Anzahl": bb["n_kept_via_entry"],
+             "Anteil": f"{bb['n_kept_via_entry']/max(bb['n_total_final'],1)*100:.1f}%"},
+            {"Kategorie": "      └─ via Buffer-Maintenance gerettet",
+             "Anzahl": bb["n_saved_by_buffer"],
+             "Anteil": f"{bb['n_saved_by_buffer']/max(bb['n_total_final'],1)*100:.1f}%"},
+            {"Kategorie": "  └─ Neueinsteiger (Entry-Regeln neu erfüllt)",
+             "Anzahl": bb["n_new_entries"],
+             "Anteil": f"{bb['n_new_entries']/max(bb['n_total_final'],1)*100:.1f}%"},
+            {"Kategorie": "❌ Aus Index gefallen (waren letzte Periode drin)",
+             "Anzahl": bb["n_lost"],
+             "Anteil": f"{bb['n_lost']/max(bb['n_incumbents_total'],1)*100:.1f}% der Incumbents"},
+            {"Kategorie": "📊 Total Incumbents (Vorperiode)",
+             "Anzahl": bb["n_incumbents_total"],
+             "Anteil": "100.0%"},
+        ])
+        st.dataframe(_df_bb, use_container_width=True, hide_index=True)
+        st.caption(
+            f"Buffer-Saldo: **+{bb['n_new_entries']:,}** Neue, **-{bb['n_lost']:,}** Verlorene, "
+            f"Netto-Veränderung Index-Größe: **{bb['n_total_final'] - bb['n_incumbents_total']:+,}** Stocks."
+        )
 
     # ── 5 Index Products ─────────────────────────────────────────────────────
     st.markdown("---")
@@ -2346,16 +2405,46 @@ with tab_gimi:
 
         _gm_all = df_raw_all[df_raw_all["Classification"].notna()]
 
-        # Buffer-Diagnostik: wie viele Incumbents haben's ins finale Index geschafft, wie viele neue Entries?
-        _buffer_info = ""
+        # Buffer-Diagnostik: detailliertes Breakdown für die UI-Tabelle
+        _buffer_breakdown = None
         if apply_buffer and len(incumbents_isin_set) > 0 and len(_gm_complete) > 0:
             _final_isin = _gm_complete["ISIN"].fillna("").astype(str).str.strip().str.upper()
-            _n_total_final   = len(_gm_complete)
-            _n_incumbents_kept = _final_isin.isin(incumbents_isin_set).sum()
-            _n_new_entries     = _n_total_final - _n_incumbents_kept
-            _n_incumbents_lost = len(incumbents_isin_set) - _n_incumbents_kept
-            _buffer_info = (f" | 🛡️ Buffer: {_n_incumbents_kept:,} Incumbents gehalten, "
-                            f"{_n_new_entries:,} Neue hinzu, {_n_incumbents_lost:,} Incumbents verloren")
+            _final_isin_set = set(_final_isin)
+
+            # Trenne Final-Set in Incumbents-die-drinblieben und Newcomer
+            _kept_incumbents = _final_isin_set & incumbents_isin_set
+            _new_entries     = _final_isin_set - incumbents_isin_set
+            _lost_incumbents = incumbents_isin_set - _final_isin_set
+
+            # Wieviele Incumbents wurden konkret durch Buffer gerettet?
+            # Run pseudo-Pipeline ohne Buffer um Vergleich zu haben
+            # (Vereinfachung: Stocks deren ISIN im Final-Set ist UND ISIN in incumbents ist
+            #  UND die unter Entry-Schwellen NICHT durchgegangen wären)
+            # → Approximation: zähle Incumbents die nur dank Maintenance-FF/ATVR in EUMSS+Liq sind.
+            # Pragmatisch: zählen wir alle Incumbents-die-drinblieben mit FF<entry_min_ff oder ADTV<entry_adtv
+            _kept_incumbents_df = _gm_complete[_final_isin.isin(_kept_incumbents)].copy() \
+                if len(_kept_incumbents) > 0 else _gm_complete.iloc[:0].copy()
+            if len(_kept_incumbents_df) > 0:
+                _ff_pct = pd.to_numeric(_kept_incumbents_df["Free Float Percent"], errors="coerce").fillna(0)
+                _adtv3 = pd.to_numeric(_kept_incumbents_df["3M ADTV Y2025"], errors="coerce").fillna(0)
+                _cls = _kept_incumbents_df["Classification"].fillna("")
+                _fail_entry_ff = _ff_pct < min_ff_pct
+                _fail_entry_adtv = ((_cls == "DM") & (_adtv3 < new_adtv_dm)) | ((_cls == "EM") & (_adtv3 < new_adtv_em))
+                _saved_by_buffer = int((_fail_entry_ff | _fail_entry_adtv).sum())
+            else:
+                _saved_by_buffer = 0
+
+            _kept_via_entry = len(_kept_incumbents) - _saved_by_buffer
+
+            _buffer_breakdown = {
+                "n_total_final":      len(_gm_complete),
+                "n_incumbents_total": len(incumbents_isin_set),
+                "n_kept_total":       len(_kept_incumbents),
+                "n_kept_via_entry":   max(0, _kept_via_entry),
+                "n_saved_by_buffer":  _saved_by_buffer,
+                "n_lost":             len(_lost_incumbents),
+                "n_new_entries":      len(_new_entries),
+            }
 
         _gm_diag = [
             {"Schritt":"0 — Universe (Primary + Secondary)","DM":(_gm_all["Classification"]=="DM").sum(),"EM":(_gm_all["Classification"]=="EM").sum(),"Total":len(_gm_all),"Δ":"—"},
@@ -2366,7 +2455,7 @@ with tab_gimi:
             {"Schritt":"5 — Secondary Listings re-added (+)","DM":(_gm_final["Classification"]=="DM").sum(),"EM":(_gm_final["Classification"]=="EM").sum(),"Total":len(_gm_final),"Δ":f"+{len(_gm_final)-len(_gm_std):,}"},
             {"Schritt":f"6 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
         ]
-        _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}{_buffer_info}"
+        _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}"
         _gm_eumss_extra = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}%"
 
         _gm_params = {"Methodik":"GIMI Method","Listing":"Primary only + Secondary Listings (re-added)",
@@ -2404,7 +2493,7 @@ with tab_gimi:
             diag_caption=_gm_diag_caption,
             adtv_dm=new_adtv_dm, adtv_em=new_adtv_em, atvr_dm=new_atvr_dm, atvr_em=new_atvr_em,
             small_pct=small_thr, min_ff=min_ff_pct, if_mode=if_selection_mode,
-            df_universe=df_raw_all)
+            df_universe=df_raw_all, buffer_breakdown=_buffer_breakdown)
     else:
         st.error("Keine DM Stocks gefunden.")
 
