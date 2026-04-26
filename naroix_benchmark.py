@@ -2270,28 +2270,30 @@ with tab_gimi:
         )
 
         # Coverage per country → Standard Index — buffer-aware Coverage-Schwelle
-        # Neue: mid_thr (85%); Incumbents: buffer_coverage (90%)
-        # Sort: Total MCap (MSCI-konform), Cumulative: if_cum_col (Adj_FF_MCap or FF MCap)
+        # MSCI-Straddle-Semantik: Ein Stock ist drin wenn die Cumulative Coverage VOR ihm
+        # (also Summe bis Stock-1) unter seiner eigenen Schwelle liegt. Dadurch wird der
+        # Stock der die Schwelle straddled mit inkludiert.
+        # Ohne Buffer: Schwelle = mid_thr (85%) für alle Stocks.
+        # Mit Buffer:  Schwelle = buffer_coverage (90%) für Incumbents, mid_thr (85%) sonst.
         _gm_results = []
         for _ctry, _grp in _gm_liq.groupby("Mapping Country"):
             _grp = _grp.sort_values("Total MCap Y2025", ascending=False).copy()
             _tot = _grp[if_cum_col].sum()
             if _tot == 0: continue
-            _grp["_c"] = _grp[if_cum_col].cumsum() / _tot * 100
+
+            # Cumulative VOR dem Stock (Cumsum shifted by 1)
+            _grp["_c_before"] = _grp[if_cum_col].cumsum().shift(1).fillna(0) / _tot * 100
+            _grp["_c"] = _grp[if_cum_col].cumsum() / _tot * 100  # für spätere Diag-Anzeige behalten
 
             if apply_buffer and len(incumbents_isin_set) > 0:
-                # Dynamische Coverage-Entscheidung pro Stock:
-                # Ein Stock gilt als "im Cut" wenn seine _c ≤ mid_thr ist (Entry) ODER
-                # (er ist Incumbent AND seine _c ≤ buffer_coverage).
                 _grp_isin = _grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
                 _grp_is_inc = _grp_isin.isin(incumbents_isin_set)
-                _in_cut = (_grp["_c"] <= mid_thr) | (_grp_is_inc & (_grp["_c"] <= buffer_coverage))
-                _inc = _grp[_in_cut].copy()
+                _thr_per_stock = np.where(_grp_is_inc, buffer_coverage, mid_thr)
             else:
-                # Klassischer Cut bei mid_thr
-                _cut = _grp[_grp["_c"] >= mid_thr].index
-                _inc = _grp.loc[:_cut[0]] if len(_cut)>0 else _grp
-                _inc = _inc.copy()
+                _thr_per_stock = np.full(len(_grp), mid_thr)
+
+            _in_cut = _grp["_c_before"].values < _thr_per_stock
+            _inc = _grp[_in_cut].copy()
 
             _tot_inc = _inc[if_cum_col].sum()
             _inc["_cp2"] = _inc[if_cum_col].cumsum() / _tot_inc * 100 if _tot_inc>0 else 0
