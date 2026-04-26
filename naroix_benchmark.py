@@ -1076,6 +1076,194 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
     return pd.concat([df_selected, df_sec], ignore_index=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# run_selection_pipeline: Komplette Pipeline gekapselt für Single + Multi-Period
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_selection_pipeline(
+    df_raw_in, country_cls, china_if, fol_year,
+    # Universe & Exclusions
+    thailand_mode, max_price, exclude_hk_cny, exclude_country_risk_na,
+    exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+    # Size & Liquidity
+    large_thr, mid_thr, small_thr, min_ff_pct, eumss_ff_ratio,
+    adtv_dm, adtv_em, atvr_dm, atvr_em,
+    # IF / FOL
+    fol_matrix, fol_sector_fb, fol_enabled,
+    if_cum_col, atvr_mcap_col,
+    # Buffer
+    incumbents_isin=None, apply_buffer=False,
+    buffer_min_ff=None, buffer_coverage=90,
+    buffer_adtv_dm=None, buffer_adtv_em=None,
+    buffer_atvr_dm=None, buffer_atvr_em=None,
+    # Ineligible
+    ineligible_df=None, apply_ineligible=False, selection_date=None,
+):
+    """Run the complete selection pipeline for one snapshot.
+
+    Returns dict with:
+        - 'gm_complete': final DataFrame with all segments and Index_Weight
+        - 'gm_index_only': Standard Index (Large+Mid Cap only)
+        - 'gm_universe':   Primary-only universe after FOL
+        - 'eumss_full', 'eumss_ff': EUMSS thresholds
+        - 'buffer_breakdown': dict with incumbent/newcomer counts (None if buffer inactive)
+        - 'incumbents_isin_used': effective incumbents set used (for state propagation)
+    """
+    if incumbents_isin is None:
+        incumbents_isin = set()
+
+    # Buffer fallback: Maintenance = Entry if not set
+    if buffer_min_ff is None:    buffer_min_ff = min_ff_pct
+    if buffer_adtv_dm is None:   buffer_adtv_dm = adtv_dm
+    if buffer_adtv_em is None:   buffer_adtv_em = adtv_em
+    if buffer_atvr_dm is None:   buffer_atvr_dm = atvr_dm
+    if buffer_atvr_em is None:   buffer_atvr_em = atvr_em
+
+    # 1) Build universe (incl. FOL)
+    gm_u = build_new_universe(
+        df_raw_in, country_cls, thailand_mode, max_price,
+        exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds,
+        exclude_euro_mtf, exclude_etf_sicav,
+        china_if,
+        atvr_mcap_col=atvr_mcap_col,
+        excl_delisted=True,
+        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
+        fol_year=fol_year, fol_enabled=fol_enabled,
+    )
+
+    # 2) EUMSS calibration on DM (top small_thr% coverage point)
+    dm_only = gm_u[gm_u["Classification"] == "DM"].copy()
+    dm_only = dm_only.sort_values("Total MCap Y2025", ascending=False)
+    dm_total_ff = dm_only["Free Float MCap Y2025"].sum()
+    if dm_total_ff > 0:
+        dm_only["_cum_ff_pct"] = dm_only["Free Float MCap Y2025"].cumsum() / dm_total_ff * 100
+        eumss_pos = dm_only[dm_only["_cum_ff_pct"] >= small_thr].index
+        eumss_full = float(dm_only.loc[eumss_pos[0], "Total MCap Y2025"]) if len(eumss_pos) > 0 else 0
+    else:
+        eumss_full = 0
+    eumss_ff = eumss_full * eumss_ff_ratio
+
+    # 3) EUMSS filter — buffer-aware Min FF%
+    gm_isin = gm_u["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    gm_is_inc = gm_isin.isin(incumbents_isin) if apply_buffer else pd.Series(False, index=gm_u.index)
+    gm_min_ff_thr = np.where(gm_is_inc, buffer_min_ff, min_ff_pct)
+    eumss_mask = ((gm_u["Total MCap Y2025"] >= eumss_full) &
+                  (gm_u["Free Float MCap Y2025"] >= eumss_ff) &
+                  (gm_u["Free Float Percent"] >= gm_min_ff_thr))
+    gm_eumss = gm_u[eumss_mask].copy()
+
+    # 4) Liquidity filter — buffer-aware
+    gm_liq = apply_liquidity_new(
+        gm_eumss, adtv_dm, adtv_em, atvr_dm, atvr_em,
+        incumbents_isin=incumbents_isin if apply_buffer else None,
+        m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
+        m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
+    )
+
+    # 5) Coverage waterfall per country — buffer-aware
+    gm_results = []
+    for ctry, grp in gm_liq.groupby("Mapping Country"):
+        grp = grp.sort_values("Total MCap Y2025", ascending=False).copy()
+        tot = grp[if_cum_col].sum()
+        if tot == 0: continue
+        grp["_c_before"] = grp[if_cum_col].cumsum().shift(1).fillna(0) / tot * 100
+        if apply_buffer and len(incumbents_isin) > 0:
+            grp_isin = grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            grp_is_inc = grp_isin.isin(incumbents_isin)
+            thr_per_stock = np.where(grp_is_inc, buffer_coverage, mid_thr)
+        else:
+            thr_per_stock = np.full(len(grp), mid_thr)
+        in_cut = grp["_c_before"].values < thr_per_stock
+        inc = grp[in_cut].copy()
+        tot_inc = inc[if_cum_col].sum()
+        inc["_cp2"] = inc[if_cum_col].cumsum() / tot_inc * 100 if tot_inc > 0 else 0
+        inc["Segment_New"] = np.where(inc["_cp2"] <= large_thr, "Large Cap", "Mid Cap")
+        gm_results.append(inc)
+    gm_std = pd.concat(gm_results, ignore_index=True) if gm_results else pd.DataFrame(columns=gm_liq.columns.tolist() + ["Segment_New"])
+
+    # Small / Above85 / Micro
+    gm_std_symbols = set(gm_std["Symbol"].dropna().unique())
+    gm_liq_symbols = set(gm_liq["Symbol"].dropna().unique())
+    gm_eumss_symbols = set(gm_eumss["Symbol"].dropna().unique())
+    gm_small = gm_eumss[~gm_eumss["Symbol"].isin(gm_liq_symbols)].copy()
+    gm_small["Segment_New"] = "Small Cap"
+    gm_above85 = gm_liq[~gm_liq["Symbol"].isin(gm_std_symbols)].copy()
+    gm_above85["Segment_New"] = "Small Cap"
+    gm_micro = gm_u[~gm_u["Symbol"].isin(gm_eumss_symbols)].copy()
+    gm_micro["Segment_New"] = "Micro Cap"
+
+    # 6) Add secondary listings — buffer-aware
+    gm_final = add_secondary_listings(
+        gm_std, df_raw_in, adtv_dm, adtv_em, atvr_dm, atvr_em,
+        max_price, thailand_mode, china_if,
+        min_ff_pct=min_ff_pct, atvr_mcap_col=atvr_mcap_col, excl_hk_cny=exclude_hk_cny,
+        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=fol_year,
+        fol_enabled=fol_enabled,
+        incumbents_isin=incumbents_isin if apply_buffer else None,
+        m_min_ff_pct=buffer_min_ff, m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
+        m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
+    )
+
+    gm_complete = pd.concat([gm_final, gm_small, gm_above85, gm_micro], ignore_index=True)
+    gm_complete = gm_complete.drop_duplicates(subset=["Symbol"]).copy()
+
+    # 7) Ineligible filter
+    gm_ie_removed = gm_complete.iloc[0:0].copy()
+    if apply_ineligible and ineligible_df is not None and not ineligible_df.empty and selection_date is not None:
+        gm_complete, gm_ie_removed, _ = apply_ineligible_filter(gm_complete, ineligible_df, selection_date)
+
+    # 8) Index weights (Adj_FF_MCap basis)
+    gm_tot_adj = gm_complete["Adj_FF_MCap"].sum()
+    gm_complete["Index_Weight"] = gm_complete["Adj_FF_MCap"] / gm_tot_adj * 100 if gm_tot_adj > 0 else 0
+
+    # Standard Index = Large + Mid only
+    gm_index_only = gm_complete[gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
+
+    # Buffer breakdown
+    buffer_breakdown = None
+    if apply_buffer and len(incumbents_isin) > 0 and len(gm_index_only) > 0:
+        final_isin = gm_index_only["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        final_isin_set = set(final_isin)
+        kept = final_isin_set & incumbents_isin
+        new_entries = final_isin_set - incumbents_isin
+        lost = incumbents_isin - final_isin_set
+
+        kept_df = gm_index_only[final_isin.isin(kept)].copy() if len(kept) > 0 else gm_index_only.iloc[:0].copy()
+        if len(kept_df) > 0:
+            ff_pct = pd.to_numeric(kept_df["Free Float Percent"], errors="coerce").fillna(0)
+            adtv3 = pd.to_numeric(kept_df["3M ADTV Y2025"], errors="coerce").fillna(0)
+            cls = kept_df["Classification"].fillna("")
+            fail_ff = ff_pct < min_ff_pct
+            fail_adtv = ((cls == "DM") & (adtv3 < adtv_dm)) | ((cls == "EM") & (adtv3 < adtv_em))
+            saved = int((fail_ff | fail_adtv).sum())
+        else:
+            saved = 0
+
+        buffer_breakdown = {
+            "n_total_final":      len(gm_index_only),
+            "n_incumbents_total": len(incumbents_isin),
+            "n_kept_total":       len(kept),
+            "n_kept_via_entry":   max(0, len(kept) - saved),
+            "n_saved_by_buffer":  saved,
+            "n_lost":             len(lost),
+            "n_new_entries":      len(new_entries),
+        }
+
+    return {
+        "gm_complete":      gm_complete,
+        "gm_index_only":    gm_index_only,
+        "gm_universe":      gm_u,
+        "gm_eumss":         gm_eumss,
+        "gm_liq":           gm_liq,
+        "gm_std":           gm_std,
+        "gm_final":         gm_final,
+        "gm_ie_removed":    gm_ie_removed,
+        "eumss_full":       eumss_full,
+        "eumss_ff":         eumss_ff,
+        "buffer_breakdown": buffer_breakdown,
+    }
+
+
 def render_new_tab(tab_name, df_included, large_pct, mid_pct,
                    china_if,
                    params_dict,
@@ -1975,10 +2163,11 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab_overview, tab_gimi, tab_europe = st.tabs([
+tab_overview, tab_gimi, tab_europe, tab_multi = st.tabs([
     "🌍 Universe Overview",
     "⚡ GIMI Method",
     "🇪🇺 Europe Index",
+    "🔁 Multi-Period Run",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2593,3 +2782,229 @@ with tab_europe:
 
         except NameError:
             st.warning("⚠️ Bitte zuerst Tab '⚡ GIMI Method' aufrufen damit der World Index berechnet wird.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4: Multi-Period Run
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_multi:
+    st.markdown("## 🔁 Multi-Period Run")
+
+    if data_mode != "Master File (Multi-Period)":
+        st.info("ℹ️ Dieser Tab erfordert den **Master File (Multi-Period)** Modus. "
+                "Bitte oben in der Sidebar umschalten und ein Master-File hochladen.")
+    elif master_data is None:
+        st.warning("⚠️ Bitte zuerst ein Master-File in der Sidebar hochladen.")
+    else:
+        _detected_dates = master_data["detected_dates"]
+        st.caption(f"Master-File: **{len(_detected_dates)}** Selection Dates erkannt "
+                   f"({_detected_dates[0]} bis {_detected_dates[-1]})")
+
+        # Range-Picker
+        _mr1, _mr2 = st.columns(2)
+        with _mr1:
+            start_iso = st.selectbox("Start-Periode (Seed)",
+                                      options=_detected_dates,
+                                      index=0,
+                                      key="multi_start",
+                                      help="Erste Periode des Multi-Period-Laufs. "
+                                           "Hier gibt es noch keine Incumbents (Seed-Period) — "
+                                           "alle Stocks durchlaufen Entry-Schwellen.")
+        with _mr2:
+            _end_default_idx = len(_detected_dates) - 1
+            end_iso = st.selectbox("End-Periode",
+                                    options=_detected_dates,
+                                    index=_end_default_idx,
+                                    key="multi_end",
+                                    help="Letzte Periode des Multi-Period-Laufs.")
+
+        # Validate range
+        _periods_to_run = [d for d in _detected_dates if start_iso <= d <= end_iso]
+        if not _periods_to_run:
+            st.error("❌ Ungültiger Date-Range.")
+        else:
+            st.caption(f"📅 Geplante Periods im Lauf: **{len(_periods_to_run)}** "
+                       f"({_periods_to_run[0]} → {_periods_to_run[-1]})")
+
+            # Index-Selektion: welche Indizes sollen berechnet werden?
+            _idx_options = ["NaroIX World", "NaroIX EM", "NaroIX ACWI",
+                            "NaroIX World IMI", "NaroIX ACWI IMI", "NaroIX Europe"]
+            indices_to_run = st.multiselect(
+                "Welche Indizes berechnen?",
+                options=_idx_options,
+                default=["NaroIX ACWI"],
+                key="multi_indices",
+                help="Pro ausgewähltem Index läuft die Pipeline einmal pro Period mit eigenem Incumbents-State."
+            )
+
+            run_btn = st.button("▶️ Multi-Period Run starten", type="primary", key="multi_run_btn",
+                                 disabled=(len(indices_to_run) == 0))
+
+            if run_btn:
+                # State pro Index
+                results_per_index = {idx: {} for idx in indices_to_run}  # {idx_name: {sd_iso: df_constituents}}
+                incumbents_per_index = {idx: set() for idx in indices_to_run}  # state carrier
+                summary_rows = []
+
+                progress = st.progress(0, text="Starte Multi-Period-Lauf...")
+
+                _total_steps = len(_periods_to_run) * len(indices_to_run)
+                _step_done = 0
+
+                for sd_iso in _periods_to_run:
+                    sd_dt = pd.Timestamp(sd_iso).date()
+                    # Klassifikation für dieses Date
+                    _country_cls = get_classification_dict(hc_df, sd_dt)
+                    _china_if_period = float(china_if_map.get(sd_dt, 0.20))
+
+                    # Snapshot bauen
+                    df_snapshot = build_snapshot_from_master(master_data, sd_iso)
+
+                    for idx_name in indices_to_run:
+                        progress.progress(
+                            _step_done / max(_total_steps, 1),
+                            text=f"Period {sd_iso} — Index {idx_name} ({_step_done+1}/{_total_steps})"
+                        )
+
+                        # Incumbents von vorheriger Period
+                        prev_inc = incumbents_per_index[idx_name]
+                        is_seed = (len(prev_inc) == 0)
+
+                        # Pipeline-Lauf
+                        result = run_selection_pipeline(
+                            df_snapshot.copy(), _country_cls, _china_if_period, sd_dt.year,
+                            thailand_sec_type, max_closing_price,
+                            exclude_hk_cny, exclude_country_risk_na,
+                            exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                            large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
+                            new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+                            fol_matrix, fol_sector_fb, apply_fol,
+                            if_cum_col, atvr_mcap_col,
+                            incumbents_isin=prev_inc,
+                            apply_buffer=apply_buffer and not is_seed,
+                            buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
+                            buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
+                            buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
+                            ineligible_df=ineligible_df,
+                            apply_ineligible=apply_ineligible if 'apply_ineligible' in dir() else False,
+                            selection_date=sd_dt,
+                        )
+
+                        # Filtere auf Index-Scope
+                        idx_only = result["gm_index_only"]
+                        if idx_name == "NaroIX World":
+                            constituents = idx_only[idx_only["Classification"] == "DM"].copy()
+                        elif idx_name == "NaroIX EM":
+                            constituents = idx_only[idx_only["Classification"] == "EM"].copy()
+                        elif idx_name == "NaroIX ACWI":
+                            constituents = idx_only.copy()
+                        elif idx_name == "NaroIX World IMI":
+                            constituents = result["gm_complete"][
+                                (result["gm_complete"]["Classification"] == "DM") &
+                                (result["gm_complete"]["Segment_New"].isin(["Large Cap","Mid Cap","Small Cap"]))
+                            ].copy()
+                        elif idx_name == "NaroIX ACWI IMI":
+                            constituents = result["gm_complete"][
+                                result["gm_complete"]["Segment_New"].isin(["Large Cap","Mid Cap","Small Cap"])
+                            ].copy()
+                        elif idx_name == "NaroIX Europe":
+                            _eu_mask = (
+                                (idx_only["Classification"] == "DM") &
+                                (idx_only["Mapping Country"].fillna("").str.upper().isin(EUROPE_COUNTRIES))
+                            )
+                            constituents = idx_only[_eu_mask].copy()
+
+                        # Re-normalize weights for this index scope
+                        constituents = normalize_index_weight(constituents)
+                        results_per_index[idx_name][sd_iso] = constituents
+
+                        # Summary row
+                        new_inc_set = set(constituents["ISIN"].dropna().astype(str).str.strip().str.upper())
+                        summary_rows.append({
+                            "Selection Date": sd_iso,
+                            "Index": idx_name,
+                            "Konstituenten": len(constituents),
+                            "Incumbents (Vorperiode)": len(prev_inc),
+                            "Davon gehalten": len(new_inc_set & prev_inc),
+                            "Davon aus Index gefallen": len(prev_inc - new_inc_set),
+                            "Neueinsteiger": len(new_inc_set - prev_inc),
+                            "Buffer-Saldo": (
+                                f"+{len(new_inc_set - prev_inc)} / -{len(prev_inc - new_inc_set)}"
+                            ) if not is_seed else "Seed",
+                            "Index-Größe Δ": len(new_inc_set) - len(prev_inc) if not is_seed else "—",
+                        })
+
+                        # State weiterreichen
+                        incumbents_per_index[idx_name] = new_inc_set
+                        _step_done += 1
+
+                progress.progress(1.0, text=f"✅ Fertig: {_total_steps} Pipeline-Läufe abgeschlossen.")
+
+                # Save to session state for export & display
+                st.session_state["multi_results"] = results_per_index
+                st.session_state["multi_summary"] = pd.DataFrame(summary_rows)
+
+            # Display Results (if available)
+            if "multi_results" in st.session_state:
+                _summary_df = st.session_state["multi_summary"]
+                _results = st.session_state["multi_results"]
+
+                st.markdown("---")
+                st.markdown("### 📊 Multi-Period Summary")
+                st.dataframe(_summary_df, use_container_width=True, hide_index=True)
+
+                # Detail-Picker pro Period+Index
+                st.markdown("### 🔍 Detail-Ansicht")
+                _di1, _di2 = st.columns(2)
+                with _di1:
+                    _sel_idx = st.selectbox("Index",
+                                              options=list(_results.keys()),
+                                              key="multi_detail_idx")
+                with _di2:
+                    _sel_period = st.selectbox("Period",
+                                                 options=sorted(_results[_sel_idx].keys()),
+                                                 key="multi_detail_period")
+
+                if _sel_idx and _sel_period:
+                    _det = _results[_sel_idx][_sel_period]
+                    st.caption(f"**{_sel_idx}** am **{_sel_period}** — {len(_det)} Konstituenten, "
+                               f"FF MCap total: {format_bn(_det['Free Float MCap Y2025'].sum())}, "
+                               f"Adj. FF MCap: {format_bn(_det['Adj_FF_MCap'].sum())}")
+
+                    _show_cols = [c for c in [
+                        "Symbol", "Name", "ISIN", "Classification", "Mapping Country",
+                        "Segment_New", "Free Float Percent", "Total MCap Y2025",
+                        "Free Float MCap Y2025", "Adj_FF_MCap", "Index_Weight"
+                    ] if c in _det.columns]
+                    st.dataframe(
+                        _det[_show_cols].sort_values("Index_Weight", ascending=False).head(50),
+                        use_container_width=True, hide_index=True
+                    )
+                    if len(_det) > 50:
+                        st.caption(f"… {len(_det)-50} weitere — vollständig im Excel-Export verfügbar.")
+
+                # Excel-Export
+                st.markdown("---")
+                st.markdown("### 💾 Multi-Period Export")
+
+                _export_sheets = {"Summary": _summary_df}
+                for idx_name, period_dict in _results.items():
+                    for sd, df in period_dict.items():
+                        sheet_name = f"{idx_name.replace('NaroIX ','')[:15]}_{sd}"[:31]
+                        _exp_cols = [c for c in [
+                            "Symbol", "Name", "ISIN", "Entity ID", "Classification",
+                            "Mapping Country", "Exchange Country Name", "Segment_New",
+                            "Free Float Percent", "Total MCap Y2025", "Free Float MCap Y2025",
+                            "Adj_FF_MCap", "IF", "IF_Source", "Index_Weight"
+                        ] if c in df.columns]
+                        _export_sheets[sheet_name] = df[_exp_cols].sort_values(
+                            "Index_Weight", ascending=False
+                        ).reset_index(drop=True)
+
+                _excel_bytes = to_excel_multi(_export_sheets)
+                st.download_button(
+                    "📥 Multi-Period Konstituenten herunterladen (Excel)",
+                    data=_excel_bytes,
+                    file_name=f"NaroIX_MultiPeriod_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
