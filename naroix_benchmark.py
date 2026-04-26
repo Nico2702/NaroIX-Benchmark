@@ -2405,10 +2405,13 @@ with tab_gimi:
 
         _gm_all = df_raw_all[df_raw_all["Classification"].notna()]
 
-        # Buffer-Diagnostik: detailliertes Breakdown für die UI-Tabelle
+        # Buffer-Diagnostik: detailliertes Breakdown für die UI-Tabelle.
+        # WICHTIG: Wir betrachten nur den Standard Index (Large+Mid Cap) als "Index" —
+        # _gm_complete enthält auch Small/Above85/Micro für Diagnostik-Zwecke.
         _buffer_breakdown = None
-        if apply_buffer and len(incumbents_isin_set) > 0 and len(_gm_complete) > 0:
-            _final_isin = _gm_complete["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        _gm_index_only = _gm_complete[_gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
+        if apply_buffer and len(incumbents_isin_set) > 0 and len(_gm_index_only) > 0:
+            _final_isin = _gm_index_only["ISIN"].fillna("").astype(str).str.strip().str.upper()
             _final_isin_set = set(_final_isin)
 
             # Trenne Final-Set in Incumbents-die-drinblieben und Newcomer
@@ -2417,13 +2420,9 @@ with tab_gimi:
             _lost_incumbents = incumbents_isin_set - _final_isin_set
 
             # Wieviele Incumbents wurden konkret durch Buffer gerettet?
-            # Run pseudo-Pipeline ohne Buffer um Vergleich zu haben
-            # (Vereinfachung: Stocks deren ISIN im Final-Set ist UND ISIN in incumbents ist
-            #  UND die unter Entry-Schwellen NICHT durchgegangen wären)
-            # → Approximation: zähle Incumbents die nur dank Maintenance-FF/ATVR in EUMSS+Liq sind.
-            # Pragmatisch: zählen wir alle Incumbents-die-drinblieben mit FF<entry_min_ff oder ADTV<entry_adtv
-            _kept_incumbents_df = _gm_complete[_final_isin.isin(_kept_incumbents)].copy() \
-                if len(_kept_incumbents) > 0 else _gm_complete.iloc[:0].copy()
+            # Approximation: Stocks im Final-Set die unter Entry-Schwellen FF/ADTV NICHT durchgekommen wären
+            _kept_incumbents_df = _gm_index_only[_final_isin.isin(_kept_incumbents)].copy() \
+                if len(_kept_incumbents) > 0 else _gm_index_only.iloc[:0].copy()
             if len(_kept_incumbents_df) > 0:
                 _ff_pct = pd.to_numeric(_kept_incumbents_df["Free Float Percent"], errors="coerce").fillna(0)
                 _adtv3 = pd.to_numeric(_kept_incumbents_df["3M ADTV Y2025"], errors="coerce").fillna(0)
@@ -2437,7 +2436,7 @@ with tab_gimi:
             _kept_via_entry = len(_kept_incumbents) - _saved_by_buffer
 
             _buffer_breakdown = {
-                "n_total_final":      len(_gm_complete),
+                "n_total_final":      len(_gm_index_only),
                 "n_incumbents_total": len(incumbents_isin_set),
                 "n_kept_total":       len(_kept_incumbents),
                 "n_kept_via_entry":   max(0, _kept_via_entry),
