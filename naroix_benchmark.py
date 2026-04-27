@@ -72,11 +72,18 @@ def to_excel_multi(sheets: dict):
 
 
 def normalize_index_weight(df, adj_col="Adj_FF_MCap"):
-    """Recalculate Index_Weight based on the sheet's own Adj_FF_MCap total, sorted descending."""
+    """Recalculate Index_Weight based on the sheet's own Adj_FF_MCap total, sorted descending.
+    Weights sum to exactly 100.0000 by assigning the floating-point remainder to the largest stock.
+    """
     df = df.copy()
     tot = df[adj_col].sum() if adj_col in df.columns else 0
     if tot > 0:
-        df["Index_Weight"] = df[adj_col] / tot * 100
+        df["Index_Weight"] = (df[adj_col] / tot * 100).round(6)
+        # Assign floating-point remainder to the largest stock so sum = exactly 100.000000
+        _diff = round(100.0 - df["Index_Weight"].sum(), 6)
+        if _diff != 0:
+            _top_idx = df[adj_col].idxmax()
+            df.loc[_top_idx, "Index_Weight"] = round(df.loc[_top_idx, "Index_Weight"] + _diff, 6)
     else:
         df["Index_Weight"] = 0.0
     return df.sort_values("Index_Weight", ascending=False)
@@ -1038,6 +1045,15 @@ def add_secondary_listings(df_selected, df_raw_orig, adtv_dm, adtv_em, atvr_dm, 
         cls_map = df_selected[["Entity ID","Classification"]].drop_duplicates(subset=["Entity ID"])\
                     .set_index("Entity ID")["Classification"].to_dict()
         df_sec["Classification"] = df_sec["Entity ID"].map(cls_map)
+
+    # Mapping Country — erben von Primary via Entity ID falls fehlend oder leer
+    if "Mapping Country" not in df_sec.columns:
+        df_sec["Mapping Country"] = ""
+    _mc_missing = df_sec["Mapping Country"].fillna("").astype(str).str.strip() == ""
+    if _mc_missing.any():
+        _mc_map = df_selected[["Entity ID","Mapping Country"]].drop_duplicates(subset=["Entity ID"])\
+                    .set_index("Entity ID")["Mapping Country"].to_dict()
+        df_sec.loc[_mc_missing, "Mapping Country"] = df_sec.loc[_mc_missing, "Entity ID"].map(_mc_map)
     df_sec = df_sec[df_sec["Classification"].notna()].copy()
 
     # Liquidity filter: 3M ADTV + 6M ADTV + ATVR — buffer-aware
@@ -1212,9 +1228,8 @@ def run_selection_pipeline(
     if apply_ineligible and ineligible_df is not None and not ineligible_df.empty and selection_date is not None:
         gm_complete, gm_ie_removed, _ = apply_ineligible_filter(gm_complete, ineligible_df, selection_date)
 
-    # 8) Index weights (Adj_FF_MCap basis)
-    gm_tot_adj = gm_complete["Adj_FF_MCap"].sum()
-    gm_complete["Index_Weight"] = gm_complete["Adj_FF_MCap"] / gm_tot_adj * 100 if gm_tot_adj > 0 else 0
+    # 8) Index weights (Adj_FF_MCap basis) — use normalize_index_weight for exact 100.0 sum
+    gm_complete = normalize_index_weight(gm_complete, adj_col="Adj_FF_MCap")
 
     # Standard Index = Large + Mid only
     gm_index_only = gm_complete[gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
