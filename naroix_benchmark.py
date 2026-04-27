@@ -2987,7 +2987,8 @@ with tab_multi:
                 st.markdown("---")
                 st.markdown("### 💾 Multi-Period Export")
 
-                _export_sheets = {"Summary": _summary_df}
+                # ── Export 1: Per-Period Konstituenten (Long Format) ──
+                _export_sheets_long = {"Summary": _summary_df}
                 for idx_name, period_dict in _results.items():
                     for sd, df in period_dict.items():
                         sheet_name = f"{idx_name.replace('NaroIX ','')[:15]}_{sd}"[:31]
@@ -2997,14 +2998,112 @@ with tab_multi:
                             "Free Float Percent", "Total MCap Y2025", "Free Float MCap Y2025",
                             "Adj_FF_MCap", "IF", "IF_Source", "Index_Weight"
                         ] if c in df.columns]
-                        _export_sheets[sheet_name] = df[_exp_cols].sort_values(
+                        _export_sheets_long[sheet_name] = df[_exp_cols].sort_values(
                             "Index_Weight", ascending=False
                         ).reset_index(drop=True)
 
-                _excel_bytes = to_excel_multi(_export_sheets)
+                _excel_bytes_long = to_excel_multi(_export_sheets_long)
                 st.download_button(
-                    "📥 Multi-Period Konstituenten herunterladen (Excel)",
-                    data=_excel_bytes,
-                    file_name=f"NaroIX_MultiPeriod_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
+                    "📥 Per-Period Konstituenten (Long Format)",
+                    data=_excel_bytes_long,
+                    file_name=f"NaroIX_MultiPeriod_Long_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+                # ── Export 2: Weight Matrix (Wide Format) ──
+                # Pro Index ein Sheet: Zeile = Stock, Spalte = Selection Date → Index_Weight
+                st.markdown("---")
+                st.markdown("### 📐 Gewichtsmatrix — alle Konstituenten × alle Perioden")
+                st.caption("Zeile = Aktie | Spalte = Selection Date | Wert = Indexgewicht (%) | Leer = nicht im Index")
+
+                _export_sheets_wide = {"Summary": _summary_df}
+
+                for idx_name, period_dict in _results.items():
+                    sorted_periods = sorted(period_dict.keys())
+
+                    # Alle Stocks die jemals in dieser Index-Serie auftauchten
+                    all_stocks_info = {}  # ISIN → {Symbol, Name, Classification, Mapping Country}
+                    for sd, df in period_dict.items():
+                        for _, row in df.iterrows():
+                            isin = str(row.get("ISIN","") or "").strip()
+                            if isin and isin not in all_stocks_info:
+                                all_stocks_info[isin] = {
+                                    "Symbol":          row.get("Symbol",""),
+                                    "Name":            row.get("Name",""),
+                                    "ISIN":            isin,
+                                    "Classification":  row.get("Classification",""),
+                                    "Mapping Country": row.get("Mapping Country",""),
+                                    "Exchange Country Name": row.get("Exchange Country Name",""),
+                                    "Segment":         row.get("Segment_New",""),
+                                }
+
+                    if not all_stocks_info:
+                        continue
+
+                    # Baue Pivot: Index ISIN, Spalten = Selection Dates
+                    wide_rows = []
+                    for isin, info in all_stocks_info.items():
+                        row_dict = dict(info)
+                        # Letztes verfügbares Segment (für Sortierung)
+                        last_weight = 0.0
+                        for sd in sorted_periods:
+                            df_sd = period_dict[sd]
+                            sd_isin = df_sd["ISIN"].fillna("").astype(str).str.strip()
+                            match = df_sd[sd_isin == isin]
+                            if len(match) > 0:
+                                w = float(match["Index_Weight"].iloc[0])
+                                row_dict[sd] = round(w, 6)
+                                last_weight = w
+                            else:
+                                row_dict[sd] = None  # nicht im Index
+                        row_dict["_last_weight"] = last_weight
+                        wide_rows.append(row_dict)
+
+                    wide_df = pd.DataFrame(wide_rows).sort_values(
+                        "_last_weight", ascending=False
+                    ).drop(columns=["_last_weight"]).reset_index(drop=True)
+
+                    # Spaltenreihenfolge: statische Felder zuerst, dann Dates
+                    static_cols_w = ["Symbol", "Name", "ISIN", "Classification",
+                                     "Mapping Country", "Exchange Country Name", "Segment"]
+                    static_cols_w = [c for c in static_cols_w if c in wide_df.columns]
+                    date_cols = [c for c in wide_df.columns if c not in static_cols_w]
+                    wide_df = wide_df[static_cols_w + sorted(date_cols)]
+
+                    sheet_name_wide = f"{idx_name.replace('NaroIX ','')[:28]}"[:31]
+                    _export_sheets_wide[sheet_name_wide] = wide_df
+
+                    # Zeige Vorschau für den ersten Index in der Auswahl
+                    if idx_name == list(_results.keys())[0]:
+                        n_always = int((wide_df[sorted(date_cols)].notna().all(axis=1)).sum())
+                        n_entry  = int((wide_df[sorted(date_cols)].notna().sum(axis=1) == 1).sum())
+                        n_exit   = int((wide_df[sorted(date_cols)].notna().sum(axis=1) == 1).sum())
+                        n_total  = len(wide_df)
+
+                        # Farbliche Hervorhebung in der Vorschau:
+                        # Grün = immer dabei, Gelb = zeitweise dabei, Grau = nicht dabei
+                        st.markdown(f"**{idx_name}** — {n_total} einzigartige Aktien über alle Perioden")
+                        _m1, _m2, _m3 = st.columns(3)
+                        _m1.metric("Immer im Index (alle Periods)", n_always)
+                        _m2.metric("Neu eingestiegen (mind. 1 Period)", n_total - n_always)
+                        _m3.metric("Periods im Lauf", len(sorted_periods))
+
+                        # Vorschau-Tabelle (Top 50 nach letztem Gewicht)
+                        st.dataframe(
+                            wide_df.head(50).style.format(
+                                {sd: lambda x: f"{x:.4f}%" if pd.notna(x) and x > 0 else ("" if pd.isna(x) else "0.0000%")
+                                 for sd in sorted(date_cols)},
+                                na_rep=""
+                            ),
+                            use_container_width=True, hide_index=True
+                        )
+                        if n_total > 50:
+                            st.caption(f"… {n_total-50} weitere Aktien im vollständigen Excel-Export.")
+
+                _excel_bytes_wide = to_excel_multi(_export_sheets_wide)
+                st.download_button(
+                    "📥 Gewichtsmatrix herunterladen (Wide Format)",
+                    data=_excel_bytes_wide,
+                    file_name=f"NaroIX_WeightMatrix_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
