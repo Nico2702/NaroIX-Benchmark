@@ -829,7 +829,9 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
                        atvr_mcap_col="Free Float MCap Y2025",
                        excl_delisted=True,
                        fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True):
-    """Build clean Primary-only universe with Thailand mode handling."""
+    """Build universe with Primary + Secondary listings, applying all investability
+    filters (FF MCap > 0, exclusions, FOL/IF). EUMSS-Schwellen werden später im
+    Pipeline-Schritt angewendet — auf Primary-only kalibriert, auf alle Listings appliziert."""
     import re as _re
     df = df_raw_orig.copy()
     for col in ["Total MCap Y2025","Free Float MCap Y2025","Free Float Percent",
@@ -876,9 +878,11 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
         # 6. Rebuild df: non-Thai + enriched NVDRs (no Thai SHAREs)
         df = pd.concat([_non_thai, _th_nvdrs_sel], ignore_index=True)
 
-    # Step 2: Primary only (NVDRs in SHARE→NVDR mode are already Secondary but included)
-    _th_remaining = df["Exchange Name"].fillna("").str.upper() == "THAILAND"
-    df = df[(df["Listing"].fillna("") == "Primary") | _th_remaining].copy()
+    # Step 2: Listing-Universe — Primary + Secondary laufen konsistent durch alle Filter
+    # (Variante B / MSCI-konform: EUMSS-Schwellen werden Security-Level auf alle Listings
+    # angewendet. Thailand: in SHARE→NVDR-Modus wurden Thai SHAREs oben entfernt; NVDRs
+    # (Secondary mit übernommenen Werten) bleiben drin.)
+    # Kein Listing-Filter — alle Listings (Primary + Secondary) gehen weiter durch die Pipeline.
 
     # Step 3: Exclusions
     df = df[df["Free Float MCap Y2025"] > 0].copy()
@@ -1147,8 +1151,11 @@ def run_selection_pipeline(
         fol_year=fol_year, fol_enabled=fol_enabled,
     )
 
-    # 2) EUMSS calibration on DM (top small_thr% coverage point)
-    dm_only = gm_u[gm_u["Classification"] == "DM"].copy()
+    # 2) EUMSS calibration on DM **Primary-only** (top small_thr% coverage point).
+    # Wichtig: Auf Primary-only kalibrieren, um Doppelzählung von Companies mit
+    # mehreren Listings (z.B. Common + Pref) zu vermeiden. Die kalibrierten Schwellen
+    # werden anschließend auf das volle Listing-Universe (inkl. Secondaries) angewendet.
+    dm_only = gm_u[(gm_u["Classification"] == "DM") & (gm_u["Listing"] == "Primary")].copy()
     dm_only = dm_only.sort_values("Total MCap Y2025", ascending=False)
     dm_total_ff = dm_only["Free Float MCap Y2025"].sum()
     if dm_total_ff > 0:
@@ -1208,17 +1215,9 @@ def run_selection_pipeline(
     gm_micro = gm_u[~gm_u["Symbol"].isin(gm_eumss_symbols)].copy()
     gm_micro["Segment_New"] = "Micro Cap"
 
-    # 6) Add secondary listings — buffer-aware
-    gm_final = add_secondary_listings(
-        gm_std, df_raw_in, adtv_dm, adtv_em, atvr_dm, atvr_em,
-        max_price, thailand_mode, china_if,
-        min_ff_pct=min_ff_pct, atvr_mcap_col=atvr_mcap_col, excl_hk_cny=exclude_hk_cny,
-        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=fol_year,
-        fol_enabled=fol_enabled,
-        incumbents_isin=incumbents_isin if apply_buffer else None,
-        m_min_ff_pct=buffer_min_ff, m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
-        m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
-    )
+    # 6) Secondaries sind im Universe bereits enthalten und durchliefen alle Filter
+    # (EUMSS, Liquidität, Coverage) konsistent mit Primaries — kein separater Re-Add nötig.
+    gm_final = gm_std
 
     gm_complete = pd.concat([gm_final, gm_small, gm_above85, gm_micro], ignore_index=True)
     gm_complete = gm_complete.drop_duplicates(subset=["Symbol"]).copy()
@@ -2493,7 +2492,7 @@ with tab_overview:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_gimi:
     st.markdown("## ⚡ GIMI Method")
-    st.caption("Primary only + Secondary Listings (re-added) | EUMSS Pre-Filter | Liquidität Pre-Filter | Coverage per Land auf Adj_FF_MCap")
+    st.caption("Primary + Secondary konsistent durch EUMSS, Liquidität, Coverage | EUMSS-Kalibrierung auf DM Primary-only | Coverage per Land auf Adj_FF_MCap")
 
     _gm_u = build_new_universe(df_raw_original, country_cls, thailand_sec_type, max_closing_price,
         exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
@@ -2502,8 +2501,8 @@ with tab_gimi:
         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
         fol_enabled=apply_fol)
 
-    # EUMSS calibration on DM (using small_thr = 99%)
-    _gm_dm_all = _gm_u[_gm_u["Classification"]=="DM"].sort_values("Total MCap Y2025", ascending=False).copy()
+    # EUMSS calibration on DM Primary-only (Doppelzählung Common+Pref vermeiden; small_thr = 99%)
+    _gm_dm_all = _gm_u[(_gm_u["Classification"]=="DM") & (_gm_u["Listing"]=="Primary")].sort_values("Total MCap Y2025", ascending=False).copy()
     _gm_ff_tot = _gm_dm_all["Free Float MCap Y2025"].sum()
     if _gm_ff_tot > 0:
         _gm_dm_all["_cp"] = _gm_dm_all["Free Float MCap Y2025"].cumsum() / _gm_ff_tot * 100
@@ -2581,16 +2580,8 @@ with tab_gimi:
         _gm_micro = _gm_u[~_gm_u["Symbol"].isin(_gm_eumss_symbols)].copy()
         _gm_micro["Segment_New"] = "Micro Cap"
 
-        # Add secondary listings for standard index only
-        _gm_final = add_secondary_listings(_gm_std, df_raw_original, new_adtv_dm, new_adtv_em,
-            new_atvr_dm, new_atvr_em, max_closing_price, thailand_sec_type,
-            china_inclusion_factor,
-            min_ff_pct=min_ff_pct, atvr_mcap_col=atvr_mcap_col, excl_hk_cny=exclude_hk_cny,
-            fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
-            fol_enabled=apply_fol,
-            incumbents_isin=incumbents_isin_set if apply_buffer else None,
-            m_min_ff_pct=buffer_min_ff, m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
-            m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em)
+        # Secondaries sind im Universe bereits enthalten und durch alle Filter gelaufen.
+        _gm_final = _gm_std
 
         _gm_complete = pd.concat([_gm_final, _gm_small, _gm_above85, _gm_micro], ignore_index=True)
         _gm_complete = _gm_complete.drop_duplicates(subset=["Symbol"]).copy()
@@ -2661,7 +2652,7 @@ with tab_gimi:
         _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}"
         _gm_eumss_extra = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}%"
 
-        _gm_params = {"Methodik":"GIMI Method","Listing":"Primary only + Secondary Listings (re-added)",
+        _gm_params = {"Methodik":"GIMI Method","Listing":"Primary + Secondary (konsistent durch Pipeline)",
             "Filter":"Pre (nach EUMSS)","EUMSS Kalibrierung (%)":f"{small_thr}%",
             "EUMSS_FULL (USD)":format_bn(_gm_eumss_full),"EUMSS FF Ratio (%)":f"{new_eumss_ff_ratio*100:.0f}%",
             "EUMSS_FF (USD)":format_bn(_gm_eumss_ff),"Min FF%":f"{min_ff_pct*100:.0f}%",
