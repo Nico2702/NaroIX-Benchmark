@@ -216,6 +216,92 @@ MASTER_STATIC_REQUIRED = [
 ]
 
 
+def validate_factset_data(df_raw):
+    """
+    Daten-Konsistenz-Check für FactSet-Snapshots.
+    Wird nach dem Upload aufgerufen — zeigt Warnings bei methodisch
+    inkonsistenten Datenpunkten.
+    Anomalien sind nicht-blockierend; die Pipeline läuft trotzdem,
+    aber der User wird auf potenzielle Daten-Drift aufmerksam gemacht.
+    """
+    anomalies = []  # list of (severity, label, mask)
+
+    # Numerische Felder defensiv konvertieren (Snapshot kommt teils als str)
+    def _num(col):
+        if col not in df_raw.columns:
+            return pd.Series([0.0]*len(df_raw), index=df_raw.index)
+        return pd.to_numeric(df_raw[col], errors="coerce").fillna(0)
+
+    ff_mcap   = _num("Free Float MCap Y2025")
+    tot_mcap  = _num("Total MCap Y2025")
+    ff_pct    = pd.to_numeric(df_raw.get("Free Float Percent"), errors="coerce") if "Free Float Percent" in df_raw.columns else pd.Series([float("nan")]*len(df_raw))
+    price     = _num("Closing Price")
+    adtv_3m   = _num("3M ADTV Y2025")
+    adtv_6m   = _num("6M ADTV Y2025")
+
+    # 1. FF MCap > 0 aber FF% = 0/NaN (Hauptcheck)
+    mask1 = (ff_mcap > 0) & ((ff_pct.isna()) | (ff_pct == 0))
+    if mask1.sum() > 0:
+        anomalies.append(("error", "FF MCap > 0 aber FF% leer/0", mask1))
+
+    # 2. Total MCap = 0/NaN aber FF MCap > 0 (umgekehrte Anomalie)
+    mask2 = (ff_mcap > 0) & (tot_mcap <= 0)
+    if mask2.sum() > 0:
+        anomalies.append(("error", "FF MCap > 0 aber Total MCap = 0", mask2))
+
+    # 3. ADTV negativ
+    mask3 = (adtv_3m < 0) | (adtv_6m < 0)
+    if mask3.sum() > 0:
+        anomalies.append(("error", "ADTV negativ", mask3))
+
+    # 4. FF% > 100% (theoretisch unmöglich)
+    mask4 = ff_pct > 1.0
+    if mask4.sum() > 0:
+        anomalies.append(("warning", "FF% > 100%", mask4))
+
+    # 5. Closing Price ≤ 0 bei aktiven Primary-Stocks mit substanzieller FF MCap
+    # (OTC, delisted und Micro-Caps sind erwartbar ohne Preis-Daten — würden Pipeline
+    # ohnehin nicht überleben, also bewusst ausgeschlossen aus diesem Check)
+    listing       = df_raw.get("Listing", pd.Series([""]*len(df_raw))).fillna("")
+    listing_stat  = df_raw.get("Listing Status", pd.Series(["0"]*len(df_raw))).fillna("0").astype(str).str.strip()
+    mask5 = (ff_mcap > 100e6) & (price <= 0) & (listing == "Primary") & (listing_stat != "1")
+    if mask5.sum() > 0:
+        anomalies.append(("warning", "Closing Price ≤ 0 bei aktivem Primary-Stock (FF > $100M)", mask5))
+
+    return anomalies
+
+
+def render_validation_warnings(df_raw, anomalies):
+    """Render der Validierungs-Anomalien als Streamlit-UI."""
+    if not anomalies:
+        return  # Kein Issue — keine UI-Anzeige
+
+    n_errors   = sum(1 for sev, _, _ in anomalies if sev == "error")
+    n_warnings = sum(1 for sev, _, _ in anomalies if sev == "warning")
+    n_total    = sum(int(mask.sum()) for _, _, mask in anomalies)
+
+    summary = []
+    if n_errors > 0:
+        summary.append(f"{n_errors} Fehler")
+    if n_warnings > 0:
+        summary.append(f"{n_warnings} Warnung(en)")
+
+    with st.expander(f"⚠️ Daten-Validierung: {' / '.join(summary)} ({n_total} betroffene Zeilen)", expanded=False):
+        st.caption("Diese Anomalien sind nicht-blockierend; die Pipeline läuft trotzdem. "
+                   "Bitte FactSet-Export prüfen.")
+        for sev, label, mask in anomalies:
+            n = int(mask.sum())
+            icon = "🔴" if sev == "error" else "🟡"
+            st.markdown(f"**{icon} {label} — {n} Treffer**")
+            cols_show = [c for c in ["Exchange Ticker","Name","ISIN","Sec Type","Listing",
+                                      "Free Float MCap Y2025","Free Float Percent",
+                                      "Total MCap Y2025","Closing Price",
+                                      "3M ADTV Y2025","6M ADTV Y2025"] if c in df_raw.columns]
+            st.dataframe(df_raw[mask][cols_show].head(50), use_container_width=True, hide_index=True)
+            if n > 50:
+                st.caption(f"... {n-50} weitere ausgeblendet")
+
+
 @st.cache_data
 def load_master_excel(file, valid_selection_dates_iso):
     """Load Master-File with multi-period dynamic columns.
@@ -2113,6 +2199,10 @@ else:
                    f"Nutze stattdessen **{_active_iso}**.")
     df_raw = build_snapshot_from_master(master_data, _active_iso)
     _year_suffix = "Y2025"  # Master-File normalisiert intern auf Y2025
+
+# Daten-Konsistenz-Check (FactSet-Anomalien) — nicht-blockierend
+_anomalies = validate_factset_data(df_raw)
+render_validation_warnings(df_raw, _anomalies)
 
 df_raw_original = df_raw.copy()
 
