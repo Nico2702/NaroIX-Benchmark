@@ -1199,8 +1199,14 @@ def run_selection_pipeline(
         in_cut = grp["_c_before"].values < thr_per_stock
         inc = grp[in_cut].copy()
         tot_inc = inc[if_cum_col].sum()
-        inc["_cp2"] = inc[if_cum_col].cumsum() / tot_inc * 100 if tot_inc > 0 else 0
-        inc["Segment_New"] = np.where(inc["_cp2"] <= large_thr, "Large Cap", "Mid Cap")
+        # _cp2_before: Cumulative VOR dem Stock — analog zu _c_before im 85%-Cut.
+        # Straddle-Stock landet in Large Cap (konsistent mit "Straddle bleibt im
+        # 'höheren' Bucket" wie beim 85%-Cut).
+        if tot_inc > 0:
+            inc["_cp2_before"] = inc[if_cum_col].cumsum().shift(1).fillna(0) / tot_inc * 100
+        else:
+            inc["_cp2_before"] = 0
+        inc["Segment_New"] = np.where(inc["_cp2_before"] < large_thr, "Large Cap", "Mid Cap")
         gm_results.append(inc)
     gm_std = pd.concat(gm_results, ignore_index=True) if gm_results else pd.DataFrame(columns=gm_liq.columns.tolist() + ["Segment_New"])
 
@@ -1667,7 +1673,7 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
 
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
-    _drop = ["_cum_pct","_c","_cp2","ADTV_Best","IF"]
+    _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]
     _drop_universe = _drop + ["Index_Weight"]
 
     def _prep(df, adj_col="Adj_FF_MCap"):
@@ -2558,8 +2564,12 @@ with tab_gimi:
             _inc = _grp[_in_cut].copy()
 
             _tot_inc = _inc[if_cum_col].sum()
-            _inc["_cp2"] = _inc[if_cum_col].cumsum() / _tot_inc * 100 if _tot_inc>0 else 0
-            _inc["Segment_New"] = np.where(_inc["_cp2"] <= large_thr, "Large Cap", "Mid Cap")
+            # _cp2_before: Cumulative VOR dem Stock — Straddle-Konsistenz mit 85%-Cut
+            if _tot_inc > 0:
+                _inc["_cp2_before"] = _inc[if_cum_col].cumsum().shift(1).fillna(0) / _tot_inc * 100
+            else:
+                _inc["_cp2_before"] = 0
+            _inc["Segment_New"] = np.where(_inc["_cp2_before"] < large_thr, "Large Cap", "Mid Cap")
             _gm_results.append(_inc)
 
         _gm_std = pd.concat(_gm_results, ignore_index=True) if _gm_results else pd.DataFrame(columns=_gm_liq.columns.tolist()+["Segment_New"])
@@ -2759,10 +2769,10 @@ with tab_europe:
 
             # ── Download ─────────────────────────────────────────────────────
             st.markdown("---")
-            _drop_eu = ["_cum_pct","_c","_cp2","ADTV_Best","IF","Index_Weight"]
-            _eu_dl = normalize_index_weight(_eu_dm[[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","ADTV_Best","IF"]].copy()])
-            _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","ADTV_Best","IF"]].copy()])
-            _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","ADTV_Best","IF"]].copy()])
+            _drop_eu = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF","Index_Weight"]
+            _eu_dl = normalize_index_weight(_eu_dm[[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
+            _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
+            _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
 
             _eu_params = {
                 "Basis": "GIMI Method — World Index (DM Large+Mid)",
