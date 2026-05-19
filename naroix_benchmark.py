@@ -2901,7 +2901,7 @@ with tab_multi:
                             buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
                             buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
                             ineligible_df=ineligible_df,
-                            apply_ineligible=apply_ineligible if 'apply_ineligible' in dir() else False,
+                            apply_ineligible=apply_ineligible,
                             selection_date=sd_dt,
                         )
 
@@ -3091,17 +3091,27 @@ with tab_multi:
                     # Zeige Vorschau für den ersten Index in der Auswahl
                     if idx_name == list(_results.keys())[0]:
                         n_always = int((wide_df[sorted(date_cols)].notna().all(axis=1)).sum())
-                        n_entry  = int((wide_df[sorted(date_cols)].notna().sum(axis=1) == 1).sum())
-                        n_exit   = int((wide_df[sorted(date_cols)].notna().sum(axis=1) == 1).sum())
+                        # Random-Access: erste vs. letzte Period direkt vergleichen
+                        _first = wide_df[sorted(date_cols)].iloc[:, 0].notna()
+                        _last  = wide_df[sorted(date_cols)].iloc[:, -1].notna()
+                        n_newcomer = int((_last & ~_first).sum())   # nicht in erster, in letzter
+                        n_dropout  = int((_first & ~_last).sum())   # in erster, nicht in letzter
                         n_total  = len(wide_df)
 
                         # Farbliche Hervorhebung in der Vorschau:
                         # Grün = immer dabei, Gelb = zeitweise dabei, Grau = nicht dabei
                         st.markdown(f"**{idx_name}** — {n_total} einzigartige Aktien über alle Perioden")
-                        _m1, _m2, _m3 = st.columns(3)
-                        _m1.metric("Immer im Index (alle Periods)", n_always)
-                        _m2.metric("Neu eingestiegen (mind. 1 Period)", n_total - n_always)
-                        _m3.metric("Periods im Lauf", len(sorted_periods))
+                        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                        _m1.metric("Immer im Index", n_always,
+                                   help="Stocks die in JEDER Period im Index waren.")
+                        _m2.metric("Newcomer", n_newcomer,
+                                   help="Stocks die in der ersten Period nicht im Index waren, in der letzten aber schon.")
+                        _m3.metric("Drop-Outs", n_dropout,
+                                   help="Stocks die in der ersten Period im Index waren, in der letzten aber nicht mehr.")
+                        _m4.metric("Zeitweise dabei", n_total - n_always,
+                                   help="Stocks die mindestens eine Period im Index waren, aber nicht alle. "
+                                        "Umfasst Newcomer, Drop-Outs und Stocks die zwischendurch rein/raus gingen.")
+                        _m5.metric("Periods im Lauf", len(sorted_periods))
 
                         # Vorschau-Tabelle (Top 50 nach letztem Gewicht)
                         st.dataframe(
