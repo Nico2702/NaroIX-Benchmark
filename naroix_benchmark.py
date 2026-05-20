@@ -268,6 +268,20 @@ def validate_factset_data(df_raw):
     if mask5.sum() > 0:
         anomalies.append(("warning", "Closing Price ≤ 0 bei aktivem Primary-Stock (FF > $100M)", mask5))
 
+    # 6. FF MCap > Total MCap (mathematisch unmöglich — schwerwiegende Datenanomalie)
+    # Toleranzgrenzen:
+    #  - Warning ab Ratio > 1.01 (kleine Stichtag-Drifts ~0.3% rausfiltern)
+    #  - Error ab Ratio > 1.10 (echte Anomalien wie Roche/Tokio Marine: Ratio ~1.8-2.0)
+    # Beide nur bei substanziellem Total MCap (>$10M) um Micro-Cap-Rauschen auszuschließen
+    safe_tot = tot_mcap.where(tot_mcap > 0, 1)  # avoid div-by-zero
+    ratio    = ff_mcap / safe_tot
+    mask6_err  = (tot_mcap > 10e6) & (ratio > 1.10)
+    mask6_warn = (tot_mcap > 10e6) & (ratio > 1.01) & (ratio <= 1.10)
+    if mask6_err.sum() > 0:
+        anomalies.append(("error",   "FF MCap > 110% von Total MCap (mathematisch unmöglich)", mask6_err))
+    if mask6_warn.sum() > 0:
+        anomalies.append(("warning", "FF MCap zwischen 101%-110% von Total MCap (Stichtag-Drift / leichte Anomalie)", mask6_warn))
+
     return anomalies
 
 
@@ -297,7 +311,16 @@ def render_validation_warnings(df_raw, anomalies):
                                       "Free Float MCap Y2025","Free Float Percent",
                                       "Total MCap Y2025","Closing Price",
                                       "3M ADTV Y2025","6M ADTV Y2025"] if c in df_raw.columns]
-            st.dataframe(df_raw[mask][cols_show].head(50), use_container_width=True, hide_index=True)
+            _sub = df_raw[mask][cols_show].copy()
+
+            # Bei FF/Total-Anomalien: Ratio berechnen + nach Ratio absteigend sortieren
+            if "FF MCap" in label and "Total MCap" in label:
+                _tot = pd.to_numeric(_sub["Total MCap Y2025"], errors="coerce")
+                _ff  = pd.to_numeric(_sub["Free Float MCap Y2025"], errors="coerce")
+                _sub["FF/Total Ratio"] = (_ff / _tot.where(_tot > 0)).round(3)
+                _sub = _sub.sort_values("FF/Total Ratio", ascending=False)
+
+            st.dataframe(_sub.head(50), use_container_width=True, hide_index=True)
             if n > 50:
                 st.caption(f"... {n-50} weitere ausgeblendet")
 
