@@ -2273,10 +2273,12 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab_overview, tab_gimi, tab_europe, tab_multi = st.tabs([
+tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_multi = st.tabs([
     "🌍 Universe Overview",
     "⚡ GIMI Method",
     "🇪🇺 Europe Index",
+    "🇩🇪 Germany",
+    "🇨🇭 Switzerland",
     "🔁 Multi-Period Run",
 ])
 
@@ -2896,7 +2898,186 @@ with tab_europe:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 4: Multi-Period Run
+# Helper: Single-Country Tab Renderer (für Germany, Switzerland, etc.)
+# ══════════════════════════════════════════════════════════════════════════════
+def render_single_country_tab(gm_complete_df, country_iso, country_display, flag_emoji=""):
+    """
+    Render Country-Tab mit 4 Sub-Sections (Standard, Large, Mid, Small) und
+    Filter-Toggle für Mapping/Listing-Logik.
+
+    Default: Mapping Country == X AND Exchange Country Name == X (MSCI-konform)
+    """
+    st.markdown(f"## {flag_emoji} {country_display}")
+    st.caption(f"Country-Index für {country_display}. Filter: Mapping Country + Exchange Country Name (MSCI-konform).")
+
+    # ── Filter-Modus auswählen ─────────────────────────────────────────────
+    _filter_mode = st.radio(
+        "Filter-Logik",
+        options=[
+            "Mapping + Listing (Default, MSCI-konform)",
+            "Mapping Country only",
+            "Exchange Country only",
+        ],
+        index=0,
+        horizontal=True,
+        key=f"filter_mode_{country_iso}",
+        help=(
+            "**Mapping + Listing:** Stocks die zum Land gehören (Country of Incorp/Risk) "
+            "UND auch dort gelistet sind. Entspricht MSCI Country Index Logik.\n\n"
+            "**Mapping only:** Stocks die zum Land gehören, unabhängig vom Listing-Ort "
+            "(inkl. ADRs/Cross-Listings, z.B. BioNTech ADR für Deutschland).\n\n"
+            "**Exchange only:** Stocks die im Land gelistet sind, unabhängig von der Mapping-Country-Logik."
+        ),
+    )
+
+    # ── Filter anwenden ───────────────────────────────────────────────────
+    if "Exchange Country Name" not in gm_complete_df.columns:
+        st.error(f"❌ Spalte 'Exchange Country Name' fehlt im Pipeline-Output.")
+        return
+
+    _has_mapping = gm_complete_df["Mapping Country"] == country_iso
+    _has_listing = gm_complete_df["Exchange Country Name"] == country_iso
+
+    if _filter_mode.startswith("Mapping + Listing"):
+        _country = gm_complete_df[_has_mapping & _has_listing].copy()
+    elif _filter_mode.startswith("Mapping Country only"):
+        _country = gm_complete_df[_has_mapping].copy()
+    else:  # Exchange Country only
+        _country = gm_complete_df[_has_listing].copy()
+
+    if len(_country) == 0:
+        st.warning(f"⚠️ Keine Stocks für {country_display} mit dem aktuellen Filter gefunden.")
+        return
+
+    # ── Differenz-Anzeige: was sind die Unterschiede zwischen den Modi? ─────
+    _set_default  = set(gm_complete_df[_has_mapping & _has_listing]["Symbol"])
+    _set_mapping  = set(gm_complete_df[_has_mapping]["Symbol"])
+    _set_exchange = set(gm_complete_df[_has_listing]["Symbol"])
+
+    _only_mapping  = _set_mapping  - _set_default   # in Mapping, nicht in Default → keine Listing
+    _only_exchange = _set_exchange - _set_default   # in Exchange, nicht in Default → fremdes Mapping
+    if len(_only_mapping) > 0 or len(_only_exchange) > 0:
+        with st.expander(f"🔍 Filter-Differenzen: {len(_only_mapping)} ADRs/Cross-Listings + {len(_only_exchange)} Foreign-Mapping Stocks", expanded=False):
+            if len(_only_mapping) > 0:
+                st.markdown(f"**Stocks mit Mapping = {country_iso} aber Listing außerhalb** ({len(_only_mapping)}):")
+                _diff1 = gm_complete_df[gm_complete_df["Symbol"].isin(_only_mapping)][
+                    [c for c in ["Exchange Ticker","Name","Exchange Country Name","Listing","Sec Type","Segment_New"] if c in gm_complete_df.columns]
+                ]
+                st.dataframe(_diff1, use_container_width=True, hide_index=True)
+            if len(_only_exchange) > 0:
+                st.markdown(f"**Stocks mit Listing in {country_iso} aber Mapping woanders** ({len(_only_exchange)}):")
+                _diff2 = gm_complete_df[gm_complete_df["Symbol"].isin(_only_exchange)][
+                    [c for c in ["Exchange Ticker","Name","Mapping Country","Listing","Sec Type","Segment_New"] if c in gm_complete_df.columns]
+                ]
+                st.dataframe(_diff2, use_container_width=True, hide_index=True)
+
+    # ── Header-Metrics ────────────────────────────────────────────────────
+    _large_df = _country[_country["Segment_New"] == "Large Cap"].copy()
+    _mid_df   = _country[_country["Segment_New"] == "Mid Cap"].copy()
+    _small_df = _country[_country["Segment_New"] == "Small Cap"].copy()
+    _std_df   = pd.concat([_large_df, _mid_df], ignore_index=True)  # Large + Mid
+
+    _country_total_adj = _country[_country["Segment_New"].isin(["Large Cap","Mid Cap","Small Cap"])]["Adj_FF_MCap"].sum()
+
+    st.markdown("---")
+    _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+    _mc1.metric(f"{country_display} Total", f"{len(_large_df)+len(_mid_df)+len(_small_df):,}")
+    _mc2.metric("Large Cap", f"{len(_large_df):,}")
+    _mc3.metric("Mid Cap", f"{len(_mid_df):,}")
+    _mc4.metric("Small Cap", f"{len(_small_df):,}")
+    _mc5.metric("Adj. FF MCap", f"${_country_total_adj/1e9:.1f}B")
+
+    # ── 4 Sub-Sections: Standard, Large, Mid, Small ───────────────────────
+    def _render_section(label, df, total_adj_ref, key_suffix, table_caption=""):
+        """Render eine einzelne Section mit Header, Top-Tabelle und Download."""
+        st.markdown("---")
+        if len(df) == 0:
+            st.markdown(f"### {label}")
+            st.caption(f"Keine Stocks in dieser Section für {country_display}.")
+            return
+        # Re-normalize weights within section
+        _df = df.copy()
+        _sec_total = _df["Adj_FF_MCap"].sum()
+        if _sec_total > 0:
+            _df["Section_Weight"] = (_df["Adj_FF_MCap"] / _sec_total * 100).round(6)
+        else:
+            _df["Section_Weight"] = 0.0
+        _df = _df.sort_values("Section_Weight", ascending=False)
+
+        st.markdown(f"### {label}")
+        if table_caption:
+            st.caption(table_caption)
+        _sc1, _sc2 = st.columns(2)
+        _sc1.metric("Stocks", f"{len(_df):,}")
+        _sc2.metric("Section Adj. FF MCap", f"${_sec_total/1e9:.2f}B")
+
+        # Top Table
+        _show_n = min(len(_df), 25)
+        _top_cols = [c for c in ["Exchange Ticker", "Name", "Mapping Country",
+                                  "Listing", "Sec Type", "Segment_New",
+                                  "Adj_FF_MCap", "Section_Weight"] if c in _df.columns]
+        _top = _df[_top_cols].head(_show_n).copy()
+        if "Adj_FF_MCap" in _top.columns:
+            _top["Adj_FF_MCap"] = _top["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
+        if "Section_Weight" in _top.columns:
+            _top["Section_Weight"] = _top["Section_Weight"].map(lambda x: f"{x:.4f}%")
+        st.dataframe(_top, use_container_width=True, hide_index=True)
+        if len(_df) > _show_n:
+            st.caption(f"Anzeige: Top {_show_n} von {len(_df)} Stocks. Vollständige Liste im Excel-Download.")
+
+        # Download
+        _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF","Section_Weight"]
+        _dl_df = _df[[c for c in _df.columns if c not in _drop]].copy()
+        _dl_df = normalize_index_weight(_dl_df)
+        _params = {
+            "Country": country_display,
+            "Section": label,
+            "Filter-Modus": _filter_mode,
+            "Snapshot Datum": _snapshot_label,
+            "ADTV DM": f"{new_adtv_dm:,.0f}",
+            "Min FF%": f"{min_ff_pct*100:.0f}%",
+        }
+        st.download_button(
+            f"⬇️ Download {country_display} {label} als Excel",
+            data=to_excel_multi({
+                f"{country_display} {label}": _dl_df,
+                "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _params.items()]),
+            }),
+            file_name=f"NaroIX_{country_display.replace(' ','_')}_{label.replace(' ','_')}_{_snapshot_label.replace('.','')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_{country_iso}_{key_suffix}",
+        )
+
+    _render_section("Standard Index (Large + Mid)", _std_df, _country_total_adj, "std",
+                    "Konstituenten des Standard Index für dieses Land (Large + Mid Cap zusammen).")
+    _render_section("Large Cap", _large_df, _country_total_adj, "large")
+    _render_section("Mid Cap", _mid_df, _country_total_adj, "mid")
+    _render_section("Small Cap", _small_df, _country_total_adj, "small",
+                    "Small Cap = Stocks die EUMSS und Liquidität bestehen, aber außerhalb des 85% Coverage-Cuts liegen.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4: Germany
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_germany:
+    try:
+        render_single_country_tab(_gm_complete, "GERMANY", "Germany", "🇩🇪")
+    except NameError:
+        st.warning("⚠️ Bitte zuerst Tab '⚡ GIMI Method' aufrufen damit die Pipeline berechnet wird.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5: Switzerland
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_switzerland:
+    try:
+        render_single_country_tab(_gm_complete, "SWITZERLAND", "Switzerland", "🇨🇭")
+    except NameError:
+        st.warning("⚠️ Bitte zuerst Tab '⚡ GIMI Method' aufrufen damit die Pipeline berechnet wird.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6: Multi-Period Run
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_multi:
     st.markdown("## 🔁 Multi-Period Run")
