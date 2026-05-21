@@ -3380,6 +3380,74 @@ def render_helvetica_tab(gm_universe):
         "Alle Schweizer Real-Estate-Stocks die ADV- und FF%-Filter erfüllen — inklusive Micro Cap (Coverage ≥ 99%). Keine Coverage-Begrenzung.",
     )
 
+    # ── Konsolidierter Top-10-Export am Ende ──────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📦 Konsolidierter Export")
+    st.caption(
+        "Aggregiertes Excel mit Top 10 nach Adj_FF_MCap aus Large / Mid / Small Cap "
+        "(excl. Real Estate), plus vollständige Real Estate Universe (incl. Micro Cap)."
+    )
+
+    def _topn_by_adj_ff(df, n=10):
+        if len(df) == 0:
+            return df.copy()
+        return df.sort_values("Adj_FF_MCap", ascending=False).head(n).copy()
+
+    # Sections zusammenbauen, jeweils Section-Spalte vorne dranhängen
+    _agg_rows = []
+    for _label, _sec_df in [
+        ("Large Cap",            _topn_by_adj_ff(_large_ex_re, 10)),
+        ("Mid Cap",              _topn_by_adj_ff(_mid_ex_re,   10)),
+        ("Small Cap",            _topn_by_adj_ff(_small_ex_re, 10)),
+        ("Real Estate Universe", _real_estate_full.sort_values("Adj_FF_MCap", ascending=False)),
+    ]:
+        if len(_sec_df) == 0:
+            continue
+        _tmp = _sec_df.copy()
+        _tmp.insert(0, "Section", _label)
+        # Spalten aufräumen — interne Berechnungs-Spalten raus
+        _drop_internal = ["_cum_pct", "_c", "_c_before", "_cp2", "_cp2_before",
+                          "ADTV_Best", "IF", "Section_Weight", "Index_Weight"]
+        _tmp = _tmp[[c for c in _tmp.columns if c not in _drop_internal]]
+        # Pool-Weight gegen Helvetica-Total
+        _pool_total = helv["Adj_FF_MCap"].sum()
+        if _pool_total > 0:
+            _tmp["Pool_Weight"] = (_tmp["Adj_FF_MCap"] / _pool_total * 100).round(6)
+        _agg_rows.append(_tmp)
+
+    if len(_agg_rows) > 0:
+        _agg_df = pd.concat(_agg_rows, ignore_index=True)
+        _params_meta = {
+            "Index": "Helvetica",
+            "Export Type": "Konsolidierter Top 10 + Real Estate Universe",
+            "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
+            "ADTV Schwelle": f"${params['adtv_thr']/1e6:.2f}M",
+            "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
+            "Large Cap Cut": f"{params['large_cut']:.1f}%",
+            "Standard Cut": f"{params['std_cut']:.1f}%",
+            "Small Cap Cut": f"{params['small_cut']:.1f}%",
+            "Snapshot Datum": _snapshot_label,
+            "Pool Total Adj_FF_MCap": f"${helv['Adj_FF_MCap'].sum():,.2f}",
+        }
+        st.download_button(
+            "⬇️ Download Helvetica Consolidated Export (Top 10 + Real Estate Universe)",
+            data=to_excel_multi({
+                "Helvetica Consolidated": _agg_df,
+                "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _params_meta.items()]),
+            }),
+            file_name=f"Helvetica_Consolidated_{_snapshot_label.replace('.','')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_helvetica_consolidated",
+        )
+        st.caption(
+            f"Export enthält: "
+            f"{min(len(_large_ex_re), 10)} Large + "
+            f"{min(len(_mid_ex_re), 10)} Mid + "
+            f"{min(len(_small_ex_re), 10)} Small + "
+            f"{len(_real_estate_full)} Real Estate Universe = "
+            f"{min(len(_large_ex_re),10) + min(len(_mid_ex_re),10) + min(len(_small_ex_re),10) + len(_real_estate_full)} Stocks total."
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: Helvetica
