@@ -3108,15 +3108,15 @@ with tab_switzerland:
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
 # ══════════════════════════════════════════════════════════════════════════════
-def build_helvetica_pipeline(gm_universe, use_buffer=False):
+def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
     """
     Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
     Filter & Schwellen:
                        Entry        Maintenance
-      ADTV 3M          ≥ $0.5M      ≥ $0.5M   (fest, kein Buffer)
+      ADTV 3M          configurable: $0.5M oder $0.25M (kein Buffer)
       Min FF %         ≥ 10%        ≥ 7.5%
-      Large Cap        _cp2_before < 70%   < 75%
+      Large Cap        _c_before  < 70%    < 75%
       Standard         _c_before  < 85%    < 90%
       Small Cap        _c_before  < 99%    < 99.5%
 
@@ -3126,8 +3126,8 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
 
     Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
     """
-    # Liquidität: fest, kein Buffer
-    ADTV_THR = 500_000
+    # Liquidität: Parameter (Default $0.5M, optional $0.25M via UI-Toggle)
+    ADTV_THR = adtv_thr
 
     # Buffer betrifft nur FF % und Coverage-Cuts
     if use_buffer:
@@ -3226,21 +3226,36 @@ def render_helvetica_tab(gm_universe):
         "Real Estate Development als separate Section."
     )
 
-    # ── Toggle: Entry vs Buffer ────────────────────────────────────────────
-    _use_buffer = st.toggle(
-        "Maintenance Buffer aktivieren (75% / 90% / 99.5% statt 70% / 85% / 99%)",
-        value=False,
-        key="helvetica_buffer_toggle",
-        help=(
-            "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99%, ADTV ≥ $2M, FF% ≥ 10%.\n\n"
-            "**An (Buffer):** Maintenance-Schwellen — Coverage 75/90/99.5%, ADTV ≥ $1M, FF% ≥ 7.5%. "
-            "Im Single-Snapshot-Modus dient dies zum Vergleichen — der Effekt der Buffer-Logik bei "
-            "tatsächlicher Multi-Period-Pflege wird erst mit Historie sichtbar."
-        ),
-    )
+    # ── Toggles ────────────────────────────────────────────────────────────
+    _tg1, _tg2 = st.columns(2)
+    with _tg1:
+        _use_buffer = st.toggle(
+            "Maintenance Buffer aktivieren (75% / 90% / 99.5% statt 70% / 85% / 99%)",
+            value=False,
+            key="helvetica_buffer_toggle",
+            help=(
+                "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99%, FF% ≥ 10%.\n\n"
+                "**An (Buffer):** Maintenance-Schwellen — Coverage 75/90/99.5%, FF% ≥ 7.5%. "
+                "Im Single-Snapshot-Modus dient dies zum Vergleichen — der Effekt der Buffer-Logik bei "
+                "tatsächlicher Multi-Period-Pflege wird erst mit Historie sichtbar."
+            ),
+        )
+    with _tg2:
+        _low_adtv = st.toggle(
+            "ADTV-Schwelle auf $0.25M senken (Default $0.5M)",
+            value=False,
+            key="helvetica_adtv_toggle",
+            help=(
+                "**Aus (Default):** 3M ADTV ≥ $0.5M — institutionelle Investability-Schwelle.\n\n"
+                "**An:** 3M ADTV ≥ $0.25M — inklusiverer Pool, fängt auch kleinere Schweizer "
+                "Stocks (z.B. weitere Real-Estate-Listings) ein. Unabhängig vom Buffer-Toggle."
+            ),
+        )
+
+    _adtv_thr = 250_000 if _low_adtv else 500_000
 
     # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
-    helv, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer)
+    helv, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr)
 
     if len(helv) == 0:
         st.warning("⚠️ Keine Stocks im Helvetica-Universe (Exchange Country = Switzerland, FF MCap > 0, Min FF%, ADTV-Schwellen).")
