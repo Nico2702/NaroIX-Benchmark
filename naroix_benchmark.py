@@ -3154,9 +3154,9 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
     df = df[df["3M ADTV Y2025"] >= ADTV_THR].copy()
 
     if len(df) == 0:
-        return df, {"adtv_thr": ADTV_THR, "min_ff_pct": min_ff_pct,
-                    "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
-                    "use_buffer": use_buffer}
+        return df, df.copy(), {"adtv_thr": ADTV_THR, "min_ff_pct": min_ff_pct,
+                               "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
+                               "use_buffer": use_buffer}
 
     # Step 3b: Primary-Selection — pro Entity ID nur Primary; Secondary nur wenn Primary
     # nicht existiert oder Filter nicht besteht. Stocks ohne Entity ID bleiben wie sie sind
@@ -3192,6 +3192,7 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
     # Step 5: Cut on Standard, Small, Outside
     df_std   = df[df["_c_before"] < std_cut].copy()
     df_small = df[(df["_c_before"] >= std_cut) & (df["_c_before"] < small_cut)].copy()
+    df_micro = df[df["_c_before"] >= small_cut].copy()   # Micro Cap (Coverage ≥ small_cut)
 
     # Within Standard: split Large vs Mid
     # OPTION B: Large/Mid auf POOL-Basis (gleiche Skala wie _c_before für Standard-Cut).
@@ -3202,9 +3203,13 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
         df_std["Segment_New"] = pd.Series([], dtype="object")
 
     df_small["Segment_New"] = "Small Cap"
+    df_micro["Segment_New"] = "Micro Cap"
 
-    # Combine
+    # Combine: Standard + Small (= Helvetica-Konstituenten im engeren Sinne)
     helv = pd.concat([df_std, df_small], ignore_index=True)
+
+    # Voller Pool (alle Stocks die ADV + FF% bestanden haben, inkl. Micro Cap)
+    helv_full_pool = pd.concat([df_std, df_small, df_micro], ignore_index=True)
 
     params = {
         "adtv_thr":   ADTV_THR,
@@ -3214,7 +3219,7 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
         "small_cut":  small_cut,
         "use_buffer": use_buffer,
     }
-    return helv, params
+    return helv, helv_full_pool, params
 
 
 def render_helvetica_tab(gm_universe):
@@ -3255,7 +3260,7 @@ def render_helvetica_tab(gm_universe):
     _adtv_thr = 250_000 if _low_adtv else 500_000
 
     # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
-    helv, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr)
+    helv, helv_full_pool, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr)
 
     if len(helv) == 0:
         st.warning("⚠️ Keine Stocks im Helvetica-Universe (Exchange Country = Switzerland, FF MCap > 0, Min FF%, ADTV-Schwellen).")
@@ -3284,16 +3289,18 @@ def render_helvetica_tab(gm_universe):
     _mid_ex_re   = _mid_all[_mid_all["FactSet Industry"]   != RE_INDUSTRY]
     _small_ex_re = _small_all[_small_all["FactSet Industry"] != RE_INDUSTRY]
     _std_ex_re   = pd.concat([_large_ex_re, _mid_ex_re], ignore_index=True)      # Standard ohne RE
-    _real_estate = helv[helv["FactSet Industry"] == RE_INDUSTRY]                  # alle Segmente, nur RE
+    _real_estate = helv[helv["FactSet Industry"] == RE_INDUSTRY]                  # nur Helvetica-Konstituenten (< 99% Coverage)
+    _real_estate_full = helv_full_pool[helv_full_pool["FactSet Industry"] == RE_INDUSTRY]  # alle RE inkl. Micro Cap
 
     # ── Header-Metrics ────────────────────────────────────────────────────
     st.markdown("---")
-    _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+    _mc1, _mc2, _mc3, _mc4, _mc5, _mc6 = st.columns(6)
     _mc1.metric("Standard (L+M, excl. RE)", f"{len(_std_ex_re):,}")
     _mc2.metric("Large excl. RE",            f"{len(_large_ex_re):,}")
     _mc3.metric("Mid excl. RE",              f"{len(_mid_ex_re):,}")
     _mc4.metric("Small excl. RE",            f"{len(_small_ex_re):,}")
-    _mc5.metric("Real Estate (all)",         f"{len(_real_estate):,}")
+    _mc5.metric("Real Estate (in Index)",    f"{len(_real_estate):,}")
+    _mc6.metric("Real Estate (all incl. Micro)", f"{len(_real_estate_full):,}")
 
     # ── 5 Sub-Sections ────────────────────────────────────────────────────
     def _render_section(label, df, key_suffix, caption=""):
@@ -3365,8 +3372,12 @@ def render_helvetica_tab(gm_universe):
     _render_section("Mid Cap (excl. Real Estate)",   _mid_ex_re,   "mid_ex",   "")
     _render_section("Small Cap (excl. Real Estate)", _small_ex_re, "small_ex", "")
     _render_section(
-        "Real Estate", _real_estate, "re",
-        "FactSet Industry = 'Real Estate Development'. Alle Cap-Segmente (Large + Mid + Small).",
+        "Real Estate (Helvetica Constituents)", _real_estate, "re",
+        "FactSet Industry = 'Real Estate Development'. Cap-Segmente Large + Mid + Small (Coverage < 99%, Micro Cap ausgeschlossen).",
+    )
+    _render_section(
+        "Real Estate Universe (incl. Micro Cap)", _real_estate_full, "re_full",
+        "Alle Schweizer Real-Estate-Stocks die ADV- und FF%-Filter erfüllen — inklusive Micro Cap (Coverage ≥ 99%). Keine Coverage-Begrenzung.",
     )
 
 
