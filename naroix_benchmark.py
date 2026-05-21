@@ -3124,9 +3124,11 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
       Standard         _c_before  < 85%    < 90%
       Small Cap        _c_before  < 99%    < 99.5%
 
-    Listing-Logik: Primary only, mit Fallback auf Secondary wenn kein Primary
-    derselben Entity ID die Filter besteht (oder gar kein Primary in CH existiert,
-    z.B. Lindt Partizipationsschein).
+    Listing-Logik (Variante B): Primary + Secondary laufen gemeinsam durch die Pipeline.
+    Beide Listings derselben Entity ID bleiben drin (z.B. Roche ROP-SWX + RO-SWX,
+    Swatch UHR-SWX + UHRN-SWX, Schindler SCHP-SWX + SCHN-SWX), sofern sie individuell
+    die Investability-Filter bestehen. Konsistent mit MSCI und Solactive (beide nehmen
+    Multi-Listings).
 
     Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
     """
@@ -3162,31 +3164,12 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
                                "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
                                "use_buffer": use_buffer}
 
-    # Step 3b: Primary-Selection — pro Entity ID nur Primary; Secondary nur wenn Primary
-    # nicht existiert oder Filter nicht besteht. Stocks ohne Entity ID bleiben wie sie sind
-    # (z.B. Multi-Class Securities oder Datenartefakte).
-    _eids_with_passing_primary = set(
-        df[df["Listing"] == "Primary"]["Entity ID"].dropna().astype(str).unique()
-    )
-    # Behalte:
-    #  - alle Primaries (die haben den Filter sowieso bestanden)
-    #  - Secondaries nur wenn KEIN Primary derselben Entity ID den Filter besteht
-    #  - Stocks ohne Entity ID (NaN) bleiben drin (defensive)
-    _eid_col = df["Entity ID"].fillna("").astype(str)
-    _keep_mask = (
-        (df["Listing"] == "Primary") |
-        (_eid_col == "") |
-        (~_eid_col.isin(_eids_with_passing_primary))
-    )
-    df = df[_keep_mask].copy()
-
-    # Bei mehreren passenden Secondaries derselben Entity: höchste Adj_FF_MCap behalten
-    _dupes = df[df["Listing"] != "Primary"].copy()
-    if len(_dupes) > 0 and _dupes["Entity ID"].fillna("").astype(str).duplicated().any():
-        _dupes_sorted = _dupes.sort_values("Adj_FF_MCap", ascending=False)
-        _keep_secondary_idx = _dupes_sorted.drop_duplicates(subset=["Entity ID"], keep="first").index
-        _drop_secondary_idx = set(_dupes.index) - set(_keep_secondary_idx)
-        df = df.drop(index=list(_drop_secondary_idx)).copy()
+    # Variante B: Primary + Secondary laufen gemeinsam durch die Pipeline.
+    # Beide Listings derselben Entity ID (z.B. Roche ROP-SWX + RO-SWX, Swatch UHR/UHRN)
+    # sind separate Securities mit eigenen Orderbüchern und eigener Float-MCap — beide
+    # bleiben drin, sofern sie individuell die Investability-Filter bestehen.
+    # Konsistent mit MSCI Section 2.2.2 ("applied at individual security level") und
+    # Solactive seit Methodik-Änderung 04/2025.
 
     # Step 4: Sort by Total MCap descending, mit Adj_FF_MCap als Tiebreaker
     # (liquideres Listing kommt bei gleichem Total MCap zuerst)
