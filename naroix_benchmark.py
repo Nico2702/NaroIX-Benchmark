@@ -1265,7 +1265,9 @@ def run_selection_pipeline(
     # mehreren Listings (z.B. Common + Pref) zu vermeiden. Die kalibrierten Schwellen
     # werden anschließend auf das volle Listing-Universe (inkl. Secondaries) angewendet.
     dm_only = gm_u[(gm_u["Classification"] == "DM") & (gm_u["Listing"] == "Primary")].copy()
-    dm_only = dm_only.sort_values("Total MCap Y2025", ascending=False)
+    # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class derselben Company)
+    # kommt das liquidere Listing (höheres Adj_FF_MCap) zuerst → deterministisches Ranking.
+    dm_only = dm_only.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False])
     dm_total_ff = dm_only["Free Float MCap Y2025"].sum()
     if dm_total_ff > 0:
         dm_only["_cum_ff_pct"] = dm_only["Free Float MCap Y2025"].cumsum() / dm_total_ff * 100
@@ -1295,7 +1297,8 @@ def run_selection_pipeline(
     # 5) Coverage waterfall per country — buffer-aware
     gm_results = []
     for ctry, grp in gm_liq.groupby("Mapping Country"):
-        grp = grp.sort_values("Total MCap Y2025", ascending=False).copy()
+        # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
+        grp = grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
         tot = grp[if_cum_col].sum()
         if tot == 0: continue
         grp["_c_before"] = grp[if_cum_col].cumsum().shift(1).fillna(0) / tot * 100
@@ -2633,7 +2636,7 @@ with tab_gimi:
         fol_enabled=apply_fol)
 
     # EUMSS calibration on DM Primary-only (Doppelzählung Common+Pref vermeiden; small_thr = 99%)
-    _gm_dm_all = _gm_u[(_gm_u["Classification"]=="DM") & (_gm_u["Listing"]=="Primary")].sort_values("Total MCap Y2025", ascending=False).copy()
+    _gm_dm_all = _gm_u[(_gm_u["Classification"]=="DM") & (_gm_u["Listing"]=="Primary")].sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
     _gm_ff_tot = _gm_dm_all["Free Float MCap Y2025"].sum()
     if _gm_ff_tot > 0:
         _gm_dm_all["_cp"] = _gm_dm_all["Free Float MCap Y2025"].cumsum() / _gm_ff_tot * 100
@@ -2670,7 +2673,8 @@ with tab_gimi:
         # Mit Buffer:  Schwelle = buffer_coverage (90%) für Incumbents, mid_thr (85%) sonst.
         _gm_results = []
         for _ctry, _grp in _gm_liq.groupby("Mapping Country"):
-            _grp = _grp.sort_values("Total MCap Y2025", ascending=False).copy()
+            # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
+            _grp = _grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
             _tot = _grp[if_cum_col].sum()
             if _tot == 0: continue
 
@@ -3184,8 +3188,9 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
         _drop_secondary_idx = set(_dupes.index) - set(_keep_secondary_idx)
         df = df.drop(index=list(_drop_secondary_idx)).copy()
 
-    # Step 4: Sort by Total MCap descending, cumulative on Adj_FF_MCap
-    df = df.sort_values("Total MCap Y2025", ascending=False).reset_index(drop=True)
+    # Step 4: Sort by Total MCap descending, mit Adj_FF_MCap als Tiebreaker
+    # (liquideres Listing kommt bei gleichem Total MCap zuerst)
+    df = df.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
     tot = df["Adj_FF_MCap"].sum()
     df["_c_before"] = df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100
 
