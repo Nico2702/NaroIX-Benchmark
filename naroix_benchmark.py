@@ -3185,7 +3185,7 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
     helv = pd.concat([df_std, df_small], ignore_index=True)
 
     params = {
-        "adtv_thr":   adtv_thr,
+        "adtv_thr":   ADTV_THR,
         "min_ff_pct": min_ff_pct,
         "large_cut":  large_cut,
         "std_cut":    std_cut,
