@@ -1307,15 +1307,11 @@ def run_selection_pipeline(
             thr_per_stock = np.full(len(grp), mid_thr)
         in_cut = grp["_c_before"].values < thr_per_stock
         inc = grp[in_cut].copy()
-        tot_inc = inc[if_cum_col].sum()
-        # _cp2_before: Cumulative VOR dem Stock — analog zu _c_before im 85%-Cut.
-        # Straddle-Stock landet in Large Cap (konsistent mit "Straddle bleibt im
-        # 'höheren' Bucket" wie beim 85%-Cut).
-        if tot_inc > 0:
-            inc["_cp2_before"] = inc[if_cum_col].cumsum().shift(1).fillna(0) / tot_inc * 100
-        else:
-            inc["_cp2_before"] = 0
-        inc["Segment_New"] = np.where(inc["_cp2_before"] < large_thr, "Large Cap", "Mid Cap")
+        # OPTION B: Large/Mid Klassifikation auf POOL-Basis (Cum_Weight am gesamten
+        # Country-Pool, nicht umnormalisiert auf Standard-Pool).
+        # Large = _c_before < 70%, Mid = 70% ≤ _c_before < 85% (bzw. Buffer-Schwelle).
+        # Straddle-Stock bleibt im höheren Bucket (konsistent mit 85%-Cut).
+        inc["Segment_New"] = np.where(inc["_c_before"] < large_thr, "Large Cap", "Mid Cap")
         gm_results.append(inc)
     gm_std = pd.concat(gm_results, ignore_index=True) if gm_results else pd.DataFrame(columns=gm_liq.columns.tolist() + ["Segment_New"])
 
@@ -2692,13 +2688,9 @@ with tab_gimi:
             _in_cut = _grp["_c_before"].values < _thr_per_stock
             _inc = _grp[_in_cut].copy()
 
-            _tot_inc = _inc[if_cum_col].sum()
-            # _cp2_before: Cumulative VOR dem Stock — Straddle-Konsistenz mit 85%-Cut
-            if _tot_inc > 0:
-                _inc["_cp2_before"] = _inc[if_cum_col].cumsum().shift(1).fillna(0) / _tot_inc * 100
-            else:
-                _inc["_cp2_before"] = 0
-            _inc["Segment_New"] = np.where(_inc["_cp2_before"] < large_thr, "Large Cap", "Mid Cap")
+            # OPTION B: Large/Mid auf POOL-Basis (gleiche Skala wie _c_before).
+            # Large = _c_before < 70%, Mid = 70% ≤ _c_before < 85% (bzw. Buffer).
+            _inc["Segment_New"] = np.where(_inc["_c_before"] < large_thr, "Large Cap", "Mid Cap")
             _gm_results.append(_inc)
 
         _gm_std = pd.concat(_gm_results, ignore_index=True) if _gm_results else pd.DataFrame(columns=_gm_liq.columns.tolist()+["Segment_New"])
@@ -2789,8 +2781,8 @@ with tab_gimi:
             {"Schritt":f"2 — EUMSS Filter ({_gm_eumss_full/1e6:.0f}M)","DM":(_gm_eumss["Classification"]=="DM").sum(),"EM":(_gm_eumss["Classification"]=="EM").sum(),"Total":len(_gm_eumss),"Δ":f"-{len(_gm_u)-len(_gm_eumss):,}"},
             {"Schritt":"3 — Liquiditätsfilter","DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
             {"Schritt":f"4 — {mid_thr}% Coverage → Standard Index" + (f" (+ Buffer {buffer_coverage}% für Incumbents)" if apply_buffer and len(incumbents_isin_set)>0 else ""),"DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
-            {"Schritt":f"    ├─ Large Cap (_cp2_before < {large_thr}%)","DM":(_gm_large["Classification"]=="DM").sum() if len(_gm_large)>0 else 0,"EM":(_gm_large["Classification"]=="EM").sum() if len(_gm_large)>0 else 0,"Total":len(_gm_large),"Δ":"—"},
-            {"Schritt":f"    └─ Mid Cap   (_cp2_before ≥ {large_thr}%)","DM":(_gm_mid["Classification"]=="DM").sum() if len(_gm_mid)>0 else 0,"EM":(_gm_mid["Classification"]=="EM").sum() if len(_gm_mid)>0 else 0,"Total":len(_gm_mid),"Δ":"—"},
+            {"Schritt":f"    ├─ Large Cap (_c_before < {large_thr}%)","DM":(_gm_large["Classification"]=="DM").sum() if len(_gm_large)>0 else 0,"EM":(_gm_large["Classification"]=="EM").sum() if len(_gm_large)>0 else 0,"Total":len(_gm_large),"Δ":"—"},
+            {"Schritt":f"    └─ Mid Cap   (_c_before ≥ {large_thr}%)","DM":(_gm_mid["Classification"]=="DM").sum() if len(_gm_mid)>0 else 0,"EM":(_gm_mid["Classification"]=="EM").sum() if len(_gm_mid)>0 else 0,"Total":len(_gm_mid),"Δ":"—"},
             {"Schritt":f"5 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
         ]
         _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}"
@@ -3120,13 +3112,17 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
     """
     Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
-    Schwellen:
+    Filter & Schwellen:
                        Entry        Maintenance
       ADTV 3M          ≥ $0.5M      ≥ $0.5M   (fest, kein Buffer)
       Min FF %         ≥ 10%        ≥ 7.5%
       Large Cap        _cp2_before < 70%   < 75%
       Standard         _c_before  < 85%    < 90%
       Small Cap        _c_before  < 99%    < 99.5%
+
+    Listing-Logik: Primary only, mit Fallback auf Secondary wenn kein Primary
+    derselben Entity ID die Filter besteht (oder gar kein Primary in CH existiert,
+    z.B. Lindt Partizipationsschein).
 
     Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
     """
@@ -3162,6 +3158,32 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
                     "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
                     "use_buffer": use_buffer}
 
+    # Step 3b: Primary-Selection — pro Entity ID nur Primary; Secondary nur wenn Primary
+    # nicht existiert oder Filter nicht besteht. Stocks ohne Entity ID bleiben wie sie sind
+    # (z.B. Multi-Class Securities oder Datenartefakte).
+    _eids_with_passing_primary = set(
+        df[df["Listing"] == "Primary"]["Entity ID"].dropna().astype(str).unique()
+    )
+    # Behalte:
+    #  - alle Primaries (die haben den Filter sowieso bestanden)
+    #  - Secondaries nur wenn KEIN Primary derselben Entity ID den Filter besteht
+    #  - Stocks ohne Entity ID (NaN) bleiben drin (defensive)
+    _eid_col = df["Entity ID"].fillna("").astype(str)
+    _keep_mask = (
+        (df["Listing"] == "Primary") |
+        (_eid_col == "") |
+        (~_eid_col.isin(_eids_with_passing_primary))
+    )
+    df = df[_keep_mask].copy()
+
+    # Bei mehreren passenden Secondaries derselben Entity: höchste Adj_FF_MCap behalten
+    _dupes = df[df["Listing"] != "Primary"].copy()
+    if len(_dupes) > 0 and _dupes["Entity ID"].fillna("").astype(str).duplicated().any():
+        _dupes_sorted = _dupes.sort_values("Adj_FF_MCap", ascending=False)
+        _keep_secondary_idx = _dupes_sorted.drop_duplicates(subset=["Entity ID"], keep="first").index
+        _drop_secondary_idx = set(_dupes.index) - set(_keep_secondary_idx)
+        df = df.drop(index=list(_drop_secondary_idx)).copy()
+
     # Step 4: Sort by Total MCap descending, cumulative on Adj_FF_MCap
     df = df.sort_values("Total MCap Y2025", ascending=False).reset_index(drop=True)
     tot = df["Adj_FF_MCap"].sum()
@@ -3172,10 +3194,10 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
     df_small = df[(df["_c_before"] >= std_cut) & (df["_c_before"] < small_cut)].copy()
 
     # Within Standard: split Large vs Mid
+    # OPTION B: Large/Mid auf POOL-Basis (gleiche Skala wie _c_before für Standard-Cut).
+    # Large = _c_before < 70%, Mid = 70% ≤ _c_before < std_cut (85% bzw. 90%).
     if len(df_std) > 0:
-        tot_std = df_std["Adj_FF_MCap"].sum()
-        df_std["_cp2_before"] = df_std["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot_std * 100
-        df_std["Segment_New"] = np.where(df_std["_cp2_before"] < large_cut, "Large Cap", "Mid Cap")
+        df_std["Segment_New"] = np.where(df_std["_c_before"] < large_cut, "Large Cap", "Mid Cap")
     else:
         df_std["Segment_New"] = pd.Series([], dtype="object")
 
