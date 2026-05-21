@@ -2296,12 +2296,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_multi = st.tabs([
+tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica, tab_multi = st.tabs([
     "🌍 Universe Overview",
     "⚡ GIMI Method",
     "🇪🇺 Europe Index",
     "🇩🇪 Germany",
     "🇨🇭 Switzerland",
+    "🏔️ Helvetica",
     "🔁 Multi-Period Run",
 ])
 
@@ -3100,7 +3101,235 @@ with tab_switzerland:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 6: Multi-Period Run
+# Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
+# ══════════════════════════════════════════════════════════════════════════════
+def build_helvetica_pipeline(gm_universe, use_buffer=False):
+    """
+    Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
+
+    Schwellen:
+                       Entry        Maintenance
+      ADTV 3M          ≥ $2.0M      ≥ $1.0M
+      ADTV 6M          ≥ $2.0M      ≥ $1.0M
+      Min FF %         ≥ 10%        ≥ 7.5%
+      Large Cap        _cp2_before < 70%   < 75%
+      Standard         _c_before  < 85%    < 90%
+      Small Cap        _c_before  < 99%    < 99.5%
+
+    Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
+    """
+    # Thresholds
+    if use_buffer:
+        adtv_thr     = 1_000_000
+        min_ff_pct   = 0.075
+        large_cut    = 75.0
+        std_cut      = 90.0
+        small_cut    = 99.5
+    else:
+        adtv_thr     = 2_000_000
+        min_ff_pct   = 0.10
+        large_cut    = 70.0
+        std_cut      = 85.0
+        small_cut    = 99.0
+
+    # Step 1: Hard Filter — CH-gelistet, FF MCap > 0
+    df = gm_universe[
+        (gm_universe["Exchange Country Name"] == "SWITZERLAND") &
+        (gm_universe["Free Float MCap Y2025"] > 0)
+    ].copy()
+
+    # Step 2: Min FF %
+    df = df[df["Free Float Percent"] >= min_ff_pct].copy()
+
+    # Step 3: Liquidity — beide ADTV-Schwellen
+    df = df[(df["3M ADTV Y2025"] >= adtv_thr) & (df["6M ADTV Y2025"] >= adtv_thr)].copy()
+
+    if len(df) == 0:
+        return df, {"adtv_thr": adtv_thr, "min_ff_pct": min_ff_pct,
+                    "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut}
+
+    # Step 4: Sort by Total MCap descending, cumulative on Adj_FF_MCap
+    df = df.sort_values("Total MCap Y2025", ascending=False).reset_index(drop=True)
+    tot = df["Adj_FF_MCap"].sum()
+    df["_c_before"] = df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100
+
+    # Step 5: Cut on Standard, Small, Outside
+    df_std   = df[df["_c_before"] < std_cut].copy()
+    df_small = df[(df["_c_before"] >= std_cut) & (df["_c_before"] < small_cut)].copy()
+
+    # Within Standard: split Large vs Mid
+    if len(df_std) > 0:
+        tot_std = df_std["Adj_FF_MCap"].sum()
+        df_std["_cp2_before"] = df_std["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot_std * 100
+        df_std["Segment_New"] = np.where(df_std["_cp2_before"] < large_cut, "Large Cap", "Mid Cap")
+    else:
+        df_std["Segment_New"] = pd.Series([], dtype="object")
+
+    df_small["Segment_New"] = "Small Cap"
+
+    # Combine
+    helv = pd.concat([df_std, df_small], ignore_index=True)
+
+    params = {
+        "adtv_thr":   adtv_thr,
+        "min_ff_pct": min_ff_pct,
+        "large_cut":  large_cut,
+        "std_cut":    std_cut,
+        "small_cut":  small_cut,
+        "use_buffer": use_buffer,
+    }
+    return helv, params
+
+
+def render_helvetica_tab(gm_universe):
+    """Render Helvetica Tab — kundenspezifischer Schweizer Index."""
+    st.markdown("## 🏔️ Helvetica")
+    st.caption(
+        "Kundenspezifischer Schweizer Index — Exchange Country = Switzerland only. "
+        "Eigenständige Pipeline aus Universe (vor EUMSS), eigene Coverage-Cuts. "
+        "Real Estate Development als separate Section."
+    )
+
+    # ── Toggle: Entry vs Buffer ────────────────────────────────────────────
+    _use_buffer = st.toggle(
+        "Maintenance Buffer aktivieren (75% / 90% / 99.5% statt 70% / 85% / 99%)",
+        value=False,
+        key="helvetica_buffer_toggle",
+        help=(
+            "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99%, ADTV ≥ $2M, FF% ≥ 10%.\n\n"
+            "**An (Buffer):** Maintenance-Schwellen — Coverage 75/90/99.5%, ADTV ≥ $1M, FF% ≥ 7.5%. "
+            "Im Single-Snapshot-Modus dient dies zum Vergleichen — der Effekt der Buffer-Logik bei "
+            "tatsächlicher Multi-Period-Pflege wird erst mit Historie sichtbar."
+        ),
+    )
+
+    # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
+    helv, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer)
+
+    if len(helv) == 0:
+        st.warning("⚠️ Keine Stocks im Helvetica-Universe (Exchange Country = Switzerland, FF MCap > 0, Min FF%, ADTV-Schwellen).")
+        return
+
+    # ── Methodik-Box ───────────────────────────────────────────────────────
+    _params_text = (
+        f"**Aktive Schwellen** ({'Maintenance' if _use_buffer else 'Entry'}): "
+        f"ADTV ≥ ${params['adtv_thr']/1e6:.1f}M (3M & 6M) | "
+        f"FF % ≥ {params['min_ff_pct']*100:.1f}% | "
+        f"Large Cap < {params['large_cut']:.1f}% | "
+        f"Standard < {params['std_cut']:.1f}% | "
+        f"Small Cap < {params['small_cut']:.1f}%"
+    )
+    st.info(_params_text)
+
+    # ── Section-Splits ──────────────────────────────────────────────────────
+    RE_INDUSTRY = "Real Estate Development"
+
+    _large_all = helv[helv["Segment_New"] == "Large Cap"].copy()
+    _mid_all   = helv[helv["Segment_New"] == "Mid Cap"].copy()
+    _small_all = helv[helv["Segment_New"] == "Small Cap"].copy()
+
+    _std_inc_re = pd.concat([_large_all, _mid_all], ignore_index=True)         # Standard inkl. RE
+    _large_ex_re = _large_all[_large_all["FactSet Industry"] != RE_INDUSTRY]
+    _mid_ex_re   = _mid_all[_mid_all["FactSet Industry"]   != RE_INDUSTRY]
+    _small_ex_re = _small_all[_small_all["FactSet Industry"] != RE_INDUSTRY]
+    _real_estate = helv[helv["FactSet Industry"] == RE_INDUSTRY]                # alle Segmente, nur RE
+
+    # ── Header-Metrics ────────────────────────────────────────────────────
+    st.markdown("---")
+    _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+    _mc1.metric("Standard (L+M, incl. RE)", f"{len(_std_inc_re):,}")
+    _mc2.metric("Large excl. RE",            f"{len(_large_ex_re):,}")
+    _mc3.metric("Mid excl. RE",              f"{len(_mid_ex_re):,}")
+    _mc4.metric("Small excl. RE",            f"{len(_small_ex_re):,}")
+    _mc5.metric("Real Estate (all)",         f"{len(_real_estate):,}")
+
+    # ── 5 Sub-Sections ────────────────────────────────────────────────────
+    def _render_section(label, df, key_suffix, caption=""):
+        st.markdown("---")
+        if len(df) == 0:
+            st.markdown(f"### {label}")
+            st.caption(f"Keine Stocks in dieser Section.")
+            return
+        _df = df.copy()
+        _sec_total = _df["Adj_FF_MCap"].sum()
+        if _sec_total > 0:
+            _df["Section_Weight"] = (_df["Adj_FF_MCap"] / _sec_total * 100).round(6)
+        else:
+            _df["Section_Weight"] = 0.0
+        _df = _df.sort_values("Section_Weight", ascending=False)
+
+        st.markdown(f"### {label}")
+        if caption:
+            st.caption(caption)
+        _sc1, _sc2 = st.columns(2)
+        _sc1.metric("Stocks", f"{len(_df):,}")
+        _sc2.metric("Section Adj. FF MCap", f"${_sec_total/1e9:.2f}B")
+
+        # Top Table
+        _show_n = min(len(_df), 25)
+        _top_cols = [c for c in ["Exchange Ticker", "Name", "FactSet Industry",
+                                  "Listing", "Sec Type", "Segment_New",
+                                  "Adj_FF_MCap", "Section_Weight"] if c in _df.columns]
+        _top = _df[_top_cols].head(_show_n).copy()
+        if "Adj_FF_MCap" in _top.columns:
+            _top["Adj_FF_MCap"] = _top["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
+        if "Section_Weight" in _top.columns:
+            _top["Section_Weight"] = _top["Section_Weight"].map(lambda x: f"{x:.4f}%")
+        st.dataframe(_top, use_container_width=True, hide_index=True)
+        if len(_df) > _show_n:
+            st.caption(f"Anzeige: Top {_show_n} von {len(_df)} Stocks. Vollständige Liste im Excel-Download.")
+
+        # Download
+        _drop = ["_cum_pct", "_c", "_c_before", "_cp2", "_cp2_before", "ADTV_Best", "IF", "Section_Weight"]
+        _dl_df = _df[[c for c in _df.columns if c not in _drop]].copy()
+        _dl_df = normalize_index_weight(_dl_df)
+        _meta = {
+            "Index": "Helvetica",
+            "Section": label,
+            "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
+            "ADTV Schwelle": f"${params['adtv_thr']/1e6:.1f}M",
+            "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
+            "Large Cap Cut": f"{params['large_cut']:.1f}%",
+            "Standard Cut": f"{params['std_cut']:.1f}%",
+            "Small Cap Cut": f"{params['small_cut']:.1f}%",
+            "Snapshot Datum": _snapshot_label,
+        }
+        st.download_button(
+            f"⬇️ Download Helvetica {label} als Excel",
+            data=to_excel_multi({
+                f"Helvetica {label}": _dl_df,
+                "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _meta.items()]),
+            }),
+            file_name=f"Helvetica_{label.replace(' ','_').replace('(','').replace(')','').replace('+','und').replace('.','')}_{_snapshot_label.replace('.','')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_helvetica_{key_suffix}",
+        )
+
+    _render_section(
+        "Standard Index (Large + Mid, incl. Real Estate)", _std_inc_re, "std_inc",
+        "Standard Index = Large + Mid Cap. Inklusive Real Estate Development.",
+    )
+    _render_section("Large Cap (excl. Real Estate)", _large_ex_re, "large_ex", "")
+    _render_section("Mid Cap (excl. Real Estate)",   _mid_ex_re,   "mid_ex",   "")
+    _render_section("Small Cap (excl. Real Estate)", _small_ex_re, "small_ex", "")
+    _render_section(
+        "Real Estate", _real_estate, "re",
+        "FactSet Industry = 'Real Estate Development'. Alle Cap-Segmente (Large + Mid + Small).",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6: Helvetica
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_helvetica:
+    try:
+        render_helvetica_tab(_gm_u)
+    except NameError:
+        st.warning("⚠️ Bitte zuerst Tab '⚡ GIMI Method' aufrufen damit das Universe berechnet wird.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7: Multi-Period Run
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_multi:
     st.markdown("## 🔁 Multi-Period Run")
