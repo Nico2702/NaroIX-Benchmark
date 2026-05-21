@@ -3109,8 +3109,7 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
 
     Schwellen:
                        Entry        Maintenance
-      ADTV 3M          ≥ $2.0M      ≥ $1.0M
-      ADTV 6M          ≥ $2.0M      ≥ $1.0M
+      ADTV 3M          ≥ $0.5M      ≥ $0.5M   (fest, kein Buffer)
       Min FF %         ≥ 10%        ≥ 7.5%
       Large Cap        _cp2_before < 70%   < 75%
       Standard         _c_before  < 85%    < 90%
@@ -3118,15 +3117,16 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
 
     Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
     """
-    # Thresholds
+    # Liquidität: fest, kein Buffer
+    ADTV_THR = 500_000
+
+    # Buffer betrifft nur FF % und Coverage-Cuts
     if use_buffer:
-        adtv_thr     = 1_000_000
         min_ff_pct   = 0.075
         large_cut    = 75.0
         std_cut      = 90.0
         small_cut    = 99.5
     else:
-        adtv_thr     = 2_000_000
         min_ff_pct   = 0.10
         large_cut    = 70.0
         std_cut      = 85.0
@@ -3141,12 +3141,13 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False):
     # Step 2: Min FF %
     df = df[df["Free Float Percent"] >= min_ff_pct].copy()
 
-    # Step 3: Liquidity — beide ADTV-Schwellen
-    df = df[(df["3M ADTV Y2025"] >= adtv_thr) & (df["6M ADTV Y2025"] >= adtv_thr)].copy()
+    # Step 3: Liquidity — nur 3M ADTV, fest $0.5M
+    df = df[df["3M ADTV Y2025"] >= ADTV_THR].copy()
 
     if len(df) == 0:
-        return df, {"adtv_thr": adtv_thr, "min_ff_pct": min_ff_pct,
-                    "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut}
+        return df, {"adtv_thr": ADTV_THR, "min_ff_pct": min_ff_pct,
+                    "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
+                    "use_buffer": use_buffer}
 
     # Step 4: Sort by Total MCap descending, cumulative on Adj_FF_MCap
     df = df.sort_values("Total MCap Y2025", ascending=False).reset_index(drop=True)
@@ -3213,7 +3214,7 @@ def render_helvetica_tab(gm_universe):
     # ── Methodik-Box ───────────────────────────────────────────────────────
     _params_text = (
         f"**Aktive Schwellen** ({'Maintenance' if _use_buffer else 'Entry'}): "
-        f"ADTV ≥ ${params['adtv_thr']/1e6:.1f}M (3M & 6M) | "
+        f"3M ADTV ≥ ${params['adtv_thr']/1e6:.1f}M (fest) | "
         f"FF % ≥ {params['min_ff_pct']*100:.1f}% | "
         f"Large Cap < {params['large_cut']:.1f}% | "
         f"Standard < {params['std_cut']:.1f}% | "
@@ -3228,16 +3229,17 @@ def render_helvetica_tab(gm_universe):
     _mid_all   = helv[helv["Segment_New"] == "Mid Cap"].copy()
     _small_all = helv[helv["Segment_New"] == "Small Cap"].copy()
 
-    _std_inc_re = pd.concat([_large_all, _mid_all], ignore_index=True)         # Standard inkl. RE
+    # Alle 4 Standard-Sections OHNE Real Estate (symmetrisch)
     _large_ex_re = _large_all[_large_all["FactSet Industry"] != RE_INDUSTRY]
     _mid_ex_re   = _mid_all[_mid_all["FactSet Industry"]   != RE_INDUSTRY]
     _small_ex_re = _small_all[_small_all["FactSet Industry"] != RE_INDUSTRY]
-    _real_estate = helv[helv["FactSet Industry"] == RE_INDUSTRY]                # alle Segmente, nur RE
+    _std_ex_re   = pd.concat([_large_ex_re, _mid_ex_re], ignore_index=True)      # Standard ohne RE
+    _real_estate = helv[helv["FactSet Industry"] == RE_INDUSTRY]                  # alle Segmente, nur RE
 
     # ── Header-Metrics ────────────────────────────────────────────────────
     st.markdown("---")
     _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
-    _mc1.metric("Standard (L+M, incl. RE)", f"{len(_std_inc_re):,}")
+    _mc1.metric("Standard (L+M, excl. RE)", f"{len(_std_ex_re):,}")
     _mc2.metric("Large excl. RE",            f"{len(_large_ex_re):,}")
     _mc3.metric("Mid excl. RE",              f"{len(_mid_ex_re):,}")
     _mc4.metric("Small excl. RE",            f"{len(_small_ex_re):,}")
@@ -3306,8 +3308,8 @@ def render_helvetica_tab(gm_universe):
         )
 
     _render_section(
-        "Standard Index (Large + Mid, incl. Real Estate)", _std_inc_re, "std_inc",
-        "Standard Index = Large + Mid Cap. Inklusive Real Estate Development.",
+        "Standard Index (Large + Mid, excl. Real Estate)", _std_ex_re, "std_ex",
+        "Standard Index = Large + Mid Cap. Real Estate Development ist in der separaten Real-Estate-Section.",
     )
     _render_section("Large Cap (excl. Real Estate)", _large_ex_re, "large_ex", "")
     _render_section("Mid Cap (excl. Real Estate)",   _mid_ex_re,   "mid_ex",   "")
