@@ -2285,6 +2285,19 @@ df_raw_all = df_raw_all[df_raw_all["Classification"].notna()].copy()
 df_dm_full = df_raw_all[df_raw_all["Classification"] == "DM"].copy()
 df_em_full = df_raw_all[df_raw_all["Classification"] == "EM"].copy()
 
+# ─── Universe global vorberechnen ─────────────────────────────────────────────
+# _gm_u (das Pipeline-Universe nach Exclusions + FOL) wird vor den Tabs
+# einmalig berechnet, damit alle Tabs (insbesondere Helvetica) konsistenten
+# Zugriff darauf haben, unabhängig davon welcher Tab zuerst angeklickt wird.
+_gm_u_global = build_new_universe(
+    df_raw_original, country_cls, thailand_sec_type, max_closing_price,
+    exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+    china_inclusion_factor,
+    atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
+    fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
+    fol_enabled=apply_fol,
+)
+
 
 # ─── Header ─────────────────────────────────────────────────────────────────
 st.markdown(f"""
@@ -3324,10 +3337,10 @@ def render_helvetica_tab(gm_universe):
 # TAB 6: Helvetica
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_helvetica:
-    try:
-        render_helvetica_tab(_gm_u)
-    except NameError:
-        st.warning("⚠️ Bitte zuerst Tab '⚡ GIMI Method' aufrufen damit das Universe berechnet wird.")
+    if _gm_u_global is None or len(_gm_u_global) == 0:
+        st.warning("⚠️ Universe ist leer. Bitte Datei-Upload und Filter-Einstellungen prüfen.")
+    else:
+        render_helvetica_tab(_gm_u_global)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
