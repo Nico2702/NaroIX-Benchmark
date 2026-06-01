@@ -568,6 +568,11 @@ def build_snapshot_from_master(master_data, selection_date_iso):
       Diese Heuristik ist methodisch sauber: solange eine Aktie zum Selection Date
       einen Preis hat, gilt sie als handelbar.
 
+    Free Float Percent Normalisierung:
+      Master-File liefert "Float PCT" als Prozent (0-100), Single-Snapshot als
+      Dezimal (0-1). Der Rest des Codes erwartet Dezimal — daher hier konvertieren
+      wenn Werte > 1 auftauchen.
+
     Returns: DataFrame mit allen Spalten (static + dynamic normalisiert auf Y2025)
     """
     if selection_date_iso not in master_data["periods"]:
@@ -579,6 +584,14 @@ def build_snapshot_from_master(master_data, selection_date_iso):
     # Concat auf Spalten-Ebene (beide haben gleichen Index)
     combined = pd.concat([static_df.reset_index(drop=True),
                           period_df.reset_index(drop=True)], axis=1)
+
+    # Free Float Percent normalisieren: Master-File-Format ist Prozent (0-100),
+    # Code erwartet Dezimal (0-1). Wenn Median > 1, dividieren durch 100.
+    if "Free Float Percent" in combined.columns:
+        _ffp_num = pd.to_numeric(combined["Free Float Percent"], errors="coerce")
+        _ffp_med = _ffp_num.dropna().median() if _ffp_num.notna().any() else 0
+        if _ffp_med > 1:  # Werte sind im Prozent-Format (z.B. 99.879)
+            combined["Free Float Percent"] = _ffp_num / 100.0
 
     # Listing Status ableiten falls nicht im File
     if "Listing Status" not in combined.columns:
