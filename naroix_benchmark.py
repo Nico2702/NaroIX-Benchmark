@@ -193,10 +193,15 @@ def load_excel(file):
 # Master-File Loader (Multi-Period)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Dynamische Feld-Prefixe (alle Felder mit YYYY-MM-DD Suffix)
+# Dynamische Feld-Prefixe (alle Felder mit YYYY-MM-DD Suffix im Master-File)
+# Master-File-Format: "Float MCap" (getrennt). "FloatMCap" und "Free Float MCap"
+# bleiben als Rückwärtskompatibilität für ältere Files.
 MASTER_DYNAMIC_PREFIXES = [
     "Total MCap",
-    "Free Float MCap",
+    "Share MCap",          # informativ, derzeit nicht in der Pipeline genutzt
+    "Float MCap",          # FF MCap (Master-File getrennt geschrieben)
+    "FloatMCap",           # ältere zusammengeschriebene Variante (Rückwärtskompatibilität)
+    "Free Float MCap",     # Single-Snapshot-Standard
     "Float PCT",
     "Free Float Percent",
     "Closing Price",
@@ -417,10 +422,18 @@ def load_master_excel(file, valid_selection_dates_iso):
 
         # Normalisiere Spalten-Namen auf den internen Standard (analog load_excel)
         rename_static = {
-            "Country Name":  "Exchange Country Name",
-            "Sector":        "FactSet Econ Sector",
-            "Industry":      "FactSet Industry",
-            "Inudstry":      "FactSet Industry",  # Typo-Toleranz
+            # Country-Felder
+            "Country Name":              "Exchange Country Name",
+            "Exchange Country":          "Exchange Country Name",   # Master-File
+            "Country Mapping":           "Mapping Country",          # Master-File: Mapping direkt aus Excel
+            # Sector/Industry
+            "Sector":                    "FactSet Econ Sector",
+            "FactSet Sector":            "FactSet Econ Sector",
+            "Industry":                  "FactSet Industry",
+            "Inudstry":                  "FactSet Industry",         # Typo-Toleranz (ältere Files)
+            # IDs (Master-File-Format mit Klammer-Suffix)
+            "Perm ID (Security)":        "Perm ID",
+            "Entity ID (Company)":       "Entity ID",
         }
         static_df = static_df.rename(columns=rename_static)
 
@@ -444,16 +457,19 @@ def load_master_excel(file, valid_selection_dates_iso):
         for d, prefix_map in dynamic_cols.items():
             period_df = pd.DataFrame(index=df.index)
             rename_map_dynamic = {
-                "Total MCap":       "Total MCap Y2025",
-                "Free Float MCap":  "Free Float MCap Y2025",
-                "Float PCT":        "Free Float Percent",
-                "Free Float Percent": "Free Float Percent",
-                "Closing Price":    "Closing Price",
-                "1M ADTV":          "1M ADTV Y2025",
-                "3M ADTV":          "3M ADTV Y2025",
-                "6M ADTV":          "6M ADTV Y2025",
-                "12M ADTV":         "12M ADTV Y2025",
-                "Listing Status":   "Listing Status",
+                "Total MCap":          "Total MCap Y2025",
+                "Float MCap":          "Free Float MCap Y2025",   # Master-File-Standard (getrennt)
+                "FloatMCap":           "Free Float MCap Y2025",   # legacy (zusammen)
+                "Free Float MCap":     "Free Float MCap Y2025",   # Single-Snapshot-Standard
+                "Float PCT":           "Free Float Percent",
+                "Free Float Percent":  "Free Float Percent",
+                "Closing Price":       "Closing Price",
+                "1M ADTV":             "1M ADTV Y2025",
+                "3M ADTV":             "3M ADTV Y2025",
+                "6M ADTV":             "6M ADTV Y2025",
+                "12M ADTV":            "12M ADTV Y2025",
+                "Listing Status":      "Listing Status",
+                # "Share MCap" wird absichtlich nicht gemappt — informative Spalte
             }
             for prefix, col_name in prefix_map.items():
                 target = rename_map_dynamic.get(prefix)
@@ -534,6 +550,15 @@ def build_snapshot_from_master(master_data, selection_date_iso):
     """Kombiniert static_df + dynamische Spalten für ein bestimmtes Selection Date
     zu einem DataFrame, der aussieht wie ein normaler FactSet-Export (Single-Snapshot).
 
+    Listing Status Logik:
+      - Falls "Listing Status" als dynamische Spalte im File vorhanden ist (selten,
+        nur für letzte Periode), wird sie übernommen.
+      - Andernfalls aus Closing Price abgeleitet:
+          Closing Price > 0  → Listing Status = 0 (aktiv/gelistet)
+          Closing Price ≤ 0 oder NaN → Listing Status = 1 (delisted oder pre-IPO)
+      Diese Heuristik ist methodisch sauber: solange eine Aktie zum Selection Date
+      einen Preis hat, gilt sie als handelbar.
+
     Returns: DataFrame mit allen Spalten (static + dynamic normalisiert auf Y2025)
     """
     if selection_date_iso not in master_data["periods"]:
@@ -545,6 +570,16 @@ def build_snapshot_from_master(master_data, selection_date_iso):
     # Concat auf Spalten-Ebene (beide haben gleichen Index)
     combined = pd.concat([static_df.reset_index(drop=True),
                           period_df.reset_index(drop=True)], axis=1)
+
+    # Listing Status ableiten falls nicht im File
+    if "Listing Status" not in combined.columns:
+        if "Closing Price" in combined.columns:
+            _cp = pd.to_numeric(combined["Closing Price"], errors="coerce").fillna(0)
+            combined["Listing Status"] = np.where(_cp > 0, 0, 1)
+        else:
+            # Defensive: ohne Closing Price können wir nichts ableiten — alle aktiv
+            combined["Listing Status"] = 0
+
     return combined
 
 
