@@ -411,9 +411,18 @@ def load_master_excel(file, valid_selection_dates_iso):
             return {"error": "Keine Selection Dates aus dem Master-File stimmen mit Selection_Dates.xlsx überein."}
 
         # Prüfe pro Date: sind die Pflicht-Kernfelder da?
-        required_per_date = ["Total MCap", "Free Float MCap", "Closing Price"]
+        # FF MCap kann unter verschiedenen Namen kommen (Float MCap / FloatMCap / Free Float MCap)
+        # — wir prüfen ob mindestens einer der Aliase pro Periode vorhanden ist.
+        ff_mcap_aliases = ["Float MCap", "FloatMCap", "Free Float MCap"]
         for d in detected_dates:
-            missing = [p for p in required_per_date if p not in dynamic_cols[d]]
+            present_prefixes = set(dynamic_cols[d].keys())
+            missing = []
+            if "Total MCap" not in present_prefixes:
+                missing.append("Total MCap")
+            if not any(alias in present_prefixes for alias in ff_mcap_aliases):
+                missing.append("FF MCap (Float MCap / FloatMCap / Free Float MCap)")
+            if "Closing Price" not in present_prefixes:
+                missing.append("Closing Price")
             if missing:
                 warnings_list.append(f"Selection Date {d}: fehlende Pflichtfelder {missing} — Stocks dieser Periode evtl. unvollständig")
 
