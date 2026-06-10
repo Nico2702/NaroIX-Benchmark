@@ -14,9 +14,16 @@ def format_bn(val):
     return f"{val:.0f}"
 
 def to_excel_multi(sheets: dict):
-    """Export multiple DataFrames as sheets. sheets = {sheet_name: df}"""
+    """Export multiple DataFrames as sheets. sheets = {sheet_name: df}.
+    Uses xlsxwriter (markedly faster than openpyxl when writing many sheets);
+    falls back to openpyxl if xlsxwriter is unavailable."""
+    try:
+        import xlsxwriter  # noqa: F401
+        _engine = "xlsxwriter"
+    except Exception:
+        _engine = "openpyxl"
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    with pd.ExcelWriter(buf, engine=_engine) as writer:
         for sheet_name, df in sheets.items():
             df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
     return buf.getvalue()
@@ -899,16 +906,15 @@ def apply_fol_matrix(df, fol_matrix, sector_fallback, year, thailand_mode,
     sectors = df.get("FactSet Econ Sector", pd.Series([""] * len(df))).fillna("")
     industries = df.get("FactSet Industry", pd.Series([""] * len(df))).fillna("")
 
-    fol_values = []
-    sources = []
-    for i in range(len(df)):
-        fol_v, src = _resolve_fol_row(ecn.iloc[i], sectors.iloc[i], industries.iloc[i],
-                                       year, fol_matrix, sector_fallback)
-        fol_values.append(fol_v)
-        sources.append(src)
-
-    df["FOL_Value"] = fol_values
-    df["IF_Source"] = sources
+    # Resolve FOL on UNIQUE (country, sector, industry) triples only. _resolve_fol_row is
+    # a pure function of these (year + matrix fixed per call), so the ~28k rows collapse to
+    # a few hundred unique combos. (Was: one _resolve_fol_row call per row → ~470ms/period.)
+    _combo = pd.DataFrame({"e": ecn.values, "s": sectors.values, "i": industries.values})
+    _fol_map = {(r.e, r.s, r.i): _resolve_fol_row(r.e, r.s, r.i, year, fol_matrix, sector_fallback)
+                for r in _combo.drop_duplicates().itertuples(index=False)}
+    _keys = list(zip(ecn.values, sectors.values, industries.values))
+    df["FOL_Value"] = [_fol_map[k][0] for k in _keys]
+    df["IF_Source"] = [_fol_map[k][1] for k in _keys]
 
     # FIF-Formel: IF = min(1.0, FOL / FF_Ratio)
     # Hinweis: "Free Float Percent" ist trotz des Namens im Code als Dezimalwert 0.0–1.0
