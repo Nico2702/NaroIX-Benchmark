@@ -615,8 +615,10 @@ def build_snapshot_from_master(master_data, selection_date_iso):
     zu einem DataFrame, der aussieht wie ein normaler FactSet-Export (Single-Snapshot).
 
     Listing Status Logik:
-      - Falls "Listing Status" als dynamische Spalte im File vorhanden ist (selten,
-        nur für letzte Periode), wird sie übernommen.
+      - Falls "Listing Status" als dynamische Spalte im File vorhanden ist (im
+        aktuellen Master-File für ALLE Perioden, als "0"/"1"), wird sie übernommen.
+        Der Delisted-Filter (build_new_universe) vergleicht numerisch, ist also
+        robust gegen "1" vs 1 vs 1.0.
       - Andernfalls aus Closing Price abgeleitet:
           Closing Price > 0  → Listing Status = 0 (aktiv/gelistet)
           Closing Price ≤ 0 oder NaN → Listing Status = 1 (delisted oder pre-IPO)
@@ -1068,7 +1070,10 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     if excl_etf:
         df = df[~df["Name"].fillna("").str.contains(_re.compile(r'\bETF\b|\bSICAV\b|%', _re.IGNORECASE))].copy()
     if excl_delisted and "Listing Status" in df.columns:
-        df = df[df["Listing Status"].fillna("0").astype(str).str.strip() != "1"].copy()
+        # Robust gegen Float-Formatierung ("1.0") und Strings ("1"): numerisch vergleichen.
+        # NaN → 0 (aktiv/behalten), wie bisher. Status 1 = delisted → raus.
+        _ls = pd.to_numeric(df["Listing Status"], errors="coerce").fillna(0)
+        df = df[_ls != 1].copy()
 
     # Step 4: Classification
     # Mapping-Regel: wenn Exchange Country == Country of Incorp, dann Country of Incorp;
