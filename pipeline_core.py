@@ -780,7 +780,14 @@ def load_fol_matrix():
     # Script directory als Basis (Streamlit Cloud startet ggf. aus anderem CWD)
     _script_dir = _os.path.dirname(_os.path.abspath(__file__)) if "__file__" in globals() else _os.getcwd()
 
+    # v1.1 (intern "1.6-pit-corrected") ist die aktive Matrix — point-in-time-korrigierte
+    # FOL-Limits (IN-Versicherer, AE/ID/KW/TH Finanz & Telekom, …). Fallback auf die ältere
+    # "1.3-pit-aggregated"-Datei, falls die v1.1 fehlt.
     candidates_rel = [
+        "Historical FOL Register/NaroIX_FOL_Master_Aggregated_v1.1.yaml",
+        "Historical_FOL_Register/NaroIX_FOL_Master_Aggregated_v1.1.yaml",
+        "NaroIX_FOL_Master_Aggregated_v1.1.yaml",
+        # Fallback (alte v1.3-Matrix):
         "Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml",
         "Historical_FOL_Register/NaroIX_FOL_Master_Aggregated.yaml",
         "NaroIX_FOL_Master_Aggregated.yaml",

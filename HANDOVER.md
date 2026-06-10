@@ -64,7 +64,7 @@ Supporting Excel files (read-only inputs):
   - Country_Classification.xlsx
   - Historical Classification.xlsx
   - In-Eligible.xlsx
-  - NaroIX_FOL_Master_Aggregated...yaml
+  - NaroIX_FOL_Master_Aggregated_v1.1.yaml  (active, internal version "1.6-pit-corrected"; loader falls back to the older "...Aggregated.yaml" / "1.3-pit-aggregated" if absent)
   - Selection Dates.xlsx
 ```
 
@@ -330,6 +330,7 @@ The universe is built in `build_new_universe()` (inline in `naroix_benchmark.py`
 - `Classification` (DM/EM/FM) must be set (via `country_cls.map(Mapping Country)`)
 
 ### Step 2 — FOL Matrix Application
+- **Active matrix (switched 2026-06-10):** `NaroIX_FOL_Master_Aggregated_v1.1.yaml`, internal version **`1.6-pit-corrected`** (was `1.3-pit-aggregated`). Same 13 years / 11 countries / industries; purely point-in-time *value corrections* (48 industry FOLs tightened, 3 loosened) — esp. IN insurers (26→49→74% over time), AE/ID/KW/TH finance & telecom. **Index impact** (simulated, ACWI): EM weight down ~0.09pp in 2014 tapering to ~0.01pp by 2026; membership ±1; a handful of Standard↔Small shifts in 2014-2020; one AE telecom name (FOL 2014=0.0) correctly becomes Non-Investable. Loader falls back to the old file if v1.1 is missing. NOTE: some corrections end before 2026 (AE telecom 2014-2020, KW banks 2014-2018, IN insurers 2021-2025) — believed to reflect real liberalization; confirm with the data source.
 - Looks up `FOL_Value` per stock based on `(Mapping Country, FactSet Industry, year)`
 - Fallback chain in `_resolve_fol_row`: **(1)** exact industry match → **(2)** normalized industry match (whitespace/case-tolerant, `_norm_fol_key`) → **(3)** sector fallback (strictest `fol_automatic` in the sector) → **(4)** country `default_fol` → **(5)** 1.0
   - Step (2) added to fix a YAML-vs-FactSet spelling mismatch: matrix wrote `Hotels/Resorts/Cruiselines` while FactSet data has `Hotels/Resorts/Cruise lines`. The exact match failed and the sector fallback grabbed an *unrelated* restricted industry (SA: Casinos 0; KR: Broadcasting 0) → IF=0 → no weight. Affected **71 stocks across 8 countries** (IN/ID/TH/KR/MY/PH/SA/AE), incl. 4250-SAU and 180640-KRX. Normalization recovers the *already-present* correct matrix entry without touching the YAML; verified **0 collisions** (no two distinct industries with differing FOL collapse to the same normalized key), Adj_FF==0 in the universe dropped 73 → 15.
