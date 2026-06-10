@@ -546,7 +546,7 @@ Handled in Nico's **external backtesting tool** (it concerns trading-day history
 ### Code Tasks (cleanups)
 
 - ✅ **DONE (2026-06-10)** — `pipeline_core.py` extracted (Streamlit-free single source of truth). Verified bit-identical to the pre-split baseline; app boots clean. UI does `from pipeline_core import *` and re-wraps the file loaders with `@st.cache_data`.
-- ⬜ **Still open** — the GIMI-Tab still has **inline code that mirrors `run_selection_pipeline()`** (the duplicate Variante-A logic). Now that the core exists, this should be replaced by a `run_selection_pipeline(...)` call + `build_index` slices. Also: dead `add_secondary_listings()` (still in the UI file, never called) should be deleted.
+- ✅ **DONE (2026-06-10)** — the GIMI-Tab inline pipeline was replaced by a single `run_selection_pipeline(...)` call (with a new `excl_delisted` param so it honours the UI toggle, default True). Verified headless: identical constituents + segments for `excl_delisted` True and False. One intentional harmonisation: GIMI weights now use `normalize_index_weight` (exact-100, sorted) like every other tab, instead of plain division (≤1e-6 weight diff; same names/segments). Dead `add_secondary_listings()` deleted. → the selection logic now lives in **one** place (`pipeline_core.run_selection_pipeline`).
 - ✅ **DONE (2026-06-09)** — "Real Estate Investment Trusts" added to the RE filter (Helvetica pipeline): `RE_INDUSTRIES = {"Real Estate Development", "Real Estate Investment Trusts"}`, matched via `.isin`. Verified: 18 CH "Real Estate Development", 0 CH REITs → currently a no-op on the data, but now methodologically complete (900 REITs exist globally).
 
 ---

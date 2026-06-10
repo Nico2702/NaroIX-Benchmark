@@ -1103,6 +1103,8 @@ def run_selection_pipeline(
     buffer_atvr_dm=None, buffer_atvr_em=None,
     # Size Buffer (segment hysteresis — Multi-Period only)
     apply_size_buffer=False, incumbent_segments=None, size_buffer_pp=5.0,
+    # Universe
+    excl_delisted=True,
     # Ineligible
     ineligible_df=None, apply_ineligible=False, selection_date=None,
 ):
@@ -1133,7 +1135,7 @@ def run_selection_pipeline(
         exclude_euro_mtf, exclude_etf_sicav,
         china_if,
         atvr_mcap_col=atvr_mcap_col,
-        excl_delisted=True,
+        excl_delisted=excl_delisted,
         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
         fol_year=fol_year, fol_enabled=fol_enabled,
     )

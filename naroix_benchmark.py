@@ -1565,150 +1565,42 @@ with tab_gimi:
     st.markdown("## ⚡ GIMI Method")
     st.caption("Primary + Secondary konsistent durch EUMSS, Liquidität, Coverage | EUMSS-Kalibrierung auf DM Primary-only | Coverage per Land auf Adj_FF_MCap")
 
-    _gm_u = build_new_universe(df_raw_original, country_cls, thailand_sec_type, max_closing_price,
+    # Selektion über die zentrale Engine (identisch zum Multi-Period-Tab, keine Dublette).
+    # GIMI = aktiver Einzel-Snapshot → kein Size Buffer (keine Vorperiode).
+    _res = run_selection_pipeline(
+        df_raw_original, country_cls, china_inclusion_factor, _active_selection_date.year,
+        thailand_sec_type, max_closing_price,
         exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
-        china_inclusion_factor,
-        atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
-        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
-        fol_enabled=apply_fol)
-
-    # EUMSS calibration on DM Primary-only (Doppelzählung Common+Pref vermeiden; small_thr = 99%)
-    _gm_dm_all = _gm_u[(_gm_u["Classification"]=="DM") & (_gm_u["Listing"]=="Primary")].sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
-    _gm_ff_tot = _gm_dm_all["Free Float MCap Y2025"].sum()
-    if _gm_ff_tot > 0:
-        _gm_dm_all["_cp"] = _gm_dm_all["Free Float MCap Y2025"].cumsum() / _gm_ff_tot * 100
-        _gm_eumss_rows = _gm_dm_all[_gm_dm_all["_cp"] >= small_thr]
-        if len(_gm_eumss_rows) == 0:
-            st.error("EUMSS konnte nicht kalibriert werden.")
-            st.stop()
-        _gm_eumss_full = _gm_eumss_rows.iloc[0]["Total MCap Y2025"]
-        _gm_eumss_ff   = _gm_eumss_full * new_eumss_ff_ratio
-
-        # EUMSS filter — buffer-aware Min FF%
-        _gm_isin = _gm_u["ISIN"].fillna("").astype(str).str.strip().str.upper()
-        _gm_is_incumbent = _gm_isin.isin(incumbents_isin_set) if apply_buffer else pd.Series(False, index=_gm_u.index)
-        _gm_min_ff_thr = np.where(_gm_is_incumbent, buffer_min_ff, min_ff_pct)
-
-        _gm_mask_eumss = ((_gm_u["Total MCap Y2025"] >= _gm_eumss_full) &
-                          (_gm_u["Free Float MCap Y2025"] >= _gm_eumss_ff) &
-                          (_gm_u["Free Float Percent"] >= _gm_min_ff_thr))
-        _gm_eumss = _gm_u[_gm_mask_eumss].copy()
-
-        # Pre-liquidity filter — buffer-aware ADTV + ATVR
-        _gm_liq = apply_liquidity_new(
-            _gm_eumss, new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
-            incumbents_isin=incumbents_isin_set if apply_buffer else None,
-            m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
-            m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
-        )
-
-        # Coverage per country → Standard Index — buffer-aware Coverage-Schwelle
-        # MSCI-Straddle-Semantik: Ein Stock ist drin wenn die Cumulative Coverage VOR ihm
-        # (also Summe bis Stock-1) unter seiner eigenen Schwelle liegt. Dadurch wird der
-        # Stock der die Schwelle straddled mit inkludiert.
-        # Ohne Buffer: Schwelle = mid_thr (85%) für alle Stocks.
-        # Mit Buffer:  Schwelle = buffer_coverage (90%) für Incumbents, mid_thr (85%) sonst.
-        _gm_results = []
-        for _ctry, _grp in _gm_liq.groupby("Mapping Country"):
-            # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
-            _grp = _grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
-            _tot = _grp[if_cum_col].sum()
-            if _tot == 0: continue
-
-            # Cumulative VOR dem Stock (Cumsum shifted by 1)
-            _grp["_c_before"] = _grp[if_cum_col].cumsum().shift(1).fillna(0) / _tot * 100
-            _grp["_c"] = _grp[if_cum_col].cumsum() / _tot * 100  # für spätere Diag-Anzeige behalten
-
-            if apply_buffer and len(incumbents_isin_set) > 0:
-                _grp_isin = _grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
-                _grp_is_inc = _grp_isin.isin(incumbents_isin_set)
-                _thr_per_stock = np.where(_grp_is_inc, buffer_coverage, mid_thr)
-            else:
-                _thr_per_stock = np.full(len(_grp), mid_thr)
-
-            _in_cut = _grp["_c_before"].values < _thr_per_stock
-            _inc = _grp[_in_cut].copy()
-
-            # OPTION B: Large/Mid auf POOL-Basis (gleiche Skala wie _c_before).
-            # Large = _c_before < 70%, Mid = 70% ≤ _c_before < 85% (bzw. Buffer).
-            _inc["Segment_New"] = np.where(_inc["_c_before"] < large_thr, "Large Cap", "Mid Cap")
-            _gm_results.append(_inc)
-
-        _gm_std = pd.concat(_gm_results, ignore_index=True) if _gm_results else pd.DataFrame(columns=_gm_liq.columns.tolist()+["Segment_New"])
-
-        # Variante A: Liquiditäts-Fails (EUMSS bestanden, Liquidität gerissen) fliegen
-        # KOMPLETT raus (nicht Small, nicht Micro, nicht im IMI) — konsistent mit run_selection_pipeline.
-        _gm_std_symbols   = set(_gm_std["Symbol"].dropna().unique())
-        _gm_liq_symbols   = set(_gm_liq["Symbol"].dropna().unique())
-        _gm_eumss_symbols = set(_gm_eumss["Symbol"].dropna().unique())
-
-        # Small Cap = nur coverage-basiert (Liquidität bestanden, aber _c_before ≥ 85%)
-        _gm_above85 = _gm_liq[~_gm_liq["Symbol"].isin(_gm_std_symbols)].copy()
-        _gm_above85["Segment_New"] = "Small Cap"
-
-        # Micro Cap = below EUMSS (Liquiditäts-Fails sind NICHT Micro)
-        _gm_micro = _gm_u[~_gm_u["Symbol"].isin(_gm_eumss_symbols)].copy()
-        _gm_micro["Segment_New"] = "Micro Cap"
-
-        # Secondaries sind im Universe bereits enthalten und durch alle Filter gelaufen.
-        _gm_final = _gm_std
-
-        _gm_complete = pd.concat([_gm_final, _gm_above85, _gm_micro], ignore_index=True)
-        _gm_complete = _gm_complete.drop_duplicates(subset=["Symbol"]).copy()
-
-        # ── Ineligible-Filter (final step): ISINs auf Sperrliste entfernen ──────
-        _gm_count_before_ie = len(_gm_complete)
-        if apply_ineligible and not ineligible_df.empty:
-            _gm_complete, _gm_ie_removed, _gm_ie_active_rules = apply_ineligible_filter(
-                _gm_complete, ineligible_df, _active_selection_date)
-        else:
-            _gm_ie_removed = _gm_complete.iloc[0:0].copy()
-            _gm_ie_active_rules = ineligible_df.iloc[0:0].copy() if not ineligible_df.empty else pd.DataFrame()
-
-        _gm_tot_adj = _gm_complete["Adj_FF_MCap"].sum()
-        _gm_complete["Index_Weight"] = _gm_complete["Adj_FF_MCap"]/_gm_tot_adj*100 if _gm_tot_adj>0 else 0
-
+        large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
+        new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+        fol_matrix, fol_sector_fb, apply_fol,
+        if_cum_col, atvr_mcap_col,
+        incumbents_isin=incumbents_isin_set, apply_buffer=apply_buffer,
+        buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
+        buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
+        buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
+        apply_size_buffer=False,
+        excl_delisted=exclude_delisted,
+        ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
+        selection_date=_active_selection_date,
+    )
+    if _res["eumss_full"] > 0 and len(_res["gm_complete"]) > 0:
+        _gm_complete   = _res["gm_complete"]
+        _gm_index_only = _res["gm_index_only"]
+        _gm_u          = _res["gm_universe"]
+        _gm_eumss      = _res["gm_eumss"]
+        _gm_liq        = _res["gm_liq"]
+        _gm_std        = _res["gm_std"]
+        _gm_final      = _res["gm_final"]
+        _gm_eumss_full = _res["eumss_full"]
+        _gm_eumss_ff   = _res["eumss_ff"]
+        _gm_ie_removed = _res["gm_ie_removed"]
+        _buffer_breakdown = _res["buffer_breakdown"]
         _gm_all = df_raw_all[df_raw_all["Classification"].notna()]
-
-        # Buffer-Diagnostik: detailliertes Breakdown für die UI-Tabelle.
-        # WICHTIG: Wir betrachten nur den Standard Index (Large+Mid Cap) als "Index" —
-        # _gm_complete enthält auch Small/Above85/Micro für Diagnostik-Zwecke.
-        _buffer_breakdown = None
-        _gm_index_only = _gm_complete[_gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
-        if apply_buffer and len(incumbents_isin_set) > 0 and len(_gm_index_only) > 0:
-            _final_isin = _gm_index_only["ISIN"].fillna("").astype(str).str.strip().str.upper()
-            _final_isin_set = set(_final_isin)
-
-            # Trenne Final-Set in Incumbents-die-drinblieben und Newcomer
-            _kept_incumbents = _final_isin_set & incumbents_isin_set
-            _new_entries     = _final_isin_set - incumbents_isin_set
-            _lost_incumbents = incumbents_isin_set - _final_isin_set
-
-            # Wieviele Incumbents wurden konkret durch Buffer gerettet?
-            # Approximation: Stocks im Final-Set die unter Entry-Schwellen FF/ADTV NICHT durchgekommen wären
-            _kept_incumbents_df = _gm_index_only[_final_isin.isin(_kept_incumbents)].copy() \
-                if len(_kept_incumbents) > 0 else _gm_index_only.iloc[:0].copy()
-            if len(_kept_incumbents_df) > 0:
-                _ff_pct = pd.to_numeric(_kept_incumbents_df["Free Float Percent"], errors="coerce").fillna(0)
-                _adtv3 = pd.to_numeric(_kept_incumbents_df["3M ADTV Y2025"], errors="coerce").fillna(0)
-                _cls = _kept_incumbents_df["Classification"].fillna("")
-                _fail_entry_ff = _ff_pct < min_ff_pct
-                _fail_entry_adtv = ((_cls == "DM") & (_adtv3 < new_adtv_dm)) | ((_cls == "EM") & (_adtv3 < new_adtv_em))
-                _saved_by_buffer = int((_fail_entry_ff | _fail_entry_adtv).sum())
-            else:
-                _saved_by_buffer = 0
-
-            _kept_via_entry = len(_kept_incumbents) - _saved_by_buffer
-
-            _buffer_breakdown = {
-                "n_total_final":      len(_gm_index_only),
-                "n_incumbents_total": len(incumbents_isin_set),
-                "n_kept_total":       len(_kept_incumbents),
-                "n_kept_via_entry":   max(0, _kept_via_entry),
-                "n_saved_by_buffer":  _saved_by_buffer,
-                "n_lost":             len(_lost_incumbents),
-                "n_new_entries":      len(_new_entries),
-            }
+        if apply_ineligible and not ineligible_df.empty:
+            _, _, _gm_ie_active_rules = apply_ineligible_filter(_gm_complete, ineligible_df, _active_selection_date)
+        else:
+            _gm_ie_active_rules = ineligible_df.iloc[0:0].copy() if not ineligible_df.empty else pd.DataFrame()
 
         # Large/Mid Sub-Splits aus Schritt 4 — kein eigener Pipeline-Schritt, nur Aufschlüsselung
         _gm_large = _gm_std[_gm_std["Segment_New"]=="Large Cap"] if "Segment_New" in _gm_std.columns else _gm_std.iloc[0:0]
