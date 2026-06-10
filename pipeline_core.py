@@ -13,10 +13,32 @@ def format_bn(val):
     if val >= 1e6:  return f"{val/1e6:.2f}M"
     return f"{val:.0f}"
 
+# Internal canonical column names carry a legacy "Y2025" suffix (set in
+# build_snapshot_from_master so the pipeline stays period-agnostic). That suffix is
+# NOT a data year — each period holds its own snapshot values — so it must never
+# surface in a user-facing table or export. clean_export_cols() strips it to a
+# year-agnostic label; to_excel_multi() applies it to every sheet centrally, so no
+# export can leak the internal name regardless of which call site builds the frame.
+EXPORT_COL_RENAME = {
+    "Total MCap Y2025":      "Total MCap",
+    "Free Float MCap Y2025": "Free Float MCap",
+    "1M ADTV Y2025":         "1M ADTV",
+    "3M ADTV Y2025":         "3M ADTV",
+    "6M ADTV Y2025":         "6M ADTV",
+    "12M ADTV Y2025":        "12M ADTV",
+}
+
+def clean_export_cols(df):
+    """Rename internal canonical '* Y2025' columns to clean, year-agnostic labels
+    for display/export. Non-mutating (returns a renamed view/copy)."""
+    return df.rename(columns={k: v for k, v in EXPORT_COL_RENAME.items() if k in df.columns})
+
 def to_excel_multi(sheets: dict):
     """Export multiple DataFrames as sheets. sheets = {sheet_name: df}.
     Uses xlsxwriter (markedly faster than openpyxl when writing many sheets);
-    falls back to openpyxl if xlsxwriter is unavailable."""
+    falls back to openpyxl if xlsxwriter is unavailable.
+    Column labels are cleaned via clean_export_cols() so the internal 'Y2025'
+    suffix never reaches the exported file."""
     try:
         import xlsxwriter  # noqa: F401
         _engine = "xlsxwriter"
@@ -25,7 +47,7 @@ def to_excel_multi(sheets: dict):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine=_engine) as writer:
         for sheet_name, df in sheets.items():
-            df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            clean_export_cols(df).to_excel(writer, sheet_name=sheet_name[:31], index=False)
     return buf.getvalue()
 
 def normalize_index_weight(df, adj_col="Adj_FF_MCap"):
@@ -1353,4 +1375,4 @@ def run_selection_pipeline(
         "buffer_breakdown": buffer_breakdown,
     }
 
-__all__ = ['EUROPE_COUNTRIES', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']
+__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']

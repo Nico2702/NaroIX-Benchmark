@@ -89,25 +89,10 @@ def to_excel_one(df, sheet_name="Sheet1"):
     download buttons in the Multi-Period tab (rebuilds only when the table changes)."""
     return to_excel_multi({sheet_name: df})
 
-
-# Internal canonical column names carry a legacy "Y2025" suffix (see
-# pipeline_core.build_snapshot_from_master) so the pipeline stays period-agnostic.
-# That suffix is NOT a data year — each period holds its own snapshot values — so we
-# strip it for any user-facing table/export. The selection date is already shown in
-# the filename and caption, so a year-agnostic label is unambiguous.
-EXPORT_COL_RENAME = {
-    "Total MCap Y2025":      "Total MCap",
-    "Free Float MCap Y2025": "Free Float MCap",
-    "1M ADTV Y2025":         "1M ADTV",
-    "3M ADTV Y2025":         "3M ADTV",
-    "6M ADTV Y2025":         "6M ADTV",
-    "12M ADTV Y2025":        "12M ADTV",
-}
-
-def clean_export_cols(df):
-    """Rename internal canonical '* Y2025' columns to clean, year-agnostic labels
-    for display/export. Non-mutating."""
-    return df.rename(columns={k: v for k, v in EXPORT_COL_RENAME.items() if k in df.columns})
+# clean_export_cols / EXPORT_COL_RENAME are imported from pipeline_core (single
+# source of truth). to_excel_multi() applies clean_export_cols to every sheet, so
+# Excel exports are handled centrally; the explicit calls below are only for the
+# on-screen st.dataframe tables (which don't go through to_excel_multi).
 
 
 
@@ -250,7 +235,7 @@ def render_validation_warnings(df_raw, anomalies):
                 _sub["FF/Total Ratio"] = (_ff / _tot.where(_tot > 0)).round(3)
                 _sub = _sub.sort_values("FF/Total Ratio", ascending=False)
 
-            st.dataframe(_sub.head(50), width='stretch', hide_index=True)
+            st.dataframe(clean_export_cols(_sub).head(50), width='stretch', hide_index=True)
             if n > 50:
                 st.caption(f"... {n-50} weitere ausgeblendet")
 
@@ -747,9 +732,6 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
     if europe_countries and len(_europe_dl) > 0:
         _sheets["Europe Index"] = _prep(_europe_dl)
     _sheets["Parameter Settings"] = _params_dl
-
-    # Interne '* Y2025'-Spaltennamen für den Export auf saubere Labels umbenennen
-    _sheets = {k: clean_export_cols(v) for k, v in _sheets.items()}
 
     st.download_button(
         f"⬇️ Download {tab_name} als Excel",
@@ -1743,7 +1725,7 @@ with tab_europe:
 
             with _eu_col2:
                 st.markdown("**Top 20 Stocks**")
-                _top20_cols = ["Symbol", "Name", "Mapping Country", "Segment_New", "Index_Weight"]
+                _top20_cols = ["Exchange Ticker", "Name", "Mapping Country", "Segment_New", "Index_Weight"]
                 _top20 = _eu_dm[[c for c in _top20_cols if c in _eu_dm.columns]].head(20).copy()
                 _top20["Index_Weight"] = _top20["Index_Weight"].map(lambda x: f"{x:.4f}%")
                 st.dataframe(_top20, width='stretch', hide_index=True)
@@ -2468,8 +2450,8 @@ with tab_multi:
                         continue
                     _stacked = pd.concat(_parts, ignore_index=True)
                     _cols = [c for c in _long_cols if c in _stacked.columns]
-                    _sheets_long[_idx_name[:31]] = clean_export_cols(_stacked[_cols].sort_values(
-                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True))
+                    _sheets_long[_idx_name[:31]] = _stacked[_cols].sort_values(
+                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
 
                 # Wide Format (vektorisiert): Gewichtsmatrix pro Index
                 _wide_by_idx = {}
