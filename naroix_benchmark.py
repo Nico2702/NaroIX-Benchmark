@@ -1601,6 +1601,9 @@ with tab_gimi:
         _gm_eumss_ff   = _res["eumss_ff"]
         _gm_ie_removed = _res["gm_ie_removed"]
         _buffer_breakdown = _res["buffer_breakdown"]
+        if _res.get("eumss_calib_fallback"):
+            st.warning("⚠️ EUMSS-Kalibrierung: keine DM-Primary-Listings gefunden — "
+                       "Fallback auf alle DM-Listings (prüfe die 'Listing'-Spalte im Master-File).")
         _gm_all = df_raw_all[df_raw_all["Classification"].notna()]
         if apply_ineligible and not ineligible_df.empty:
             _, _, _gm_ie_active_rules = apply_ineligible_filter(_gm_complete, ineligible_df, _active_selection_date)
