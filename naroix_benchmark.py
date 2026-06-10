@@ -344,7 +344,9 @@ def render_new_tab(tab_name, df_included, large_pct, mid_pct,
     df_dm = df_included[df_included["Classification"]=="DM"].copy()
     df_em = df_included[df_included["Classification"]=="EM"].copy()
 
-    seg_order = ["Large Cap","Mid Cap","Small Cap","Micro Cap"]
+    # Non-Investable (IF=0) wird mitgeführt, aber nur angezeigt wenn vorhanden —
+    # sonst kein leerer Zusatz-Row im Normalfall (siehe seg_table unten).
+    seg_order = ["Large Cap","Mid Cap","Small Cap","Micro Cap","Non-Investable"]
 
     # ── Top metrics (ACWI = Large+Mid only) ─────────────────────────────────
     _acwi_dm = df_dm[df_dm["Segment_New"].isin(["Large Cap","Mid Cap"])]
@@ -501,6 +503,8 @@ Größenstufen (kumulative Adj-FF-Coverage pro Land): <b>Large</b> 0–70% · <b
         std_adj = std["Adj_FF_MCap"].sum()
         for seg in seg_order:
             s = df_cls[df_cls["Segment_New"]==seg]
+            if seg == "Non-Investable" and len(s) == 0:
+                continue  # nur zeigen wenn es 0%-investierbare Titel gibt
             rows.append({
                 "Segment": seg,
                 "Stocks": len(s),
