@@ -2427,19 +2427,26 @@ with tab_multi:
                 st.session_state["multi_detail_period"] = _periods_to_run[-1]
 
                 # ── Schwere Export-Artefakte EINMALIG bauen (nicht bei jedem Rerun) ──
-                # Long Format: ein Sheet pro Index×Periode
+                # Long Format: EIN Sheet pro Produkt, alle Perioden gestapelt (Spalte
+                # "Selection Date") statt 1 Sheet je Produkt×Periode → keine Sheet-Explosion.
                 _sheets_long = {"Summary": _summary_df_run}
+                _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
+                              "Classification", "Mapping Country", "Exchange Country Name",
+                              "Segment_New", "Size_Buffer_Held", "Free Float Percent",
+                              "Total MCap Y2025", "Free Float MCap Y2025", "Adj_FF_MCap",
+                              "IF", "IF_Source", "Index_Weight"]
                 for _idx_name, _period_dict in results_per_index.items():
+                    _parts = []
                     for _sd, _df in _period_dict.items():
-                        _sheet = f"{_idx_name}_{_sd}"[:31]   # _idx_name = Code (z.B. NX-GM-LM)
-                        _cols = [c for c in [
-                            "Exchange Ticker", "Name", "ISIN", "Entity ID", "Classification",
-                            "Mapping Country", "Exchange Country Name", "Segment_New", "Size_Buffer_Held",
-                            "Free Float Percent", "Total MCap Y2025", "Free Float MCap Y2025",
-                            "Adj_FF_MCap", "IF", "IF_Source", "Index_Weight"
-                        ] if c in _df.columns]
-                        _sheets_long[_sheet] = _df[_cols].sort_values(
-                            "Index_Weight", ascending=False).reset_index(drop=True)
+                        _p = _df.copy()
+                        _p.insert(0, "Selection Date", _sd)
+                        _parts.append(_p)
+                    if not _parts:
+                        continue
+                    _stacked = pd.concat(_parts, ignore_index=True)
+                    _cols = [c for c in _long_cols if c in _stacked.columns]
+                    _sheets_long[_idx_name[:31]] = _stacked[_cols].sort_values(
+                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
 
                 # Wide Format (vektorisiert): Gewichtsmatrix pro Index
                 _wide_by_idx = {}
@@ -2658,7 +2665,7 @@ with tab_multi:
 
                 if "multi_export_long_bytes" in st.session_state:
                     st.download_button(
-                        "📥 Per-Period Konstituenten (Long Format)",
+                        "📥 Konstituenten (Long Format — 1 Sheet/Produkt, alle Perioden)",
                         data=st.session_state["multi_export_long_bytes"],
                         file_name=f"NaroIX_MultiPeriod_Long_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
