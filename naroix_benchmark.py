@@ -795,7 +795,7 @@ with st.sidebar:
                                      key="uploaded_single")
         snapshot_date = st.date_input(
             "Snapshot Datum",
-            value=_date(2025, 12, 31),
+            value=_date.today(),  # dynamischer Default — picks the most recent selection date
             format="DD.MM.YYYY",
             key="snapshot_date",
             help="Datum des FactSet Exports — wird für Labels, Info-Boxen und Excel-Dateinamen verwendet."
@@ -870,7 +870,7 @@ with st.sidebar:
     with _cpb: _max_price_raw = st.text_input("Max Price", value="20000", key="max_price_input",
         label_visibility="collapsed", disabled=not use_max_price)
     try:    max_closing_price = float(_max_price_raw.replace(",","")) if use_max_price else None
-    except: max_closing_price = 20000.0
+    except (ValueError, TypeError): max_closing_price = 20000.0
 
     with st.expander("Exclusions", expanded=False):
         exclude_hk_cny         = st.checkbox("HK (CNY)", value=True, key="excl_hk")
@@ -909,15 +909,15 @@ with st.sidebar:
     with _eub: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio", label_visibility="collapsed")
 
     try:    large_thr  = int(_large_raw)
-    except: large_thr  = 70
+    except (ValueError, TypeError): large_thr  = 70
     try:    mid_thr    = int(_mid_raw)
-    except: mid_thr    = 85
+    except (ValueError, TypeError): mid_thr    = 85
     try:    small_thr  = int(_small_raw)
-    except: small_thr  = 99
+    except (ValueError, TypeError): small_thr  = 99
     try:    min_ff_pct = float(_ff_raw) / 100
-    except: min_ff_pct = 0.15
+    except (ValueError, TypeError): min_ff_pct = 0.15
     try:    new_eumss_ff_ratio = float(_eumss_ff_raw) / 100
-    except: new_eumss_ff_ratio = 0.50
+    except (ValueError, TypeError): new_eumss_ff_ratio = 0.50
 
     st.markdown("---")
     st.markdown("### 💧 Liquidität")
@@ -936,13 +936,13 @@ with st.sidebar:
     with _atvr_d: _atvr_em_raw = st.text_input("EM ATVR", value="0", key="atvr_em_new", label_visibility="collapsed")
 
     try:    new_adtv_dm = float(_adtv_dm_raw.replace(",",""))
-    except: new_adtv_dm = 1_500_000.0
+    except (ValueError, TypeError): new_adtv_dm = 1_500_000.0
     try:    new_adtv_em = float(_adtv_em_raw.replace(",",""))
-    except: new_adtv_em = 750_000.0
+    except (ValueError, TypeError): new_adtv_em = 750_000.0
     try:    new_atvr_dm = float(_atvr_dm_raw) / 100
-    except: new_atvr_dm = 0.0
+    except (ValueError, TypeError): new_atvr_dm = 0.0
     try:    new_atvr_em = float(_atvr_em_raw) / 100
-    except: new_atvr_em = 0.0
+    except (ValueError, TypeError): new_atvr_em = 0.0
 
     st.caption("ATVR Nenner")
     atvr_denominator = st.radio(
@@ -976,7 +976,7 @@ with st.sidebar:
         with _cna: use_china_factor = st.checkbox("China A-Shares aktiv", value=True, key="use_china_factor")
         with _cnb: _china_raw = st.text_input("China", value=f"{_china_if_historical*100:.1f}", key="china_factor_input", label_visibility="collapsed", disabled=not use_china_factor)
         try:    china_inclusion_factor = float(_china_raw) / 100 if use_china_factor else 1.0
-        except: china_inclusion_factor = _china_if_historical
+        except (ValueError, TypeError): china_inclusion_factor = _china_if_historical
 
     # FOL Matrix — YAML ist bereits beim Laden validiert
     _fol_iso_list = ", ".join(sorted(FOL_COUNTRY_CODE_MAP.values()))
@@ -1067,17 +1067,17 @@ with st.sidebar:
 
         # Parse
         try:    buffer_min_ff = float(_bf_ff_raw) / 100
-        except: buffer_min_ff = 0.075
+        except (ValueError, TypeError): buffer_min_ff = 0.075
         try:    buffer_coverage = int(_bf_cov_raw)
-        except: buffer_coverage = 90
+        except (ValueError, TypeError): buffer_coverage = 90
         try:    buffer_adtv_dm = float(_bf_adtv_dm_raw)
-        except: buffer_adtv_dm = 1_000_000
+        except (ValueError, TypeError): buffer_adtv_dm = 1_000_000
         try:    buffer_adtv_em = float(_bf_adtv_em_raw)
-        except: buffer_adtv_em = 500_000
+        except (ValueError, TypeError): buffer_adtv_em = 500_000
         try:    buffer_atvr_dm = float(_bf_atvr_dm_raw) / 100
-        except: buffer_atvr_dm = 0.0
+        except (ValueError, TypeError): buffer_atvr_dm = 0.0
         try:    buffer_atvr_em = float(_bf_atvr_em_raw) / 100
-        except: buffer_atvr_em = 0.0
+        except (ValueError, TypeError): buffer_atvr_em = 0.0
     else:
         # Buffer inaktiv → Maintenance = Entry (keine Unterscheidung)
         buffer_min_ff = min_ff_pct
@@ -1106,7 +1106,7 @@ with st.sidebar:
         with _sbb:
             _sb_pp_raw = st.text_input("Size Buffer pp", value="5", key="size_buffer_pp_raw", label_visibility="collapsed")
         try:    size_buffer_pp = float(_sb_pp_raw)
-        except: size_buffer_pp = 5.0
+        except (ValueError, TypeError): size_buffer_pp = 5.0
         st.caption(f"±{size_buffer_pp:g} pp um 70 % und 85 % · Large bleibt bis "
                    f"{70+size_buffer_pp:g} %, Mid zwischen {70-size_buffer_pp:g}–{85+size_buffer_pp:g} %.")
     else:
@@ -1732,10 +1732,12 @@ with tab_europe:
 
             # ── Download ─────────────────────────────────────────────────────
             st.markdown("---")
-            _drop_eu = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF","Index_Weight"]
-            _eu_dl = normalize_index_weight(_eu_dm[[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
-            _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
-            _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][[c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]].copy()])
+            # Internal working columns dropped from the export (Index_Weight is
+            # recomputed by normalize_index_weight, so it can stay in the slice).
+            _eu_cols = [c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]]
+            _eu_dl       = normalize_index_weight(_eu_dm[_eu_cols].copy())
+            _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][_eu_cols].copy())
+            _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][_eu_cols].copy())
 
             _eu_params = {
                 "Basis": "GIMI Method — World Index (DM Large+Mid)",
