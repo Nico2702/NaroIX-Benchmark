@@ -1191,6 +1191,14 @@ def run_selection_pipeline(
     # mehreren Listings (z.B. Common + Pref) zu vermeiden. Die kalibrierten Schwellen
     # werden anschließend auf das volle Listing-Universe (inkl. Secondaries) angewendet.
     dm_only = gm_u[(gm_u["Classification"] == "DM") & (gm_u["Listing"] == "Primary")].copy()
+    # Robustheit (#4): Wäre die "Listing"-Spalte abweichend geschrieben/leer, wäre
+    # dm_only leer → eumss_full=0 → der EUMSS-Filter würde STILL nichts entfernen.
+    # Statt dessen auf alle DM-Listings ausweichen (leichte Multi-Class-Doppelzählung,
+    # aber echte Kalibrierung) und das Flag zurückgeben, damit die UI warnen kann.
+    eumss_calib_fallback = False
+    if len(dm_only) == 0 and bool((gm_u["Classification"] == "DM").any()):
+        dm_only = gm_u[gm_u["Classification"] == "DM"].copy()
+        eumss_calib_fallback = True
     # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class derselben Company)
     # kommt das liquidere Listing (höheres Adj_FF_MCap) zuerst → deterministisches Ranking.
     dm_only = dm_only.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False])
@@ -1225,9 +1233,19 @@ def run_selection_pipeline(
     # Size Buffer (optional): Hysterese an den Grenzen large_thr (Large/Mid) und
     # mid_thr (Mid/Small) für Incumbents, abhängig vom Vorperioden-Segment. Wenn aus,
     # ist das Verhalten identisch zum bisherigen harten Cut.
+    # #1: 0%-investierbare Titel (IF=0 → Adj_FF=0) bestehen EUMSS+Liquidität, sind aber
+    # nicht investierbar (explizites Industrie-FOL=0, pre_investable, FF=0). MSCI schließt
+    # FIF=0-Wertpapiere aus → eigenes Segment "Non-Investable": in KEINEM Index, aber im
+    # Audit/Export sichtbar. Nur Adj_FF>0 läuft in den Coverage-Waterfall, damit kann das
+    # tot==0-Skippen eines ganzen Landes (#2) nicht mehr auftreten.
+    _adj_for_cov = pd.to_numeric(gm_liq["Adj_FF_MCap"], errors="coerce").fillna(0)
+    gm_noninv = gm_liq[_adj_for_cov <= 0].copy()
+    gm_noninv["Segment_New"] = "Non-Investable"
+    gm_liq_cov = gm_liq[_adj_for_cov > 0].copy()
+
     use_size_buffer = bool(apply_size_buffer and incumbent_segments)
     gm_results = []
-    for ctry, grp in gm_liq.groupby("Mapping Country"):
+    for ctry, grp in gm_liq_cov.groupby("Mapping Country"):
         # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
         grp = grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
         tot = grp[if_cum_col].sum()
@@ -1310,7 +1328,8 @@ def run_selection_pipeline(
     gm_final = gm_std
 
     # gm_above85 = coverage-basiertes Small (hat Liquidität bestanden). gm_small entfällt (Variante A).
-    gm_complete = pd.concat([gm_final, gm_above85, gm_micro], ignore_index=True)
+    # gm_noninv = EUMSS+Liquidität bestanden, aber IF=0 → "Non-Investable" (in keinem Index).
+    gm_complete = pd.concat([gm_final, gm_above85, gm_micro, gm_noninv], ignore_index=True)
     gm_complete = gm_complete.drop_duplicates(subset=["Symbol"]).copy()
     # gm_micro trägt die Audit-Flags nicht → auf False auffüllen
     for _flag in ("Size_Buffer_Held", "Kept_In_Standard_By_Buffer"):
@@ -1327,8 +1346,10 @@ def run_selection_pipeline(
     # 8) Index weights (Adj_FF_MCap basis) — use normalize_index_weight for exact 100.0 sum
     gm_complete = normalize_index_weight(gm_complete, adj_col="Adj_FF_MCap")
 
-    # Standard Index = Large + Mid only
-    gm_index_only = gm_complete[gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
+    # Standard Index = Large + Mid only. Re-normalise so this slice's weights sum to
+    # 100% on their own (#3) — gm_complete's weights include Small/Micro/Non-Investable.
+    gm_index_only = normalize_index_weight(
+        gm_complete[gm_complete["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy())
 
     # Buffer breakdown
     buffer_breakdown = None
@@ -1369,9 +1390,11 @@ def run_selection_pipeline(
         "gm_liq_excluded":  gm_liq_excluded,
         "gm_std":           gm_std,
         "gm_final":         gm_final,
+        "gm_noninv":        gm_noninv,
         "gm_ie_removed":    gm_ie_removed,
         "eumss_full":       eumss_full,
         "eumss_ff":         eumss_ff,
+        "eumss_calib_fallback": eumss_calib_fallback,
         "buffer_breakdown": buffer_breakdown,
     }
 

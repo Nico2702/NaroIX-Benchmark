@@ -351,10 +351,12 @@ The universe is built in `build_new_universe()` (inline in `naroix_benchmark.py`
 - Excluded liquidity-fails are returned as `gm_liq_excluded` for audit (not in `gm_complete`).
 
 ### Step 5 — Per-Country Coverage Cuts (Option B Logic)
+- **Non-Investable carve-out (decided 2026-06-10):** before the waterfall, stocks with `Adj_FF_MCap == 0` (i.e. `IF == 0` — explicit industry FOL=0, `pre_investable`, or FF=0) are split off into segment **`Non-Investable`**. MSCI excludes FIF=0 securities, so these enter **no** index (Large/Mid/Small/IMI) but stay visible in `gm_complete`/exports for audit (returned as `gm_noninv`). Only `Adj_FF_MCap > 0` runs the waterfall — which also means a country block can no longer be silently skipped on `tot == 0`. *(Impact 2026-05-20 ACWI: IMI 8,680 → 8,679; Standard unchanged. Pre-fix these were 0-weight "zombie" constituents.)*
 - Group by `Mapping Country`
 - Sort by Total MCap desc, Adj_FF_MCap desc (tiebreaker)
 - Compute `_c_before` per stock on Adj_FF_MCap
 - Classify: < 70% Large, 70-85% Mid, ≥ 85% becomes Small Cap. **Small Cap is now coverage-based only** (all of it passed liquidity); liquidity-fails are no longer added here (Variante A).
+- EUMSS calibration robustness: if no DM **Primary** listings exist (malformed `Listing` column), calibration falls back to all DM listings and sets `eumss_calib_fallback=True` (UI warns) instead of silently yielding `eumss_full=0`.
 
 The Helvetica pipeline (`build_helvetica_pipeline()`) is **structurally simpler** — no EUMSS, simpler liquidity, narrower country definition.
 
