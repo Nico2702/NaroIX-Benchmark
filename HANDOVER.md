@@ -10,7 +10,7 @@
 
 This document was written before the latest local work. The **methodology sections (§2–§5) remain valid**, but several structural/infra claims are now outdated. Corrected facts:
 
-- **No `pipeline_core.py`.** The two-file split described in §1/§6 never happened. Everything — `run_selection_pipeline`, the loaders, `build_new_universe`, etc. — lives inline in `naroix_benchmark.py`. All "`pipeline_core.py` mirror (~line X)" references in §2 are therefore moot until the split is actually done.
+- **`pipeline_core.py` now EXISTS** (extracted 2026-06-10, behaviour-preserving). The Streamlit-free selection engine (`run_selection_pipeline`, `build_new_universe`, FOL, EUMSS, `build_index`, the matrix builders, the pure loaders incl. `load_master_excel`/`load_fol_matrix`, constants `INDEX_SERIES`/`EUROPE_COUNTRIES`/…) lives in `pipeline_core.py` and is importable headless (no Streamlit). `naroix_benchmark.py` is the UI: `from pipeline_core import *`, re-wraps the file loaders with `@st.cache_data`, keeps `set_page_config`, `render_*`, `load_excel`/`load_historical_data` (these use `st`). Verified: `pipeline_core` output is bit-identical to the pre-split baseline (3 periods) and the app boots clean. The "`pipeline_core.py` mirror (~line X)" references in §2 still have stale line numbers — search by symbol.
 - **`auth.py` removed.** GitHub-OAuth login was deleted; the app runs open on localhost with no secrets/`secrets.toml` needed. Run with `streamlit run naroix_benchmark.py` (see `README.md`).
 - **Caching IS applied** (contradicts §8): `@st.cache_data` decorates `load_master_excel`, `load_fol_matrix`, `load_historical_data`, etc.
 - **Excel loading sped up** (partially closes §8 I/O backlog): `load_master_excel` now reads the file **once** with the `python-calamine` engine (was up to 11× openpyxl passes via the header-probe loop). Parquet caching still NOT implemented ("wir lassen es erstmal so").
@@ -40,15 +40,23 @@ The tool ingests FactSet snapshots (or a multi-period master file) and produces:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ naroix_benchmark.py  (~3900 lines, Streamlit UI)    │
-│  ALL logic lives here (no pipeline_core.py yet):    │
-│  - load_master_excel(), build_snapshot_from_master()│
-│  - load_historical_data(), load_fol_matrix()        │
-│  - build_new_universe() / liquidity / FOL / EUMSS   │
-│  - run_selection_pipeline()  (~line 1335)           │
-│  - normalize_index_weight(), build_wide_matrix()    │
-│  - Helvetica-specific pipeline                      │
-│  - All tab rendering                                │
+│ pipeline_core.py  (Streamlit-FREE selection engine)  │
+│  - load_master_excel(), build_snapshot_from_master() │
+│  - load_fol_matrix(), build_sector_fallback_table()  │
+│  - build_new_universe() / liquidity / FOL / EUMSS    │
+│  - run_selection_pipeline(), build_index()           │
+│  - normalize_index_weight(), build_wide/segment_*()  │
+│  - constants: INDEX_SERIES, EUROPE_COUNTRIES, FOL_*  │
+│  → importable headless (backtesting, tests)          │
+└─────────────────────────────────────────────────────┘
+              ▲  from pipeline_core import *
+              │  (file loaders re-wrapped with @st.cache_data)
+┌─────────────────────────────────────────────────────┐
+│ naroix_benchmark.py  (Streamlit UI)                  │
+│  - set_page_config + CSS, sidebar, all tabs          │
+│  - render_new_tab(), render_*_tab()                  │
+│  - load_excel(), load_historical_data() (use st)     │
+│  - Helvetica pipeline (build_helvetica_pipeline)     │
 └─────────────────────────────────────────────────────┘
 
 Supporting Excel files (read-only inputs):
@@ -56,14 +64,15 @@ Supporting Excel files (read-only inputs):
   - Country_Classification.xlsx
   - Historical Classification.xlsx
   - In-Eligible.xlsx
-  - NaroIX_FOL_Master_Aggregated...xlsx
+  - NaroIX_FOL_Master_Aggregated...yaml
   - Selection Dates.xlsx
 ```
 
-> **Planned (not done):** extract the Streamlit-free core (loaders, `build_new_universe`,
-> `run_selection_pipeline`, `get_classification_dict`) into `pipeline_core.py` as the single
-> source of truth, so headless runs/validation tests can import it. Currently impossible —
-> the file does not exist. See §6 "Code Tasks".
+> **Done (2026-06-10):** the Streamlit-free core was extracted into `pipeline_core.py`
+> (behaviour-preserving; verified bit-identical to the pre-split baseline). Still inline in
+> the UI: `build_helvetica_pipeline` (pure, but only used by the Helvetica tab) and the
+> `st`-using loaders `load_excel` / `load_historical_data`. See §6 "Code Tasks" for the
+> remaining dedupe (GIMI inline pipeline, dead `add_secondary_listings`).
 
 ### Repository
 
@@ -536,8 +545,8 @@ Handled in Nico's **external backtesting tool** (it concerns trading-day history
 
 ### Code Tasks (cleanups)
 
-- `pipeline_core.py` is the "single source of truth" candidate but **does not exist yet** — the split was never done. Everything is inline in `naroix_benchmark.py`. Extracting the Streamlit-free core remains the cleanup goal.
-- There is duplication: the GIMI-Tab has inline code that mirrors `run_selection_pipeline()`. The unused inline pipeline in GIMI-Tab should be removed once the core is extracted.
+- ✅ **DONE (2026-06-10)** — `pipeline_core.py` extracted (Streamlit-free single source of truth). Verified bit-identical to the pre-split baseline; app boots clean. UI does `from pipeline_core import *` and re-wraps the file loaders with `@st.cache_data`.
+- ⬜ **Still open** — the GIMI-Tab still has **inline code that mirrors `run_selection_pipeline()`** (the duplicate Variante-A logic). Now that the core exists, this should be replaced by a `run_selection_pipeline(...)` call + `build_index` slices. Also: dead `add_secondary_listings()` (still in the UI file, never called) should be deleted.
 - ✅ **DONE (2026-06-09)** — "Real Estate Investment Trusts" added to the RE filter (Helvetica pipeline): `RE_INDUSTRIES = {"Real Estate Development", "Real Estate Investment Trusts"}`, matched via `.isin`. Verified: 18 CH "Real Estate Development", 0 CH REITs → currently a no-op on the data, but now methodologically complete (900 REITs exist globally).
 
 ---
