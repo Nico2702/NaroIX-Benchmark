@@ -39,6 +39,19 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+## Tests
+
+Regression / determinism tests for the selection engine live in [tests/test_regression.py](tests/test_regression.py):
+
+```powershell
+.\venv\Scripts\python.exe tests\test_regression.py
+```
+
+Pure tests (weights, segmentation, FOL normalization, export labels, …) always run.
+The integration tests additionally exercise the full pipeline on the master file — they
+are **skipped cleanly** if no `*Master*.xlsx` is present. Exit code is `0` when all run
+tests pass, `1` otherwise.
+
 ## Notes
 
 - **No authentication.** The app runs open on localhost — no GitHub login or `secrets.toml` needed.
