@@ -331,7 +331,8 @@ The universe is built in `build_new_universe()` (inline in `naroix_benchmark.py`
 
 ### Step 2 — FOL Matrix Application
 - Looks up `FOL_Value` per stock based on `(Mapping Country, FactSet Industry, year)`
-- Sector-based fallback if industry-specific value not found
+- Fallback chain in `_resolve_fol_row`: **(1)** exact industry match → **(2)** normalized industry match (whitespace/case-tolerant, `_norm_fol_key`) → **(3)** sector fallback (strictest `fol_automatic` in the sector) → **(4)** country `default_fol` → **(5)** 1.0
+  - Step (2) added to fix a YAML-vs-FactSet spelling mismatch: matrix wrote `Hotels/Resorts/Cruiselines` while FactSet data has `Hotels/Resorts/Cruise lines`. The exact match failed and the sector fallback grabbed an *unrelated* restricted industry (SA: Casinos 0; KR: Broadcasting 0) → IF=0 → no weight. Affected **71 stocks across 8 countries** (IN/ID/TH/KR/MY/PH/SA/AE), incl. 4250-SAU and 180640-KRX. Normalization recovers the *already-present* correct matrix entry without touching the YAML; verified **0 collisions** (no two distinct industries with differing FOL collapse to the same normalized key), Adj_FF==0 in the universe dropped 73 → 15.
 - Computes `IF = min(1.0, FOL_Value / Free Float Percent)`
 - China A-Shares get the China Inclusion Factor (CIF, currently ~20%)
 - `Adj_FF_MCap = Free Float MCap × IF`

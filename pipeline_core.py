@@ -809,11 +809,17 @@ def load_fol_matrix():
                     "capped": bool(ind.get("capped", False)),
                     "needs_company_override": bool(ind.get("needs_company_override", False)),
                 }
+            # Whitespace-/Case-tolerantes Sekundär-Mapping: gleicht Schreibweise-Differenzen
+            # zwischen FOL-Matrix und FactSet-Daten aus (z.B. "Hotels/Resorts/Cruiselines"
+            # in der Matrix vs. "Hotels/Resorts/Cruise lines" in den Daten). Wird in
+            # _resolve_fol_row NACH dem exakten Match, aber VOR dem Sektor-Fallback genutzt.
+            industries_norm = {_norm_fol_key(s, i): v for (s, i), v in industries_lookup.items()}
             fol_matrix[yr_int][cc] = {
                 "default_fol": float(cd.get("default_fol", 1.0)),
                 "investability_status": cd.get("investability_status", "investable"),
                 "country_name": cd.get("country_name", cc),
                 "industries": industries_lookup,
+                "industries_norm": industries_norm,
             }
 
     return fol_matrix, version, debug_info
@@ -835,14 +841,21 @@ def build_sector_fallback_table(fol_matrix):
             fb[yr][cc] = sec_min
     return fb
 
+def _norm_fol_key(sector, industry):
+    """Normalisiert (sector, industry) für tolerantes Matching: lowercase + alle
+    Whitespaces entfernt. Gleicht Schreibweise-Differenzen wie 'Cruise lines' vs
+    'Cruiselines' aus, ohne unterschiedliche Industrien zu vermischen."""
+    return ("".join(str(sector).lower().split()), "".join(str(industry).lower().split()))
+
 def _resolve_fol_row(ecn_upper, sector, industry, year, fol_matrix, sector_fallback):
     """Returns (fol_value, source_label) for a single stock.
 
     Fallback-Kette:
-      1. Industry-Match → "Industry"
-      2. Sector-Fallback (strengster Industry-Wert im Sector) → "Sector (strengster)"
-      3. default_fol des Landes → "Country Default"
-      4. 1.0 → "Kein FOL-Mapping"
+      1. Industry-Match (exakt) → "Industry"
+      2. Industry-Match (normalisiert, Whitespace/Case) → "Industry (normalisiert)"
+      3. Sector-Fallback (strengster Industry-Wert im Sector) → "Sector (strengster)"
+      4. default_fol des Landes → "Country Default"
+      5. 1.0 → "Kein FOL-Mapping"
     """
     iso2 = FOL_COUNTRY_CODE_MAP.get(ecn_upper)
     if iso2 is None:
@@ -860,10 +873,15 @@ def _resolve_fol_row(ecn_upper, sector, industry, year, fol_matrix, sector_fallb
     if cdata.get("investability_status") != "investable":
         return 0.0, f"pre_investable ({cdata.get('investability_status')})"
 
-    # Industry-Match
+    # Industry-Match (exakt)
     ind_match = cdata["industries"].get((sector, industry))
     if ind_match is not None:
         return ind_match["fol_automatic"], "Industry"
+
+    # Industry-Match (normalisiert) — fängt Schreibweise-Differenzen ab
+    norm_match = cdata.get("industries_norm", {}).get(_norm_fol_key(sector, industry))
+    if norm_match is not None:
+        return norm_match["fol_automatic"], "Industry (normalisiert)"
 
     # Sector-Fallback (strengster)
     sec_min_table = sector_fallback.get(year, {}).get(iso2, {})

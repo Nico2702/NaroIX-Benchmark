@@ -50,7 +50,7 @@ Global exclusions (applied to all listings):
 - `Classification` (DM/EM/FM) must be set via `Mapping Country`
 
 Then **FOL / Inclusion Factor**:
-- `IF = min(1, FOL / Free Float %)`; FOL lookup fallback chain **Industry → Sector → Country default → 1.0**
+- `IF = min(1, FOL / Free Float %)`; FOL lookup fallback chain **Industry (exact) → Industry (normalized, whitespace/case-tolerant) → Sector (strictest) → Country default → 1.0**. The normalized step absorbs YAML-vs-FactSet spelling differences (e.g. `Cruiselines` vs `Cruise lines`) so an existing matrix entry isn't missed and wrongly fall through to an unrelated restricted industry.
 - **China A-shares**: China Inclusion Factor (≈ 0.20)
 - **`Adj_FF_MCap = Free Float MCap × IF`** — the investable size, basis for almost everything downstream.
 
