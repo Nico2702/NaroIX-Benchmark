@@ -90,6 +90,26 @@ def to_excel_one(df, sheet_name="Sheet1"):
     return to_excel_multi({sheet_name: df})
 
 
+# Internal canonical column names carry a legacy "Y2025" suffix (see
+# pipeline_core.build_snapshot_from_master) so the pipeline stays period-agnostic.
+# That suffix is NOT a data year — each period holds its own snapshot values — so we
+# strip it for any user-facing table/export. The selection date is already shown in
+# the filename and caption, so a year-agnostic label is unambiguous.
+EXPORT_COL_RENAME = {
+    "Total MCap Y2025":      "Total MCap",
+    "Free Float MCap Y2025": "Free Float MCap",
+    "1M ADTV Y2025":         "1M ADTV",
+    "3M ADTV Y2025":         "3M ADTV",
+    "6M ADTV Y2025":         "6M ADTV",
+    "12M ADTV Y2025":        "12M ADTV",
+}
+
+def clean_export_cols(df):
+    """Rename internal canonical '* Y2025' columns to clean, year-agnostic labels
+    for display/export. Non-mutating."""
+    return df.rename(columns={k: v for k, v in EXPORT_COL_RENAME.items() if k in df.columns})
+
+
 
 
 # ── NaroIX Index Series — single source of truth ────────────────────────────
@@ -727,6 +747,9 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
     if europe_countries and len(_europe_dl) > 0:
         _sheets["Europe Index"] = _prep(_europe_dl)
     _sheets["Parameter Settings"] = _params_dl
+
+    # Interne '* Y2025'-Spaltennamen für den Export auf saubere Labels umbenennen
+    _sheets = {k: clean_export_cols(v) for k, v in _sheets.items()}
 
     st.download_button(
         f"⬇️ Download {tab_name} als Excel",
@@ -2445,8 +2468,8 @@ with tab_multi:
                         continue
                     _stacked = pd.concat(_parts, ignore_index=True)
                     _cols = [c for c in _long_cols if c in _stacked.columns]
-                    _sheets_long[_idx_name[:31]] = _stacked[_cols].sort_values(
-                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
+                    _sheets_long[_idx_name[:31]] = clean_export_cols(_stacked[_cols].sort_values(
+                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True))
 
                 # Wide Format (vektorisiert): Gewichtsmatrix pro Index
                 _wide_by_idx = {}
@@ -2512,17 +2535,14 @@ with tab_multi:
                         "Segment_New", "Free Float Percent", "Total MCap Y2025",
                         "Free Float MCap Y2025", "Adj_FF_MCap", "Index_Weight"
                     ] if c in _det.columns]
-                    st.dataframe(
-                        _det[_show_cols].sort_values("Index_Weight", ascending=False).head(50),
-                        width='stretch', hide_index=True
-                    )
+                    _det_show = clean_export_cols(
+                        _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True))
+                    st.dataframe(_det_show.head(50), width='stretch', hide_index=True)
                     if len(_det) > 50:
                         st.caption(f"… {len(_det)-50} weitere — vollständig im Excel-Export verfügbar.")
                     st.download_button(
                         "📥 Detail-Ansicht herunterladen (alle Konstituenten)",
-                        data=to_excel_one(
-                            _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True),
-                            "Constituents"),
+                        data=to_excel_one(_det_show, "Constituents"),
                         file_name=f"{_sel_idx}_{_sel_period}_constituents.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="dl_detail",
