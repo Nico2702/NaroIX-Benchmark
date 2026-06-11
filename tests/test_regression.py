@@ -192,6 +192,62 @@ def test_delisted_filter_numeric():
           "float-formatted Listing Status leaked through")
 
 
+def test_fol_matrix_consistency():
+    """Validate the active FOL YAML — catches the data-quality issues found during
+    the v1.x audits (auto>max logical violations, out-of-range values, duplicate
+    industries, capped-flag drift) and the Taiwan-style gap where a YAML country
+    has no FOL_COUNTRY_CODE_MAP entry (so its limits would be silently ignored)."""
+    fol, version, dbg = C.load_fol_matrix()
+    if not fol:
+        skip("fol consistency", "no FOL YAML found")
+        return
+    check("fol: version string present", bool(version), "no version in YAML")
+
+    bad_range, bad_auto_max, bad_capped = [], [], []
+    iso_in_matrix = set()
+    for yr, ys in fol.items():
+        for cc, cd in ys.items():
+            iso_in_matrix.add(cc)
+            d = cd.get("default_fol")
+            if d is None or not (0.0 <= float(d) <= 1.0):
+                bad_range.append((yr, cc, "default_fol", d))
+            for (sec, ind), v in cd["industries"].items():
+                a, m, cap = v["fol_automatic"], v["fol_max_with_approval"], v["capped"]
+                if not (0.0 <= a <= 1.0):
+                    bad_range.append((yr, cc, ind, a))
+                if a > m + 1e-9:                       # auto must never exceed with-approval ceiling
+                    bad_auto_max.append((yr, cc, ind, a, m))
+                if (cap and a >= 1.0) or ((not cap) and a < 1.0):  # capped flag must match the value
+                    bad_capped.append((yr, cc, ind, a, cap))
+    check("fol: all values in [0,1]", not bad_range, str(bad_range[:3]))
+    check("fol: fol_automatic <= fol_max_with_approval", not bad_auto_max, str(bad_auto_max[:3]))
+    check("fol: capped flag consistent with value", not bad_capped, str(bad_capped[:3]))
+
+    # Every country present in the YAML must have a name->ISO entry, else its FOL
+    # is silently ignored (the Taiwan gap). FOL_COUNTRY_CODE_MAP maps name->ISO.
+    iso_in_map = set(C.FOL_COUNTRY_CODE_MAP.values())
+    missing = iso_in_matrix - iso_in_map
+    check("fol: every matrix country has a FOL_COUNTRY_CODE_MAP entry", not missing,
+          f"YAML ISO codes without a name->ISO mapping: {sorted(missing)}")
+
+    # Duplicate (sector, industry) within a country/year collapse silently in the
+    # parsed dict (last-wins) -> check the raw YAML list.
+    import yaml as _yaml
+    path = dbg.get("used_path")
+    dups = []
+    if path and os.path.exists(path):
+        raw = _yaml.safe_load(open(path, encoding="utf-8"))
+        for yr, ys in raw["naroix_pit_fol_master"]["snapshots"].items():
+            for cc, cd in (ys.get("countries", {}) or {}).items():
+                seen = set()
+                for i in (cd.get("industries", []) or []):
+                    k = (i.get("factset_sector", ""), i.get("factset_industry", ""))
+                    if k in seen:
+                        dups.append((yr, cc, k))
+                    seen.add(k)
+    check("fol: no duplicate (sector,industry) per country/year", not dups, str(dups[:3]))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION TESTS (need master file + repo data)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -298,7 +354,8 @@ def integration_tests():
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
-            test_build_index, test_validate_factset_data, test_delisted_filter_numeric]
+            test_build_index, test_validate_factset_data, test_delisted_filter_numeric,
+            test_fol_matrix_consistency]
     for t in pure:
         try:
             t()

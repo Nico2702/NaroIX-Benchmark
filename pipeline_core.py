@@ -283,6 +283,7 @@ FOL_COUNTRY_CODE_MAP = {
     "SOUTH KOREA":        "KR",
     "PHILIPPINES":        "PH",
     "THAILAND":           "TH",
+    "TAIWAN":             "TW",   # ab FOL v1.7+ (12. Jurisdiktion); ohne diesen Eintrag bliebe Taiwans FOL wirkungslos
 }
 
 MASTER_DYNAMIC_PREFIXES = [
@@ -780,18 +781,19 @@ def load_fol_matrix():
     # Script directory als Basis (Streamlit Cloud startet ggf. aus anderem CWD)
     _script_dir = _os.path.dirname(_os.path.abspath(__file__)) if "__file__" in globals() else _os.getcwd()
 
-    # v1.1 (intern "1.6-pit-corrected") ist die aktive Matrix — point-in-time-korrigierte
-    # FOL-Limits (IN-Versicherer, AE/ID/KW/TH Finanz & Telekom, …). Fallback auf die ältere
-    # "1.3-pit-aggregated"-Datei, falls die v1.1 fehlt.
-    candidates_rel = [
-        "Historical FOL Register/NaroIX_FOL_Master_Aggregated_v1.1.yaml",
-        "Historical_FOL_Register/NaroIX_FOL_Master_Aggregated_v1.1.yaml",
-        "NaroIX_FOL_Master_Aggregated_v1.1.yaml",
-        # Fallback (alte v1.3-Matrix):
-        "Historical FOL Register/NaroIX_FOL_Master_Aggregated.yaml",
-        "Historical_FOL_Register/NaroIX_FOL_Master_Aggregated.yaml",
-        "NaroIX_FOL_Master_Aggregated.yaml",
+    # v1.9 (intern "1.9-redteam-corrected") ist die aktive Matrix — 12 Jurisdiktionen
+    # inkl. Taiwan, Qatar-Finanzwerte 49%, alle logischen auto>max-Verstöße behoben.
+    # Fallback-Kette auf ältere Versionen, falls v1.9 fehlt.
+    _fname_order = [
+        "NaroIX_FOL_Master_Aggregated_v1.9.yaml",   # aktiv (1.9-redteam-corrected)
+        "NaroIX_FOL_Master_Aggregated_v1.1.yaml",   # Fallback (1.6-pit-corrected)
+        "NaroIX_FOL_Master_Aggregated.yaml",        # Fallback (1.3-pit-aggregated)
     ]
+    candidates_rel = []
+    for _fn in _fname_order:
+        candidates_rel.append("Historical FOL Register/" + _fn)
+        candidates_rel.append("Historical_FOL_Register/" + _fn)
+        candidates_rel.append(_fn)
 
     # Alle Pfade: relative (CWD) + absolute (Script-Dir)
     candidates = []
