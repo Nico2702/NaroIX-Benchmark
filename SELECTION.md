@@ -128,7 +128,7 @@ Apply `In-Eligible.xlsx` for the Selection Date — stocks with a matching ISIN 
 
 ## 4. Index products — the NaroIX Index Series
 
-The pipeline assigns segments to the full universe; each **product** is then a scope of that result via `build_index(gm_complete, region, segments)`, re-normalised to 100%. The full 16-product catalogue (codes, names, MSCI equivalents) is documented in **`INDEX_SERIES.md`** — defined once as the `INDEX_SERIES` constant (single source of truth).
+The pipeline assigns segments to the full universe; each **product** is then a scope of that result via `build_index(gm_complete, region, segments, industries=None, top_n=None)`, re-normalised to 100%. The full 20-product catalogue (16 region×size + 4 thematic/fixed-count: US 500, US Tech 100, US Tech, World 100) with codes, names and MSCI equivalents is documented in **`INDEX_SERIES.md`** — defined once as the `INDEX_SERIES` constant (single source of truth).
 
 Scope dimensions:
 - **Region**: `DM` · `EM` · `GM` (= DM+EM) · `EU` (DM ∩ Europe countries). **FM always excluded.**

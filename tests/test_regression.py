@@ -51,14 +51,17 @@ def skip(name, detail=""):
 
 def test_index_series_integrity():
     codes = [ix["code"] for ix in C.INDEX_SERIES]
-    check("index_series: 16 products", len(C.INDEX_SERIES) == 16, f"got {len(C.INDEX_SERIES)}")
+    check("index_series: 20 products", len(C.INDEX_SERIES) == 20, f"got {len(C.INDEX_SERIES)}")
     check("index_series: codes unique", len(set(codes)) == len(codes), "duplicate code")
     check("index_series: BY_CODE consistent", set(C.INDEX_BY_CODE) == set(codes))
     valid = {"Large Cap", "Mid Cap", "Small Cap"}
     seg_ok = all(set(ix["segments"]) <= valid for ix in C.INDEX_SERIES)
     check("index_series: segments subset of L/M/S", seg_ok)
     regions = {ix["region"] for ix in C.INDEX_SERIES}
-    check("index_series: regions in {DM,EM,GM,EU}", regions <= {"DM", "EM", "GM", "EU"}, str(regions))
+    check("index_series: regions in {DM,EM,GM,EU,US}", regions <= {"DM", "EM", "GM", "EU", "US"}, str(regions))
+    # thematic products carry top_n / industries
+    check("index_series: US 500 has top_n=500", C.INDEX_BY_CODE["NX-US-500"].get("top_n") == 500)
+    check("index_series: US Tech has industries", bool(C.INDEX_BY_CODE["NX-US-T"].get("industries")))
 
 
 def test_clean_export_cols():
@@ -145,6 +148,33 @@ def test_build_index():
     ac = C.build_index(gm, "GM", ["Large Cap", "Mid Cap", "Small Cap"])
     check("build_index: All-Cap has no Non-Investable", "Non-Investable" not in set(ac["Segment_New"]))
     check("build_index: All-Cap has no Micro", "Micro Cap" not in set(ac["Segment_New"]))
+
+
+def test_build_index_thematic():
+    # region US + industry filter + top_n (US 500 / US Tech / World 100 mechanics)
+    SEG = ["Large Cap", "Mid Cap", "Small Cap"]
+    rows = [
+        # ISIN, Class, Mapping Country, Segment, FactSet Industry, Total MCap Y2025, Adj_FF_MCap
+        ("U1", "DM", "UNITED STATES", "Large Cap", "Semiconductors",    3000.0, 2900.0),
+        ("U2", "DM", "UNITED STATES", "Large Cap", "Packaged Software", 2000.0, 1900.0),
+        ("U3", "DM", "UNITED STATES", "Mid Cap",   "Internet Retail",   1500.0, 1400.0),
+        ("U4", "DM", "UNITED STATES", "Large Cap", "Major Banks",       2500.0, 2400.0),  # US non-tech
+        ("U5", "DM", "UNITED STATES", "Small Cap", "Semiconductors",     300.0,  280.0),
+        ("X1", "DM", "GERMANY",       "Large Cap", "Semiconductors",    5000.0, 4800.0),  # non-US tech
+    ]
+    gm = pd.DataFrame(rows, columns=["ISIN", "Classification", "Mapping Country", "Segment_New",
+                                     "FactSet Industry", "Total MCap Y2025", "Adj_FF_MCap"])
+    us = C.build_index(gm, "US", SEG)
+    check("build_index US: only United States", set(us["Mapping Country"]) == {"UNITED STATES"})
+    check("build_index US: excludes non-US tech", "X1" not in set(us["ISIN"]))
+    tech = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES)
+    check("build_index US+tech: excludes Major Banks", "U4" not in set(tech["ISIN"]))
+    check("build_index US+tech: keeps tech", {"U1", "U2", "U3", "U5"} == set(tech["ISIN"]))
+    topn = C.build_index(gm, "US", SEG, top_n=2)
+    check("build_index top_n: largest 2 by Total MCap", set(topn["ISIN"]) == {"U1", "U4"}, str(set(topn["ISIN"])))
+    techtop = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES, top_n=2)
+    check("build_index tech+top_n: top-2 US tech", set(techtop["ISIN"]) == {"U1", "U2"}, str(set(techtop["ISIN"])))
+    check("build_index thematic: weights sum 100", round(techtop["Index_Weight"].sum(), 6) == 100.0)
 
 
 def test_validate_factset_data():
@@ -375,8 +405,8 @@ def integration_tests():
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
-            test_build_index, test_validate_factset_data, test_delisted_filter_numeric,
-            test_with_fol_breakdown, test_fol_matrix_consistency]
+            test_build_index, test_build_index_thematic, test_validate_factset_data,
+            test_delisted_filter_numeric, test_with_fol_breakdown, test_fol_matrix_consistency]
     for t in pure:
         try:
             t()
