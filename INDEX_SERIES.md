@@ -34,7 +34,7 @@ Coverage = cumulative Adj-FF-MCap coverage band, **per country** (Option B, HAND
 | NX-GM-AC | NaroIX Global Markets All Cap Index | GM | Large + Mid + Small | 0–99% | MSCI ACWI IMI |
 | **NX-US-500** | NaroIX US 500 Index | US | Top 500 | by Total MCap | S&P 500 |
 | **NX-US-T100** | NaroIX US Tech 100 Index | US, Tech industries | Top 100 | by Total MCap | Nasdaq-100 |
-| NX-US-T | NaroIX US Tech Index | US, Tech industries | Large + Mid | — | — |
+| NX-US-T | NaroIX US Tech Index | US, Tech industries | Large + Mid + Small | — | — |
 | **NX-WL-100** | NaroIX World 100 Index | GM (DM+EM) | Top 100 | by Total MCap | FTSE All-World 100 |
 
 The **Standard** products (Large + Mid, suffix `-LM`) are the regional flagships: **NX-DM-LM**, **NX-EM-LM**, **NX-GM-LM**, **NX-EU-LM**.
@@ -43,7 +43,7 @@ The **Standard** products (Large + Mid, suffix `-LM`) are the regional flagships
 
 The last four are **not** coverage-segmented; they are **fixed-count / filtered** baskets drawn from the same pipeline output:
 - **NX-US-500** — the 500 largest US constituents by **Total MCap** (US = Mapping Country United States).
-- **NX-US-T100 / NX-US-T** — US **Technology** via *FactSet Industry* (Kern + Internet Retail: Internet Software/Services, Semiconductors, Packaged Software, Telecom Equipment, IT Services, Computer Peripherals/Processing Hardware, Electronic Components/Equipment/Production Equipment, Data Processing, Internet Retail). **Aerospace & Defense is deliberately excluded** (it sits in the Electronic Technology *sector* but is not tech). `T100` = top 100 by Total MCap (reaches into Small caps — only ~71 US-tech names are Large+Mid); `T` = all Large+Mid.
+- **NX-US-T / NX-US-T100** — US **Technology** via *FactSet Industry* (Kern + Internet Retail: Internet Software/Services, Semiconductors, Packaged Software, Telecom Equipment, IT Services, Computer Peripherals/Processing Hardware, Electronic Components/Equipment/Production Equipment, Data Processing, Internet Retail). **Aerospace & Defense is deliberately excluded** (it sits in the Electronic Technology *sector* but is not tech). `NX-US-T` = **all** US tech Large+Mid+Small (no fixed count, ~367 on 2026-05-20); `NX-US-T100` = its **top 100 by Total MCap** (a strict subset of NX-US-T).
 - **NX-WL-100** — the 100 largest global (DM+EM) constituents by **Total MCap**.
 - **Selection is by Total MCap; weighting is by Adj-FF-MCap** (like every other product). Amazon/Netflix are captured (Internet Retail / Internet Software/Services); Tesla is **not** (FactSet "Motor Vehicles" — would pull in GM/Ford), so a rules-based Nasdaq-100 clone is intentionally approximate.
 
