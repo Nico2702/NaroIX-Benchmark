@@ -42,14 +42,14 @@ The **Standard** products (Large + Mid, suffix `-LM`) are the regional flagships
 ### Thematic / fixed-count products (added 2026-06-11)
 
 The last four are **not** coverage-segmented; they are **fixed-count / filtered** baskets drawn from the same pipeline output:
-- **NX-US-500** — the 500 largest US constituents by **Total MCap** (US = Mapping Country United States).
+- **NX-US-500** — the 500 largest US-listed constituents by **Total MCap** (US = **Exchange Country** United States, i.e. listed on a US exchange — includes US-listed foreign-domiciled names like ARM/Linde/Chubb/NXP, closer to the real S&P/Nasdaq membership).
 - **NX-US-T / NX-US-T100** — US **Technology** via *FactSet Industry* (Kern + Internet Retail: Internet Software/Services, Semiconductors, Packaged Software, Telecom Equipment, IT Services, Computer Peripherals/Processing Hardware, Electronic Components/Equipment/Production Equipment, Data Processing, Internet Retail). **Aerospace & Defense is deliberately excluded** (it sits in the Electronic Technology *sector* but is not tech). `NX-US-T` = **all** US tech Large+Mid+Small (no fixed count, ~367 on 2026-05-20); `NX-US-T100` = its **top 100 by Total MCap** (a strict subset of NX-US-T).
 - **NX-WL-100** — the 100 largest global (DM+EM) constituents by **Total MCap**.
 - **Selection is by Total MCap; weighting is by Adj-FF-MCap** (like every other product). Amazon/Netflix are captured (Internet Retail / Internet Software/Services); Tesla is **not** (FactSet "Motor Vehicles" — would pull in GM/Ford), so a rules-based Nasdaq-100 clone is intentionally approximate.
 
 ## 2. Naming & code scheme
 
-- **Region**: `DM` Developed · `EM` Emerging · `GM` Global (= DM + EM) · `EU` Europe (DM ∩ European countries) · `US` United States (Mapping Country).
+- **Region**: `DM` Developed · `EM` Emerging · `GM` Global (= DM + EM) · `EU` Europe (DM ∩ European countries) · `US` United States (**Exchange Country** = US-listed). Note: EU uses *Mapping* Country, US uses *Exchange* Country (listing-based, matches S&P/Nasdaq).
 - **Size suffix**: `-LM` Standard (Large+Mid) · `-L` Large · `-M` Mid · `-S` Small · `-AC` All Cap (Large+Mid+Small).
 - **No MSCI terms**: "Global Markets" not "ACWI", "All Cap" not "IMI", "Developed/Emerging Markets" as generic descriptors. The `NaroIX` prefix is the brand.
 

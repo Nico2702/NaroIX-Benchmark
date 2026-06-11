@@ -150,8 +150,8 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
                 rank_col="Total MCap Y2025"):
     """Scope a pipeline result to ONE index product and re-normalise weights to 100%.
 
-    region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe countries) | 'US' (Mapping
-            Country = United States). FM is never included.
+    region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe countries) | 'US' (Exchange
+            Country = United States, i.e. US-listed). FM is never included.
     segments: size buckets to draw from (the eligible pool).
     industries: optional iterable of FactSet Industry names to restrict to (e.g. US Tech).
     top_n: optional fixed constituent count — keep the largest `top_n` by `rank_col`
@@ -164,7 +164,7 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
             & gm_complete["Mapping Country"].fillna("").astype(str).str.upper().isin(EUROPE_COUNTRIES)
         )
     elif region == "US":
-        region_mask = gm_complete["Mapping Country"].fillna("").astype(str).str.upper() == "UNITED STATES"
+        region_mask = gm_complete["Exchange Country Name"].fillna("").astype(str).str.upper() == "UNITED STATES"
     else:
         region_cls = {"DM": ["DM"], "EM": ["EM"], "GM": ["DM", "EM"]}[region]
         region_mask = gm_complete["Classification"].isin(region_cls)
