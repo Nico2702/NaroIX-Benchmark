@@ -781,19 +781,15 @@ def load_fol_matrix():
     # Script directory als Basis (Streamlit Cloud startet ggf. aus anderem CWD)
     _script_dir = _os.path.dirname(_os.path.abspath(__file__)) if "__file__" in globals() else _os.getcwd()
 
-    # v1.9 (intern "1.9-redteam-corrected") ist die aktive Matrix — 12 Jurisdiktionen
+    # v1.9 (intern "1.9-redteam-corrected") ist die einzige/aktive Matrix — 12 Jurisdiktionen
     # inkl. Taiwan, Qatar-Finanzwerte 49%, alle logischen auto>max-Verstöße behoben.
-    # Fallback-Kette auf ältere Versionen, falls v1.9 fehlt.
-    _fname_order = [
-        "NaroIX_FOL_Master_Aggregated_v1.9.yaml",   # aktiv (1.9-redteam-corrected)
-        "NaroIX_FOL_Master_Aggregated_v1.1.yaml",   # Fallback (1.6-pit-corrected)
-        "NaroIX_FOL_Master_Aggregated.yaml",        # Fallback (1.3-pit-aggregated)
+    # (Alte Versionen 1.3/1.6 wurden bewusst entfernt; kein Fallback mehr.)
+    _fname = "NaroIX_FOL_Master_Aggregated_v1.9.yaml"
+    candidates_rel = [
+        "Historical FOL Register/" + _fname,
+        "Historical_FOL_Register/" + _fname,
+        _fname,
     ]
-    candidates_rel = []
-    for _fn in _fname_order:
-        candidates_rel.append("Historical FOL Register/" + _fn)
-        candidates_rel.append("Historical_FOL_Register/" + _fn)
-        candidates_rel.append(_fn)
 
     # Alle Pfade: relative (CWD) + absolute (Script-Dir)
     candidates = []
