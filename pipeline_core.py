@@ -138,7 +138,7 @@ INDEX_SERIES = [
     # Thematische / Fixed-Count-Produkte (Top-N nach Total MCap, cap-gewichtet nach Adj_FF):
     {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500,                            "coverage": "Top 500",      "vs": "S&P 500"},
     {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "industries": US_TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
-    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_STD,              "industries": US_TECH_INDUSTRIES, "coverage": "Tech L+M",     "vs": "—"},
+    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": US_TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
     {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100,                            "coverage": "Top 100",      "vs": "FTSE All-World 100"},
 ]
 
