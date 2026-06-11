@@ -154,26 +154,28 @@ def test_build_index_thematic():
     # region US + industry filter + top_n (US 500 / US Tech / World 100 mechanics)
     SEG = ["Large Cap", "Mid Cap", "Small Cap"]
     rows = [
-        # ISIN, Class, Mapping Country, Segment, FactSet Industry, Total MCap Y2025, Adj_FF_MCap
-        ("U1", "DM", "UNITED STATES", "Large Cap", "Semiconductors",    3000.0, 2900.0),
-        ("U2", "DM", "UNITED STATES", "Large Cap", "Packaged Software", 2000.0, 1900.0),
-        ("U3", "DM", "UNITED STATES", "Mid Cap",   "Internet Retail",   1500.0, 1400.0),
-        ("U4", "DM", "UNITED STATES", "Large Cap", "Major Banks",       2500.0, 2400.0),  # US non-tech
-        ("U5", "DM", "UNITED STATES", "Small Cap", "Semiconductors",     300.0,  280.0),
-        ("X1", "DM", "GERMANY",       "Large Cap", "Semiconductors",    5000.0, 4800.0),  # non-US tech
+        # ISIN, Class, Exchange Country, Mapping Country, Segment, Industry, Total MCap, Adj_FF
+        ("U1", "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Semiconductors",    3000.0, 2900.0),
+        ("U2", "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Packaged Software", 2000.0, 1900.0),
+        ("U3", "DM", "UNITED STATES", "UNITED STATES", "Mid Cap",   "Internet Retail",   1500.0, 1400.0),
+        ("U4", "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Major Banks",       2900.0, 2800.0),  # US non-tech
+        ("U5", "DM", "UNITED STATES", "UNITED STATES", "Small Cap", "Semiconductors",     300.0,  280.0),
+        ("A1", "DM", "UNITED STATES", "UNITED KINGDOM","Large Cap", "Internet Software/Services", 2800.0, 2700.0),  # US-listed, foreign-domiciled (ADR-like)
+        ("X1", "DM", "GERMANY",       "GERMANY",       "Large Cap", "Semiconductors",    5000.0, 4800.0),  # non-US-listed
     ]
-    gm = pd.DataFrame(rows, columns=["ISIN", "Classification", "Mapping Country", "Segment_New",
-                                     "FactSet Industry", "Total MCap Y2025", "Adj_FF_MCap"])
+    gm = pd.DataFrame(rows, columns=["ISIN", "Classification", "Exchange Country Name", "Mapping Country",
+                                     "Segment_New", "FactSet Industry", "Total MCap Y2025", "Adj_FF_MCap"])
     us = C.build_index(gm, "US", SEG)
-    check("build_index US: only United States", set(us["Mapping Country"]) == {"UNITED STATES"})
-    check("build_index US: excludes non-US tech", "X1" not in set(us["ISIN"]))
+    check("build_index US: only US-listed (Exchange Country)", set(us["Exchange Country Name"]) == {"UNITED STATES"})
+    check("build_index US: includes US-listed foreign-domiciled (A1)", "A1" in set(us["ISIN"]))
+    check("build_index US: excludes non-US listing (X1)", "X1" not in set(us["ISIN"]))
     tech = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES)
     check("build_index US+tech: excludes Major Banks", "U4" not in set(tech["ISIN"]))
-    check("build_index US+tech: keeps tech", {"U1", "U2", "U3", "U5"} == set(tech["ISIN"]))
+    check("build_index US+tech: keeps tech (incl. A1)", {"U1", "U2", "U3", "U5", "A1"} == set(tech["ISIN"]))
     topn = C.build_index(gm, "US", SEG, top_n=2)
     check("build_index top_n: largest 2 by Total MCap", set(topn["ISIN"]) == {"U1", "U4"}, str(set(topn["ISIN"])))
     techtop = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES, top_n=2)
-    check("build_index tech+top_n: top-2 US tech", set(techtop["ISIN"]) == {"U1", "U2"}, str(set(techtop["ISIN"])))
+    check("build_index tech+top_n: top-2 US tech", set(techtop["ISIN"]) == {"U1", "A1"}, str(set(techtop["ISIN"])))
     check("build_index thematic: weights sum 100", round(techtop["Index_Weight"].sum(), 6) == 100.0)
 
 
