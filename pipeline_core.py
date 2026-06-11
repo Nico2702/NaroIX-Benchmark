@@ -33,12 +33,28 @@ def clean_export_cols(df):
     for display/export. Non-mutating (returns a renamed view/copy)."""
     return df.rename(columns={k: v for k, v in EXPORT_COL_RENAME.items() if k in df.columns})
 
+def with_fol_breakdown(df):
+    """For constituent-level tables/exports (those carrying both Adj_FF_MCap and
+    Index_Weight), surface the FOL limit and the Inclusion Factor immediately BEFORE
+    Adj_FF_MCap, so the computation `Adj_FF_MCap = Free Float MCap × IF`
+    (IF = min(1, FOL / Free Float %), or the China CIF) is transparent in the output.
+    `FOL_Value` is shown as `FOL`. No-op if the relevant columns are absent. Non-mutating."""
+    if "Adj_FF_MCap" not in df.columns or "Index_Weight" not in df.columns:
+        return df
+    out = df.rename(columns={"FOL_Value": "FOL"}) if "FOL_Value" in df.columns else df.copy()
+    block = [c for c in ("FOL", "IF") if c in out.columns]
+    if not block:
+        return out
+    cols = [c for c in out.columns if c not in block]
+    pos = cols.index("Adj_FF_MCap")
+    return out[cols[:pos] + block + cols[pos:]]
+
 def to_excel_multi(sheets: dict):
     """Export multiple DataFrames as sheets. sheets = {sheet_name: df}.
     Uses xlsxwriter (markedly faster than openpyxl when writing many sheets);
     falls back to openpyxl if xlsxwriter is unavailable.
-    Column labels are cleaned via clean_export_cols() so the internal 'Y2025'
-    suffix never reaches the exported file."""
+    Per sheet: FOL/IF are surfaced before Adj_FF_MCap (with_fol_breakdown) and the
+    internal 'Y2025' suffix is stripped (clean_export_cols)."""
     try:
         import xlsxwriter  # noqa: F401
         _engine = "xlsxwriter"
@@ -47,7 +63,7 @@ def to_excel_multi(sheets: dict):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine=_engine) as writer:
         for sheet_name, df in sheets.items():
-            clean_export_cols(df).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            clean_export_cols(with_fol_breakdown(df)).to_excel(writer, sheet_name=sheet_name[:31], index=False)
     return buf.getvalue()
 
 def normalize_index_weight(df, adj_col="Adj_FF_MCap"):
@@ -1408,4 +1424,4 @@ def run_selection_pipeline(
         "buffer_breakdown": buffer_breakdown,
     }
 
-__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']
+__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'with_fol_breakdown', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']

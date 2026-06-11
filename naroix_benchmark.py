@@ -701,7 +701,9 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
 
     # ── Download ──────────────────────────────────────────────────────────────
     st.markdown("---")
-    _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]
+    # IF + FOL_Value bleiben im Export (zeigen, wie Adj_FF_MCap zustande kommt;
+    # to_excel_multi positioniert sie via with_fol_breakdown vor Adj_FF_MCap).
+    _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best"]
     _drop_universe = _drop + ["Index_Weight"]
 
     def _prep(df, adj_col="Adj_FF_MCap"):
@@ -1741,7 +1743,8 @@ with tab_europe:
             st.markdown("---")
             # Internal working columns dropped from the export (Index_Weight is
             # recomputed by normalize_index_weight, so it can stay in the slice).
-            _eu_cols = [c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF"]]
+            # IF/FOL bleiben drin (with_fol_breakdown positioniert sie vor Adj_FF_MCap).
+            _eu_cols = [c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best"]]
             _eu_dl       = normalize_index_weight(_eu_dm[_eu_cols].copy())
             _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][_eu_cols].copy())
             _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][_eu_cols].copy())
@@ -1900,7 +1903,7 @@ def render_single_country_tab(gm_complete_df, country_iso, country_display, flag
             st.caption(f"Anzeige: Top {_show_n} von {len(_df)} Stocks. Vollständige Liste im Excel-Download.")
 
         # Download
-        _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","IF","Section_Weight"]
+        _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","Section_Weight"]  # IF/FOL bleiben für den Export
         _dl_df = _df[[c for c in _df.columns if c not in _drop]].copy()
         _dl_df = normalize_index_weight(_dl_df)
         _params = {
@@ -2447,8 +2450,8 @@ with tab_multi:
                 _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
                               "Classification", "Mapping Country", "Exchange Country Name",
                               "Segment_New", "Size_Buffer_Held", "Free Float Percent",
-                              "Total MCap Y2025", "Free Float MCap Y2025", "Adj_FF_MCap",
-                              "IF", "IF_Source", "Index_Weight"]
+                              "Total MCap Y2025", "Free Float MCap Y2025",
+                              "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight"]
                 for _idx_name, _period_dict in results_per_index.items():
                     _parts = []
                     for _sd, _df in _period_dict.items():
@@ -2524,10 +2527,10 @@ with tab_multi:
                     _show_cols = [c for c in [
                         "Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country",
                         "Segment_New", "Free Float Percent", "Total MCap Y2025",
-                        "Free Float MCap Y2025", "Adj_FF_MCap", "Index_Weight"
+                        "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight"
                     ] if c in _det.columns]
-                    _det_show = clean_export_cols(
-                        _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True))
+                    _det_show = clean_export_cols(with_fol_breakdown(
+                        _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True)))
                     st.dataframe(_det_show.head(50), width='stretch', hide_index=True)
                     if len(_det) > 50:
                         st.caption(f"… {len(_det)-50} weitere — vollständig im Excel-Export verfügbar.")

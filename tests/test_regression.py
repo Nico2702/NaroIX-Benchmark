@@ -192,6 +192,23 @@ def test_delisted_filter_numeric():
           "float-formatted Listing Status leaked through")
 
 
+def test_with_fol_breakdown():
+    import io, openpyxl
+    df = pd.DataFrame({"Name": ["A"], "Free Float MCap Y2025": [100.0], "FOL_Value": [0.49],
+                       "IF": [0.6], "Adj_FF_MCap": [60.0], "IF_Source": ["Industry"], "Index_Weight": [100.0]})
+    out = list(C.with_fol_breakdown(df).columns)
+    check("fol_breakdown: FOL renamed + before Adj_FF_MCap",
+          "FOL" in out and out.index("FOL") < out.index("Adj_FF_MCap"))
+    check("fol_breakdown: IF before Adj_FF_MCap", out.index("IF") < out.index("Adj_FF_MCap"))
+    # propagates through to_excel_multi (the central export path)
+    hdr = [c.value for c in openpyxl.load_workbook(io.BytesIO(C.to_excel_multi({"S": df})))["S"][1]]
+    check("fol_breakdown: survives Excel export",
+          "FOL" in hdr and hdr.index("FOL") < hdr.index("Adj_FF_MCap") and hdr.index("IF") < hdr.index("Adj_FF_MCap"))
+    # no-op when the table is not a constituent table (no Index_Weight)
+    nodf = df.drop(columns=["Index_Weight"])
+    check("fol_breakdown: no-op without Index_Weight", list(C.with_fol_breakdown(nodf).columns) == list(nodf.columns))
+
+
 def test_fol_matrix_consistency():
     """Validate the active FOL YAML — catches the data-quality issues found during
     the v1.x audits (auto>max logical violations, out-of-range values, duplicate
@@ -355,7 +372,7 @@ def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
             test_build_index, test_validate_factset_data, test_delisted_filter_numeric,
-            test_fol_matrix_consistency]
+            test_with_fol_breakdown, test_fol_matrix_consistency]
     for t in pure:
         try:
             t()
