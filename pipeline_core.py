@@ -21,12 +21,23 @@ def format_bn(val):
 # export can leak the internal name regardless of which call site builds the frame.
 EXPORT_COL_RENAME = {
     "Total MCap Y2025":      "Total MCap",
+    "Share MCap Y2025":      "Share MCap",
     "Free Float MCap Y2025": "Free Float MCap",
     "1M ADTV Y2025":         "1M ADTV",
     "3M ADTV Y2025":         "3M ADTV",
     "6M ADTV Y2025":         "6M ADTV",
     "12M ADTV Y2025":        "12M ADTV",
 }
+
+def _place_share_mcap(df):
+    """Position 'Share MCap' directly between 'Total MCap' and 'Free Float MCap'
+    (operates on the clean export labels). No-op if any of the three is absent."""
+    cols = list(df.columns)
+    if not ({"Share MCap", "Total MCap", "Free Float MCap"} <= set(cols)):
+        return df
+    cols = [c for c in cols if c != "Share MCap"]
+    i = cols.index("Total MCap")
+    return df[cols[:i + 1] + ["Share MCap"] + cols[i + 1:]]
 
 def clean_export_cols(df):
     """Rename internal canonical '* Y2025' columns to clean, year-agnostic labels
@@ -53,8 +64,9 @@ def to_excel_multi(sheets: dict):
     """Export multiple DataFrames as sheets. sheets = {sheet_name: df}.
     Uses xlsxwriter (markedly faster than openpyxl when writing many sheets);
     falls back to openpyxl if xlsxwriter is unavailable.
-    Per sheet: FOL/IF are surfaced before Adj_FF_MCap (with_fol_breakdown) and the
-    internal 'Y2025' suffix is stripped (clean_export_cols)."""
+    Per sheet: FOL/IF are surfaced before Adj_FF_MCap (with_fol_breakdown), the
+    internal 'Y2025' suffix is stripped (clean_export_cols), and Share MCap is placed
+    between Total MCap and Free Float MCap (_place_share_mcap)."""
     try:
         import xlsxwriter  # noqa: F401
         _engine = "xlsxwriter"
@@ -63,7 +75,8 @@ def to_excel_multi(sheets: dict):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine=_engine) as writer:
         for sheet_name, df in sheets.items():
-            clean_export_cols(with_fol_breakdown(df)).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            _place_share_mcap(clean_export_cols(with_fol_breakdown(df))).to_excel(
+                writer, sheet_name=sheet_name[:31], index=False)
     return buf.getvalue()
 
 def normalize_index_weight(df, adj_col="Adj_FF_MCap"):
@@ -551,7 +564,7 @@ def load_master_excel(file, valid_selection_dates_iso):
                 "6M ADTV":             "6M ADTV Y2025",
                 "12M ADTV":            "12M ADTV Y2025",
                 "Listing Status":      "Listing Status",
-                # "Share MCap" wird absichtlich nicht gemappt — informative Spalte
+                "Share MCap":          "Share MCap Y2025",   # informativ: MCap der Anteilsklasse (Export, zwischen Total & Free Float)
             }
             for prefix, col_name in prefix_map.items():
                 target = rename_map_dynamic.get(prefix)
@@ -1029,6 +1042,9 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     for col in ["Total MCap Y2025","Free Float MCap Y2025","Free Float Percent",
                 "1M ADTV Y2025","3M ADTV Y2025","6M ADTV Y2025","12M ADTV Y2025","Closing Price"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    # Share MCap ist optional (rein informativ für den Export) — nur coercen wenn vorhanden
+    if "Share MCap Y2025" in df.columns:
+        df["Share MCap Y2025"] = pd.to_numeric(df["Share MCap Y2025"], errors="coerce").fillna(0)
 
     # Step 1: Thailand mode handling
     _th = df["Exchange Name"].fillna("").str.upper() == "THAILAND"

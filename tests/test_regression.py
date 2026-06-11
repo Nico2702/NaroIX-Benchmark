@@ -194,16 +194,20 @@ def test_delisted_filter_numeric():
 
 def test_with_fol_breakdown():
     import io, openpyxl
-    df = pd.DataFrame({"Name": ["A"], "Free Float MCap Y2025": [100.0], "FOL_Value": [0.49],
-                       "IF": [0.6], "Adj_FF_MCap": [60.0], "IF_Source": ["Industry"], "Index_Weight": [100.0]})
+    df = pd.DataFrame({"Name": ["A"], "Total MCap Y2025": [200.0], "Share MCap Y2025": [150.0],
+                       "Free Float MCap Y2025": [100.0], "FOL_Value": [0.49], "IF": [0.6],
+                       "Adj_FF_MCap": [60.0], "IF_Source": ["Industry"], "Index_Weight": [100.0]})
     out = list(C.with_fol_breakdown(df).columns)
     check("fol_breakdown: FOL renamed + before Adj_FF_MCap",
           "FOL" in out and out.index("FOL") < out.index("Adj_FF_MCap"))
     check("fol_breakdown: IF before Adj_FF_MCap", out.index("IF") < out.index("Adj_FF_MCap"))
-    # propagates through to_excel_multi (the central export path)
+    # full export column order through the central path (FOL/IF + Share MCap placement + rename)
     hdr = [c.value for c in openpyxl.load_workbook(io.BytesIO(C.to_excel_multi({"S": df})))["S"][1]]
-    check("fol_breakdown: survives Excel export",
+    check("export: FOL/IF before Adj_FF_MCap",
           "FOL" in hdr and hdr.index("FOL") < hdr.index("Adj_FF_MCap") and hdr.index("IF") < hdr.index("Adj_FF_MCap"))
+    check("export: Share MCap between Total and Free Float MCap",
+          hdr.index("Total MCap") < hdr.index("Share MCap") < hdr.index("Free Float MCap"),
+          str(hdr))
     # no-op when the table is not a constituent table (no Index_Weight)
     nodf = df.drop(columns=["Index_Weight"])
     check("fol_breakdown: no-op without Index_Weight", list(C.with_fol_breakdown(nodf).columns) == list(nodf.columns))

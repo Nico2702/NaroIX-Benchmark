@@ -158,6 +158,7 @@ def load_excel(file):
         # Normalize column names: remove year suffix so rest of code is year-agnostic
         rename_map = {
             f"Total MCap {year_suffix}":      "Total MCap Y2025",
+            f"Share MCap {year_suffix}":      "Share MCap Y2025",   # informativ (Export), falls vorhanden
             f"Free Float MCap {year_suffix}": "Free Float MCap Y2025",
             f"Free Float Percent":            "Free Float Percent",
             f"1M ADTV {year_suffix}":         "1M ADTV Y2025",
@@ -2450,7 +2451,7 @@ with tab_multi:
                 _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
                               "Classification", "Mapping Country", "Exchange Country Name",
                               "Segment_New", "Size_Buffer_Held", "Free Float Percent",
-                              "Total MCap Y2025", "Free Float MCap Y2025",
+                              "Total MCap Y2025", "Share MCap Y2025", "Free Float MCap Y2025",
                               "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight"]
                 for _idx_name, _period_dict in results_per_index.items():
                     _parts = []
@@ -2527,7 +2528,7 @@ with tab_multi:
                     _show_cols = [c for c in [
                         "Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country",
                         "Segment_New", "Free Float Percent", "Total MCap Y2025",
-                        "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight"
+                        "Share MCap Y2025", "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight"
                     ] if c in _det.columns]
                     _det_show = clean_export_cols(with_fol_breakdown(
                         _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True)))
