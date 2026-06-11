@@ -6,11 +6,11 @@
 > for the construction process and `HANDOVER.md` §2 for the methodology decisions.
 >
 > Single source of truth in code: the `INDEX_SERIES` constant + `build_index()` helper in
-> `naroix_benchmark.py`. Last updated: 2026-06-09.
+> `pipeline_core.py`. Last updated: 2026-06-11.
 
 ---
 
-## 1. The products (16)
+## 1. The products (20)
 
 Coverage = cumulative Adj-FF-MCap coverage band, **per country** (Option B, HANDOVER §2.2). Approximate (per-country + liquidity exclusion mean it's never exact).
 
@@ -32,12 +32,24 @@ Coverage = cumulative Adj-FF-MCap coverage band, **per country** (Option B, HAND
 | NX-GM-M | NaroIX Global Markets Mid Cap Index | GM | Mid | 70–85% | MSCI ACWI Mid Cap |
 | NX-GM-S | NaroIX Global Markets Small Cap Index | GM | Small | 85–99% | MSCI ACWI Small Cap |
 | NX-GM-AC | NaroIX Global Markets All Cap Index | GM | Large + Mid + Small | 0–99% | MSCI ACWI IMI |
+| **NX-US-500** | NaroIX US 500 Index | US | Top 500 | by Total MCap | S&P 500 |
+| **NX-US-T100** | NaroIX US Tech 100 Index | US, Tech industries | Top 100 | by Total MCap | Nasdaq-100 |
+| NX-US-T | NaroIX US Tech Index | US, Tech industries | Large + Mid | — | — |
+| **NX-WL-100** | NaroIX World 100 Index | GM (DM+EM) | Top 100 | by Total MCap | FTSE All-World 100 |
 
-The **Standard** products (Large + Mid, suffix `-LM`) are the flagships: **NX-DM-LM**, **NX-EM-LM**, **NX-GM-LM**, **NX-EU-LM**.
+The **Standard** products (Large + Mid, suffix `-LM`) are the regional flagships: **NX-DM-LM**, **NX-EM-LM**, **NX-GM-LM**, **NX-EU-LM**.
+
+### Thematic / fixed-count products (added 2026-06-11)
+
+The last four are **not** coverage-segmented; they are **fixed-count / filtered** baskets drawn from the same pipeline output:
+- **NX-US-500** — the 500 largest US constituents by **Total MCap** (US = Mapping Country United States).
+- **NX-US-T100 / NX-US-T** — US **Technology** via *FactSet Industry* (Kern + Internet Retail: Internet Software/Services, Semiconductors, Packaged Software, Telecom Equipment, IT Services, Computer Peripherals/Processing Hardware, Electronic Components/Equipment/Production Equipment, Data Processing, Internet Retail). **Aerospace & Defense is deliberately excluded** (it sits in the Electronic Technology *sector* but is not tech). `T100` = top 100 by Total MCap (reaches into Small caps — only ~71 US-tech names are Large+Mid); `T` = all Large+Mid.
+- **NX-WL-100** — the 100 largest global (DM+EM) constituents by **Total MCap**.
+- **Selection is by Total MCap; weighting is by Adj-FF-MCap** (like every other product). Amazon/Netflix are captured (Internet Retail / Internet Software/Services); Tesla is **not** (FactSet "Motor Vehicles" — would pull in GM/Ford), so a rules-based Nasdaq-100 clone is intentionally approximate.
 
 ## 2. Naming & code scheme
 
-- **Region**: `DM` Developed · `EM` Emerging · `GM` Global (= DM + EM) · `EU` Europe (DM ∩ European countries).
+- **Region**: `DM` Developed · `EM` Emerging · `GM` Global (= DM + EM) · `EU` Europe (DM ∩ European countries) · `US` United States (Mapping Country).
 - **Size suffix**: `-LM` Standard (Large+Mid) · `-L` Large · `-M` Mid · `-S` Small · `-AC` All Cap (Large+Mid+Small).
 - **No MSCI terms**: "Global Markets" not "ACWI", "All Cap" not "IMI", "Developed/Emerging Markets" as generic descriptors. The `NaroIX` prefix is the brand.
 
@@ -57,8 +69,8 @@ These identities hold exactly by construction (verified on real data): `NX-GM-* 
 
 ## 5. How it's computed
 
-- Defined once as `INDEX_SERIES` (list of `{code, name, region, segments, coverage, vs}`) with `INDEX_BY_CODE` / `INDEX_BY_NAME` lookups.
-- `build_index(gm_complete, region, segments)` scopes one pipeline result to a product (filter by region + segments, re-normalise weights to 100%). Single source of truth for **all** consumers (GIMI-tab product table, Multi-Period tab).
+- Defined once as `INDEX_SERIES` in **`pipeline_core.py`** (list of `{code, name, region, segments, coverage, vs}`, plus optional `industries` / `top_n` for thematic products) with `INDEX_BY_CODE` / `INDEX_BY_NAME` lookups.
+- `build_index(gm_complete, region, segments, industries=None, top_n=None, rank_col="Total MCap Y2025")` scopes one pipeline result to a product (filter by region + segments [+ industries], optional top-N by Total MCap, re-normalise weights to 100%). Single source of truth for **all** consumers (GIMI-tab product table, Multi-Period tab).
 - **Multi-Period (Option Y):** the pipeline runs **once per period** (global incumbent/buffer state = prior period's investable universe L+M+S); every selected product is a consistent `build_index` slice of that one run. This guarantees a stock has exactly **one** size class across all products and is far faster than per-product runs. See `SELECTION.md` §2/§5.
 - Internal keys/sheet names use the **code** (stable, short); UI labels show the **name**.
 

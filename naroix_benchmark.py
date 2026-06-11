@@ -463,7 +463,8 @@ Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else 
                "DM/EM = Aufteilung (Global = DM+EM) · MCap = Summe über die Konstituenten. Frontier Markets (FM) ausgeschlossen.")
     _series_rows = []
     for _ix in INDEX_SERIES:
-        _ci = build_index(df_included, _ix["region"], _ix["segments"])
+        _ci = build_index(df_included, _ix["region"], _ix["segments"],
+                          industries=_ix.get("industries"), top_n=_ix.get("top_n"))
         _series_rows.append({
             "Code": _ix["code"],
             "Index": _ix["name"],
@@ -490,7 +491,8 @@ Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else 
 <div class="info-box">
 <b>Developed Markets (DM)</b> &nbsp;·&nbsp; <b>Emerging Markets (EM)</b> &nbsp;·&nbsp; <b>Global Markets (GM = DM+EM)</b><br>
 Größenstufen (kumulative Adj-FF-Coverage pro Land): <b>Large</b> 0–70% · <b>Mid</b> 70–85% · <b>Small</b> 85–99%<br>
-<b>Standard</b> = Large+Mid (Flaggschiff, hervorgehoben) &nbsp;·&nbsp; <b>All Cap</b> = Large+Mid+Small &nbsp;·&nbsp; Frontier Markets (FM) ausgeschlossen.
+<b>Standard</b> = Large+Mid (Flaggschiff, hervorgehoben) &nbsp;·&nbsp; <b>All Cap</b> = Large+Mid+Small &nbsp;·&nbsp; Frontier Markets (FM) ausgeschlossen.<br>
+<b>Thematisch / Fixed-Count</b>: US 500 (Top 500 US), US Tech 100 / US Tech (FactSet-Tech-Industrien), World 100 (Top 100 global) — Auswahl nach <b>Total MCap</b>, Gewichtung wie überall nach Adj-FF.
 </div>
 """, unsafe_allow_html=True)
 
@@ -2403,7 +2405,8 @@ with tab_multi:
                     # Produkte = konsistente Slices desselben Laufs (build_index)
                     for code in indices_to_run:
                         _ix = INDEX_BY_CODE[code]
-                        cons = build_index(_gmc, _ix["region"], _ix["segments"])
+                        cons = build_index(_gmc, _ix["region"], _ix["segments"],
+                                           industries=_ix.get("industries"), top_n=_ix.get("top_n"))
                         results_per_index[code][sd_iso] = cons
 
                         cur = set(cons["ISIN"].dropna().astype(str).str.strip().str.upper())

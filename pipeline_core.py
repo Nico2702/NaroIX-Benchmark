@@ -100,6 +100,24 @@ _SEG_STD = ["Large Cap", "Mid Cap"]
 
 _SEG_AC  = ["Large Cap", "Mid Cap", "Small Cap"]
 
+# "US Tech" universe via FactSet Industry (granular — deliberately excludes
+# Aerospace & Defense, which sits in the Electronic Technology *sector* but is not tech).
+# Kern (echte Tech-Industrien) + Internet Retail (Amazon/MercadoLibre/PDD).
+US_TECH_INDUSTRIES = [
+    "Internet Software/Services",     # Alphabet, Meta, Netflix
+    "Semiconductors",                 # Nvidia, Broadcom, AMD, Micron, Intel
+    "Packaged Software",              # Microsoft, Oracle
+    "Telecommunications Equipment",   # Apple, Cisco
+    "Information Technology Services",
+    "Computer Peripherals",
+    "Computer Processing Hardware",
+    "Electronic Components",
+    "Electronic Equipment/Instruments",
+    "Electronic Production Equipment",
+    "Data Processing Services",
+    "Internet Retail",                # Amazon, MercadoLibre, PDD
+]
+
 INDEX_SERIES = [
     {"code": "NX-EU-LM", "name": "NaroIX Europe Markets Index",               "region": "EU", "segments": _SEG_STD,        "coverage": "0–85%",  "vs": "MSCI Europe"},
     {"code": "NX-DM-LM", "name": "NaroIX Developed Markets Index",            "region": "DM", "segments": _SEG_STD,        "coverage": "0–85%",  "vs": "MSCI World"},
@@ -117,25 +135,50 @@ INDEX_SERIES = [
     {"code": "NX-GM-M",  "name": "NaroIX Global Markets Mid Cap Index",       "region": "GM", "segments": ["Mid Cap"],     "coverage": "70–85%", "vs": "MSCI ACWI Mid Cap"},
     {"code": "NX-GM-S",  "name": "NaroIX Global Markets Small Cap Index",     "region": "GM", "segments": ["Small Cap"],   "coverage": "85–99%", "vs": "MSCI ACWI Small Cap"},
     {"code": "NX-GM-AC", "name": "NaroIX Global Markets All Cap Index",       "region": "GM", "segments": _SEG_AC,         "coverage": "0–99%",  "vs": "MSCI ACWI IMI"},
+    # Thematische / Fixed-Count-Produkte (Top-N nach Total MCap, cap-gewichtet nach Adj_FF):
+    {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500,                            "coverage": "Top 500",      "vs": "S&P 500"},
+    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "industries": US_TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
+    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_STD,              "industries": US_TECH_INDUSTRIES, "coverage": "Tech L+M",     "vs": "—"},
+    {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100,                            "coverage": "Top 100",      "vs": "FTSE All-World 100"},
 ]
 
 INDEX_BY_CODE = {ix["code"]: ix for ix in INDEX_SERIES}
 
 INDEX_BY_NAME = {ix["name"]: ix for ix in INDEX_SERIES}
 
-def build_index(gm_complete, region, segments):
-    """Scope a pipeline result to ONE index product (region × size segments) and
-    re-normalise weights to 100%. region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe
-    countries). FM is never included. Single source of truth together with INDEX_SERIES."""
+def build_index(gm_complete, region, segments, industries=None, top_n=None,
+                rank_col="Total MCap Y2025"):
+    """Scope a pipeline result to ONE index product and re-normalise weights to 100%.
+
+    region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe countries) | 'US' (Mapping
+            Country = United States). FM is never included.
+    segments: size buckets to draw from (the eligible pool).
+    industries: optional iterable of FactSet Industry names to restrict to (e.g. US Tech).
+    top_n: optional fixed constituent count — keep the largest `top_n` by `rank_col`
+           (Total MCap by default), e.g. US 500 / World 100 / US Tech 100.
+    Weighting always = Adj_FF_MCap (normalize_index_weight), independent of the ranking.
+    Single source of truth together with INDEX_SERIES."""
     if region == "EU":
         region_mask = (
             (gm_complete["Classification"] == "DM")
             & gm_complete["Mapping Country"].fillna("").astype(str).str.upper().isin(EUROPE_COUNTRIES)
         )
+    elif region == "US":
+        region_mask = gm_complete["Mapping Country"].fillna("").astype(str).str.upper() == "UNITED STATES"
     else:
         region_cls = {"DM": ["DM"], "EM": ["EM"], "GM": ["DM", "EM"]}[region]
         region_mask = gm_complete["Classification"].isin(region_cls)
-    df = gm_complete[region_mask & gm_complete["Segment_New"].isin(segments)].copy()
+    mask = region_mask & gm_complete["Segment_New"].isin(segments)
+    if industries:
+        mask = mask & gm_complete["FactSet Industry"].isin(list(industries))
+    df = gm_complete[mask].copy()
+    if top_n:
+        # Membership = largest top_n by rank_col (Total MCap), Adj_FF_MCap as tiebreaker.
+        _rank = pd.to_numeric(df.get(rank_col), errors="coerce").fillna(0)
+        df = (df.assign(_rank=_rank, _tb=pd.to_numeric(df.get("Adj_FF_MCap"), errors="coerce").fillna(0))
+                .sort_values(["_rank", "_tb"], ascending=[False, False])
+                .head(int(top_n))
+                .drop(columns=["_rank", "_tb"]))
     return normalize_index_weight(df)
 
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
