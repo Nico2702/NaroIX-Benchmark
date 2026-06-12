@@ -47,6 +47,8 @@ The last four are **not** coverage-segmented; they are **fixed-count / filtered*
 - **NX-WL-100** — the 100 largest global (DM+EM) constituents by **Total MCap**.
 - **Selection is by Total MCap; weighting is by Adj-FF-MCap** (like every other product). Amazon/Netflix are captured (Internet Retail / Internet Software/Services); Tesla is **not** (FactSet "Motor Vehicles" — would pull in GM/Ford), so a rules-based Nasdaq-100 clone is intentionally approximate.
 
+**Rank-band buffer (turnover control, Solactive-GBS style).** The fixed-count products (`NX-US-500`, `NX-US-T100`, `NX-WL-100`) carry `buffer_hard` / `buffer_exit` ranks: top `buffer_hard` are hard-included, current incumbents ranked up to `buffer_exit` fill the remaining slots to `top_n`, then the highest-ranked newcomers top it up. US 500 = **425 / 600** (Solactive GBS US 500 1:1); the 100-products = **85 / 120** (proportional). Active only in the **Multi-Period** run (needs prior-period membership) and only when the Buffer toggle is on; the seed period and the single-period GIMI table use a plain top-N cut. Empirically (NX-US-500, consecutive periods) it cut turnover **54 → 14 name changes (~−74%)**. `NX-US-T` (variable count) has no rank band — it inherits the standard coverage/maintenance buffers.
+
 ## 2. Naming & code scheme
 
 - **Region**: `DM` Developed · `EM` Emerging · `GM` Global (= DM + EM) · `EU` Europe (DM ∩ European countries) · `US` United States (**Exchange Country** = US-listed). Note: EU uses *Mapping* Country, US uses *Exchange* Country (listing-based, matches S&P/Nasdaq).
@@ -70,7 +72,7 @@ These identities hold exactly by construction (verified on real data): `NX-GM-* 
 ## 5. How it's computed
 
 - Defined once as `INDEX_SERIES` in **`pipeline_core.py`** (list of `{code, name, region, segments, coverage, vs}`, plus optional `industries` / `top_n` for thematic products) with `INDEX_BY_CODE` / `INDEX_BY_NAME` lookups.
-- `build_index(gm_complete, region, segments, industries=None, top_n=None, rank_col="Total MCap Y2025")` scopes one pipeline result to a product (filter by region + segments [+ industries], optional top-N by Total MCap, re-normalise weights to 100%). Single source of truth for **all** consumers (GIMI-tab product table, Multi-Period tab).
+- `build_index(gm_complete, region, segments, industries=None, top_n=None, rank_col="Total MCap Y2025", incumbents_isin=None, buffer_hard=None, buffer_exit=None)` scopes one pipeline result to a product (filter by region + segments [+ industries], optional top-N by Total MCap with an optional rank-band buffer, re-normalise weights to 100%). Single source of truth for **all** consumers (GIMI-tab product table, Multi-Period tab).
 - **Multi-Period (Option Y):** the pipeline runs **once per period** (global incumbent/buffer state = prior period's investable universe L+M+S); every selected product is a consistent `build_index` slice of that one run. This guarantees a stock has exactly **one** size class across all products and is far faster than per-product runs. See `SELECTION.md` §2/§5.
 - Internal keys/sheet names use the **code** (stable, short); UI labels show the **name**.
 
