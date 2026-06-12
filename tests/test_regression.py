@@ -51,7 +51,7 @@ def skip(name, detail=""):
 
 def test_index_series_integrity():
     codes = [ix["code"] for ix in C.INDEX_SERIES]
-    check("index_series: 20 products", len(C.INDEX_SERIES) == 20, f"got {len(C.INDEX_SERIES)}")
+    check("index_series: 21 products", len(C.INDEX_SERIES) == 21, f"got {len(C.INDEX_SERIES)}")
     check("index_series: codes unique", len(set(codes)) == len(codes), "duplicate code")
     check("index_series: BY_CODE consistent", set(C.INDEX_BY_CODE) == set(codes))
     valid = {"Large Cap", "Mid Cap", "Small Cap"}
@@ -169,12 +169,12 @@ def test_build_index_thematic():
     check("build_index US: only US-listed (Exchange Country)", set(us["Exchange Country Name"]) == {"UNITED STATES"})
     check("build_index US: includes US-listed foreign-domiciled (A1)", "A1" in set(us["ISIN"]))
     check("build_index US: excludes non-US listing (X1)", "X1" not in set(us["ISIN"]))
-    tech = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES)
+    tech = C.build_index(gm, "US", SEG, industries=C.TECH_INDUSTRIES)
     check("build_index US+tech: excludes Major Banks", "U4" not in set(tech["ISIN"]))
     check("build_index US+tech: keeps tech (incl. A1)", {"U1", "U2", "U3", "U5", "A1"} == set(tech["ISIN"]))
     topn = C.build_index(gm, "US", SEG, top_n=2)
     check("build_index top_n: largest 2 by Total MCap", set(topn["ISIN"]) == {"U1", "U4"}, str(set(topn["ISIN"])))
-    techtop = C.build_index(gm, "US", SEG, industries=C.US_TECH_INDUSTRIES, top_n=2)
+    techtop = C.build_index(gm, "US", SEG, industries=C.TECH_INDUSTRIES, top_n=2)
     check("build_index tech+top_n: top-2 US tech", set(techtop["ISIN"]) == {"U1", "A1"}, str(set(techtop["ISIN"])))
     check("build_index thematic: weights sum 100", round(techtop["Index_Weight"].sum(), 6) == 100.0)
 

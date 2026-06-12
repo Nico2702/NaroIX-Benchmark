@@ -100,10 +100,10 @@ _SEG_STD = ["Large Cap", "Mid Cap"]
 
 _SEG_AC  = ["Large Cap", "Mid Cap", "Small Cap"]
 
-# "US Tech" universe via FactSet Industry (granular — deliberately excludes
-# Aerospace & Defense, which sits in the Electronic Technology *sector* but is not tech).
-# Kern (echte Tech-Industrien) + Internet Retail (Amazon/MercadoLibre/PDD).
-US_TECH_INDUSTRIES = [
+# "Tech" universe via FactSet Industry (granular — deliberately excludes Aerospace &
+# Defense, which sits in the Electronic Technology *sector* but is not tech). Region-agnostic:
+# used by the US Tech AND Europe Tech products. Kern (echte Tech-Industrien) + Internet Retail.
+TECH_INDUSTRIES = [
     "Internet Software/Services",     # Alphabet, Meta, Netflix
     "Semiconductors",                 # Nvidia, Broadcom, AMD, Micron, Intel
     "Packaged Software",              # Microsoft, Oracle
@@ -139,8 +139,9 @@ INDEX_SERIES = [
     # buffer_hard/buffer_exit = Rang-Band-Buffer (Solactive-Stil): hart drin ≤ buffer_hard,
     # Bestandstitel bis Rang buffer_exit füllen auf top_n auf (nur Multi-Period mit Vorperiode).
     {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500, "buffer_hard": 425, "buffer_exit": 600, "coverage": "Top 500",      "vs": "S&P 500"},
-    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "industries": US_TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
-    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": US_TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
+    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "industries": TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
+    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
+    {"code": "NX-EU-T",    "name": "NaroIX Europe Tech Index", "region": "EU", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
     {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "coverage": "Top 100",      "vs": "FTSE All-World 100"},
 ]
 
