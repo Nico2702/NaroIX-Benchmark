@@ -2405,8 +2405,13 @@ with tab_multi:
                     # Produkte = konsistente Slices desselben Laufs (build_index)
                     for code in indices_to_run:
                         _ix = INDEX_BY_CODE[code]
+                        # Rang-Band-Buffer für Fixed-Count-Produkte: nur wenn Buffer aktiv,
+                        # nicht in der Seed-Periode, und das Produkt buffer_hard definiert.
+                        _use_rank_buf = bool(apply_buffer and not is_seed and _ix.get("buffer_hard"))
                         cons = build_index(_gmc, _ix["region"], _ix["segments"],
-                                           industries=_ix.get("industries"), top_n=_ix.get("top_n"))
+                                           industries=_ix.get("industries"), top_n=_ix.get("top_n"),
+                                           incumbents_isin=(prev_prod_isin[code] if _use_rank_buf else None),
+                                           buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"))
                         results_per_index[code][sd_iso] = cons
 
                         cur = set(cons["ISIN"].dropna().astype(str).str.strip().str.upper())

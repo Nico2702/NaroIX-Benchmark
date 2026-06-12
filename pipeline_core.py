@@ -135,19 +135,46 @@ INDEX_SERIES = [
     {"code": "NX-GM-M",  "name": "NaroIX Global Markets Mid Cap Index",       "region": "GM", "segments": ["Mid Cap"],     "coverage": "70–85%", "vs": "MSCI ACWI Mid Cap"},
     {"code": "NX-GM-S",  "name": "NaroIX Global Markets Small Cap Index",     "region": "GM", "segments": ["Small Cap"],   "coverage": "85–99%", "vs": "MSCI ACWI Small Cap"},
     {"code": "NX-GM-AC", "name": "NaroIX Global Markets All Cap Index",       "region": "GM", "segments": _SEG_AC,         "coverage": "0–99%",  "vs": "MSCI ACWI IMI"},
-    # Thematische / Fixed-Count-Produkte (Top-N nach Total MCap, cap-gewichtet nach Adj_FF):
-    {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500,                            "coverage": "Top 500",      "vs": "S&P 500"},
-    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "industries": US_TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
+    # Thematische / Fixed-Count-Produkte (Top-N nach Total MCap, cap-gewichtet nach Adj_FF).
+    # buffer_hard/buffer_exit = Rang-Band-Buffer (Solactive-Stil): hart drin ≤ buffer_hard,
+    # Bestandstitel bis Rang buffer_exit füllen auf top_n auf (nur Multi-Period mit Vorperiode).
+    {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500, "buffer_hard": 425, "buffer_exit": 600, "coverage": "Top 500",      "vs": "S&P 500"},
+    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "industries": US_TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
     {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": US_TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
-    {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100,                            "coverage": "Top 100",      "vs": "FTSE All-World 100"},
+    {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "coverage": "Top 100",      "vs": "FTSE All-World 100"},
 ]
 
 INDEX_BY_CODE = {ix["code"]: ix for ix in INDEX_SERIES}
 
 INDEX_BY_NAME = {ix["name"]: ix for ix in INDEX_SERIES}
 
+def _rank_band_select(df, top_n, incumbents_isin, buffer_hard, buffer_exit):
+    """Solactive-GBS-style rank-band buffer for a fixed-count index (df already sorted
+    by rank, best first; 1-based rank = row position).
+      1. ranks ≤ buffer_hard       → hard-included (anyone).
+      2. remaining slots up to top_n → current incumbents ranked (buffer_hard, buffer_exit], by rank.
+      3. if still short            → highest-ranked remaining names (newcomers), by rank.
+    Returns the selected sub-DataFrame (≤ top_n rows). The hard cut MUST be < top_n,
+    otherwise no slots are reserved and the buffer is vacuous (= plain top-N)."""
+    n = int(top_n)
+    rank = np.arange(len(df)) + 1                       # 1-based rank by row order
+    isin = df["ISIN"].fillna("").astype(str).str.strip().str.upper().to_numpy() if "ISIN" in df.columns else np.array([""] * len(df))
+    inc = np.isin(isin, list(incumbents_isin))
+    keep = list(np.where(rank <= int(buffer_hard))[0])  # step 1: hard top
+    remaining = n - len(keep)
+    if remaining > 0:
+        band_inc = np.where((rank > int(buffer_hard)) & (rank <= int(buffer_exit)) & inc)[0]  # step 2
+        keep += list(band_inc[:remaining])
+        still = n - len(keep)
+        if still > 0:                                   # step 3: fill with highest-ranked remaining
+            kept = set(keep)
+            fill = [p for p in range(len(df)) if p >= int(buffer_hard) and p not in kept]
+            keep += fill[:still]
+    return df.iloc[sorted(keep)[:n]]
+
 def build_index(gm_complete, region, segments, industries=None, top_n=None,
-                rank_col="Total MCap Y2025"):
+                rank_col="Total MCap Y2025", incumbents_isin=None,
+                buffer_hard=None, buffer_exit=None):
     """Scope a pipeline result to ONE index product and re-normalise weights to 100%.
 
     region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe countries) | 'US' (Exchange
@@ -156,6 +183,9 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
     industries: optional iterable of FactSet Industry names to restrict to (e.g. US Tech).
     top_n: optional fixed constituent count — keep the largest `top_n` by `rank_col`
            (Total MCap by default), e.g. US 500 / World 100 / US Tech 100.
+    incumbents_isin + buffer_hard/buffer_exit: optional Solactive-style rank-band buffer
+           (only with top_n). When given, prior members are retained inside the band to
+           cut turnover (see _rank_band_select). Without it, top_n is a hard cut.
     Weighting always = Adj_FF_MCap (normalize_index_weight), independent of the ranking.
     Single source of truth together with INDEX_SERIES."""
     if region == "EU":
@@ -173,12 +203,16 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
         mask = mask & gm_complete["FactSet Industry"].isin(list(industries))
     df = gm_complete[mask].copy()
     if top_n:
-        # Membership = largest top_n by rank_col (Total MCap), Adj_FF_MCap as tiebreaker.
+        # Rank by rank_col (Total MCap), Adj_FF_MCap as tiebreaker — best first.
         _rank = pd.to_numeric(df.get(rank_col), errors="coerce").fillna(0)
         df = (df.assign(_rank=_rank, _tb=pd.to_numeric(df.get("Adj_FF_MCap"), errors="coerce").fillna(0))
                 .sort_values(["_rank", "_tb"], ascending=[False, False])
-                .head(int(top_n))
-                .drop(columns=["_rank", "_tb"]))
+                .reset_index(drop=True))
+        if incumbents_isin and buffer_hard and buffer_exit:
+            df = _rank_band_select(df, top_n, incumbents_isin, buffer_hard, buffer_exit)
+        else:
+            df = df.head(int(top_n))            # plain top-N (no incumbents / seed period / buffer off)
+        df = df.drop(columns=["_rank", "_tb"])
     return normalize_index_weight(df)
 
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
