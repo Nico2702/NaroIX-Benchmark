@@ -148,9 +148,10 @@ INDEX_BY_CODE = {ix["code"]: ix for ix in INDEX_SERIES}
 
 INDEX_BY_NAME = {ix["name"]: ix for ix in INDEX_SERIES}
 
-def _rank_band_select(df, top_n, incumbents_isin, buffer_hard, buffer_exit):
+def _rank_band_select(df, top_n, incumbents, buffer_hard, buffer_exit, id_col="ISIN"):
     """Solactive-GBS-style rank-band buffer for a fixed-count index (df already sorted
-    by rank, best first; 1-based rank = row position).
+    by rank, best first; 1-based rank = row position). `id_col` identifies each row
+    (security ISIN, or a company key) and is matched against `incumbents`.
       1. ranks ≤ buffer_hard       → hard-included (anyone).
       2. remaining slots up to top_n → current incumbents ranked (buffer_hard, buffer_exit], by rank.
       3. if still short            → highest-ranked remaining names (newcomers), by rank.
@@ -158,8 +159,8 @@ def _rank_band_select(df, top_n, incumbents_isin, buffer_hard, buffer_exit):
     otherwise no slots are reserved and the buffer is vacuous (= plain top-N)."""
     n = int(top_n)
     rank = np.arange(len(df)) + 1                       # 1-based rank by row order
-    isin = df["ISIN"].fillna("").astype(str).str.strip().str.upper().to_numpy() if "ISIN" in df.columns else np.array([""] * len(df))
-    inc = np.isin(isin, list(incumbents_isin))
+    ids = df[id_col].astype(str).to_numpy() if id_col in df.columns else np.array([""] * len(df))
+    inc = np.isin(ids, list(incumbents))
     keep = list(np.where(rank <= int(buffer_hard))[0])  # step 1: hard top
     remaining = n - len(keep)
     if remaining > 0:
@@ -184,8 +185,11 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
     top_n: optional fixed constituent count — keep the largest `top_n` by `rank_col`
            (Total MCap by default), e.g. US 500 / World 100 / US Tech 100.
     incumbents_isin + buffer_hard/buffer_exit: optional Solactive-style rank-band buffer
-           (only with top_n). When given, prior members are retained inside the band to
-           cut turnover (see _rank_band_select). Without it, top_n is a hard cut.
+           (only with top_n). `incumbents_isin` holds prior-period COMPANY keys (Entity IDs).
+           When given, prior members are retained inside the band to cut turnover.
+    top_n counts at the COMPANY level (Entity ID): the top_n *companies* by Total MCap are
+           selected, then ALL their share lines are included (S&P/Solactive step 6) — so a
+           500-company index holds ~505 securities (Alphabet A+C, Fox A+B, …).
     Weighting always = Adj_FF_MCap (normalize_index_weight), independent of the ranking.
     Single source of truth together with INDEX_SERIES."""
     if region == "EU":
@@ -203,16 +207,25 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
         mask = mask & gm_complete["FactSet Industry"].isin(list(industries))
     df = gm_complete[mask].copy()
     if top_n:
-        # Rank by rank_col (Total MCap), Adj_FF_MCap as tiebreaker — best first.
+        # Rank securities by rank_col (Total MCap), Adj_FF_MCap as tiebreaker — best first.
         _rank = pd.to_numeric(df.get(rank_col), errors="coerce").fillna(0)
         df = (df.assign(_rank=_rank, _tb=pd.to_numeric(df.get("Adj_FF_MCap"), errors="coerce").fillna(0))
                 .sort_values(["_rank", "_tb"], ascending=[False, False])
                 .reset_index(drop=True))
-        if incumbents_isin and buffer_hard and buffer_exit:
-            df = _rank_band_select(df, top_n, incumbents_isin, buffer_hard, buffer_exit)
+        # Company key (Entity ID, fallback ISIN). Total MCap is company-wide, so a company's
+        # rank is its best line's position. Count to top_n COMPANIES, then keep ALL their lines.
+        if "Entity ID" in df.columns:
+            _ck = df["Entity ID"].fillna("").astype(str).str.strip()
+            _ck = _ck.where(_ck != "", df["ISIN"].fillna("").astype(str).str.strip().str.upper())
         else:
-            df = df.head(int(top_n))            # plain top-N (no incumbents / seed period / buffer off)
-        df = df.drop(columns=["_rank", "_tb"])
+            _ck = df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        df = df.assign(_ckey=_ck)
+        comp = df.drop_duplicates("_ckey", keep="first").reset_index(drop=True)  # one row/company, rank order
+        if incumbents_isin and buffer_hard and buffer_exit:
+            keys = set(_rank_band_select(comp, top_n, incumbents_isin, buffer_hard, buffer_exit, id_col="_ckey")["_ckey"])
+        else:
+            keys = set(comp["_ckey"].head(int(top_n)))   # plain top-N companies (seed / buffer off)
+        df = df[df["_ckey"].isin(keys)].drop(columns=["_rank", "_tb", "_ckey"])
     return normalize_index_weight(df)
 
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):

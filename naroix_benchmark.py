@@ -2363,6 +2363,7 @@ with tab_multi:
                 prev_isin = set()                                   # globaler Membership-Incumbent-State
                 prev_seg = {}                                       # globaler {ISIN: Segment} für Size Buffer
                 prev_prod_isin = {code: set() for code in indices_to_run}   # je Produkt (Turnover-Stats)
+                prev_prod_ckey = {code: set() for code in indices_to_run}   # je Produkt: Vorperioden-Company-Keys (Rang-Band-Buffer)
                 _eumss_by_period = {}
                 summary_rows = []
 
@@ -2410,9 +2411,16 @@ with tab_multi:
                         _use_rank_buf = bool(apply_buffer and not is_seed and _ix.get("buffer_hard"))
                         cons = build_index(_gmc, _ix["region"], _ix["segments"],
                                            industries=_ix.get("industries"), top_n=_ix.get("top_n"),
-                                           incumbents_isin=(prev_prod_isin[code] if _use_rank_buf else None),
+                                           incumbents_isin=(prev_prod_ckey[code] if _use_rank_buf else None),
                                            buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"))
                         results_per_index[code][sd_iso] = cons
+                        # Company-Keys dieser Periode merken (für den Rang-Band-Buffer nächste Periode)
+                        if _ix.get("buffer_hard"):
+                            _ck = cons.get("Entity ID")
+                            if _ck is not None:
+                                _ck = _ck.fillna("").astype(str).str.strip()
+                                _ck = _ck.where(_ck != "", cons["ISIN"].fillna("").astype(str).str.strip().str.upper())
+                                prev_prod_ckey[code] = set(_ck) - {""}
 
                         cur = set(cons["ISIN"].dropna().astype(str).str.strip().str.upper())
                         prev = prev_prod_isin[code]

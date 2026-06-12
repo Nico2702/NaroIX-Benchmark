@@ -182,7 +182,7 @@ def test_build_index_thematic():
 def test_rank_band_buffer():
     # df pre-sorted best-first (rank = row position); A..J = ranks 1..10. N=5, hard=3, exit=7.
     df = pd.DataFrame({"ISIN": list("ABCDEFGHIJ")})
-    out = C._rank_band_select(df, top_n=5, incumbents_isin={"E", "G", "H"}, buffer_hard=3, buffer_exit=7)
+    out = C._rank_band_select(df, top_n=5, incumbents={"E", "G", "H"}, buffer_hard=3, buffer_exit=7)
     got = list(out["ISIN"])
     check("rank_band: count == N", len(got) == 5, str(got))
     check("rank_band: hard top (A,B,C) always in", set("ABC") <= set(got))
@@ -190,11 +190,31 @@ def test_rank_band_buffer():
     check("rank_band: newcomer in band dropped (D r4)", "D" not in got, str(got))
     check("rank_band: incumbent beyond exit excluded (H r8)", "H" not in got, str(got))
     # too few band incumbents -> fill remaining slot with highest-ranked newcomer (D)
-    out2 = C._rank_band_select(df, top_n=5, incumbents_isin={"G"}, buffer_hard=3, buffer_exit=7)
+    out2 = C._rank_band_select(df, top_n=5, incumbents={"G"}, buffer_hard=3, buffer_exit=7)
     check("rank_band: fill newcomer when incumbents short", set(out2["ISIN"]) == {"A", "B", "C", "D", "G"}, str(list(out2["ISIN"])))
     # plain top-N (no incumbents) for contrast = A..E
-    plain = C._rank_band_select(df, top_n=5, incumbents_isin=set(), buffer_hard=3, buffer_exit=7)
+    plain = C._rank_band_select(df, top_n=5, incumbents=set(), buffer_hard=3, buffer_exit=7)
     check("rank_band: no incumbents -> {A..C}+fill", set("ABC") <= set(plain["ISIN"]) and len(plain) == 5)
+
+
+def test_build_index_company_count():
+    # top_n counts COMPANIES (Entity ID), then keeps ALL share lines of the selected ones.
+    SEG = ["Large Cap", "Mid Cap", "Small Cap"]
+    rows = [
+        # ISIN, Class, Exchange, Mapping, Segment, Industry, Total MCap, Adj_FF, Entity ID
+        ("C1A", "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Packaged Software", 3000.0, 2900.0, "E_ALPHA"),
+        ("C1B", "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Packaged Software", 3000.0, 1500.0, "E_ALPHA"),  # 2nd class, same company
+        ("C2",  "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Semiconductors",    2000.0, 1900.0, "E_BETA"),
+        ("C3",  "DM", "UNITED STATES", "UNITED STATES", "Mid Cap",   "Internet Retail",   1000.0,  900.0, "E_GAMMA"),
+    ]
+    gm = pd.DataFrame(rows, columns=["ISIN", "Classification", "Exchange Country Name", "Mapping Country",
+                                     "Segment_New", "FactSet Industry", "Total MCap Y2025", "Adj_FF_MCap", "Entity ID"])
+    p = C.build_index(gm, "US", SEG, top_n=2)   # top 2 COMPANIES
+    check("company-count: 2 companies", p["Entity ID"].nunique() == 2, str(set(p["Entity ID"])))
+    check("company-count: both share lines of top company kept", {"C1A", "C1B"} <= set(p["ISIN"]), str(set(p["ISIN"])))
+    check("company-count: 3 securities for 2 companies", len(p) == 3, str(len(p)))
+    check("company-count: 3rd company excluded", "C3" not in set(p["ISIN"]))
+    check("company-count: weights sum 100", round(p["Index_Weight"].sum(), 6) == 100.0)
 
 
 def test_validate_factset_data():
@@ -426,7 +446,7 @@ def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
             test_build_index, test_build_index_thematic, test_rank_band_buffer,
-            test_validate_factset_data, test_delisted_filter_numeric,
+            test_build_index_company_count, test_validate_factset_data, test_delisted_filter_numeric,
             test_with_fol_breakdown, test_fol_matrix_consistency]
     for t in pure:
         try:
