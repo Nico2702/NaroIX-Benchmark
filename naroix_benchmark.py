@@ -2270,14 +2270,13 @@ with tab_helvetica_mp:
         _years = sorted({int(d.split("-")[0]) for d in _dates_all})
 
         st.markdown("### 📅 Rebalancing-Termine")
-        st.caption("Verfügbare Monate im Master: " + ", ".join(_MON[m] for m in _months_avail) +
-                   " — kein April/Oktober im Datensatz (halbjährlich = Mai + Nov).")
+        st.caption("Verfügbare Monate im Master: " + ", ".join(_MON[m] for m in _months_avail) + ".")
         _preset = st.radio("Frequenz", ["Quartalsweise (alle)", "Halbjährlich", "Jährlich", "Eigene Monate"],
-                           horizontal=True, key="helv_mp_preset")
+                           index=0, horizontal=True, key="helv_mp_preset")
         if _preset == "Quartalsweise (alle)":
             _sel_months = list(_months_avail)
         elif _preset == "Halbjährlich":
-            _sel_months = _months_avail[1::2] or list(_months_avail)
+            _sel_months = [m for m in (5, 11) if m in _months_avail] or list(_months_avail)  # Mai + Nov
         elif _preset == "Jährlich":
             _sel_months = [_months_avail[-1]]
         else:
