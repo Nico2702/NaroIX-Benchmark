@@ -2352,6 +2352,12 @@ with tab_helvetica_mp:
                     _cd[[c for c in ["Sleeve", "Type", "Exchange Ticker", "Name", "Mapping Country",
                                      "FactSet Industry", "Gewicht %"] if c in _cd.columns]],
                     width="stretch", hide_index=True, height=600)
+                st.download_button(
+                    f"⬇️ Termin-Detail {_pk} herunterladen (Excel)",
+                    data=to_excel_multi({f"Helvetica {_pk}": _comps[_pk]}),
+                    file_name=f"Helvetica_Composition_{_pk.replace('-', '')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="helv_mp_dl_detail")
 
                 _long = pd.concat(
                     [_comps[k][["Exchange Ticker", "Name", "Sleeve", "Type", "Index_Weight"]].assign(Termin=k)
