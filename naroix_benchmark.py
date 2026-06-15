@@ -8,7 +8,7 @@ from io import BytesIO
 
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
-from pipeline_core import _resolve_fol_row, _size_segment  # internal helpers used by UI
+from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select  # internal helpers used by UI
 from pipeline_core import (
     load_master_excel as _c_load_master_excel,
     load_fol_matrix as _c_load_fol_matrix,
@@ -2009,15 +2009,16 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     tot = df["Adj_FF_MCap"].sum()
     df["_c_before"] = (df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100) if tot > 0 else 0.0
 
-    # Step 5: per-stock Coverage-Cuts → Segment (Bestandstitel bekommen die weicheren Cuts)
-    m = _maint(df)
+    # Step 5: Coverage-Cuts → Segment. Cuts hängen NUR am globalen use_buffer (Single-Snapshot-
+    # Vergleich). Der inkumbenten-FF-Buffer (Step 2) hält Bestandstitel (v.a. Real Estate) im Pool,
+    # OHNE die Segment-Grenzen pro Titel zu verschieben — sonst stiege der Top-10-Turnover (siehe
+    # Helvetica-MP-Befund). Equity-Top-10-Bestandsschutz läuft über den Rang-Band-Buffer in
+    # build_helvetica_composite, nicht über die Coverage-Cuts.
+    _cut = MAINT if use_buffer else ENTRY
     cb = df["_c_before"].to_numpy()
-    lc = np.where(m, MAINT["large"], ENTRY["large"])
-    sd = np.where(m, MAINT["std"],   ENTRY["std"])
-    sm = np.where(m, MAINT["small"], ENTRY["small"])
-    df["Segment_New"] = np.where(cb < lc, "Large Cap",
-                          np.where(cb < sd, "Mid Cap",
-                            np.where(cb < sm, "Small Cap", "Micro Cap")))
+    df["Segment_New"] = np.where(cb < _cut["large"], "Large Cap",
+                          np.where(cb < _cut["std"], "Mid Cap",
+                            np.where(cb < _cut["small"], "Small Cap", "Micro Cap")))
 
     helv = df[df["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()  # Konstituenten i.e.S.
     helv_full_pool = df.copy()                                                       # inkl. Micro Cap
@@ -2042,13 +2043,22 @@ HELVETICA_TOPN = 10          # top-N constituents per equity sleeve
 HELVETICA_TARGET = {"Cash": 5.0, "Government Bonds": 10.0, "Corporate Bonds": 15.0,
                     "Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0, "Real Estate": 15.0, "Gold": 15.0}
 
-def build_helvetica_composite(helv, helv_full_pool, re_industries):
+HELVETICA_BUFFER_HARD = 8    # Equity-Top-10 Rang-Band: hart drin <= Rang 8
+HELVETICA_BUFFER_EXIT = 13   # Inkumbent bleibt in den Top-10, solange Rang <= 13
+
+def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_isin=None,
+                              buffer_hard=HELVETICA_BUFFER_HARD, buffer_exit=HELVETICA_BUFFER_EXIT):
     """Compose the full Helvetica multi-asset index for one snapshot: 45% static sleeves
     (cash + ETFs, fixed weights) + 55% tool-selected, equal-weighted (Equity L/M/S = top-N
     each excl. Real Estate, ranked by Adj_FF_MCap; Real Estate = all qualifying incl. Micro).
     Equal-weight fills the whole sleeve: each equity name = sleeve_weight / n (n<=top_n);
-    each RE name = 15% / n_re. Returns (composition_df, sleeve_summary_df); Index_Weight is
-    in % of the TOTAL index (sums to 100 when every sleeve has >=1 constituent)."""
+    each RE name = 15% / n_re.
+
+    Turnover control (Multi-Period): if `incumbents_isin` (prior-period selected constituents)
+    is given, each equity sleeve uses a RANK-BAND buffer (_rank_band_select, hard/exit) instead
+    of a hard top-N — incumbents stay in the top-10 while within the band. (The Real-Estate
+    FF-incumbent buffer lives in build_helvetica_pipeline, since RE = all qualifying.)
+    Returns (composition_df, sleeve_summary_df); Index_Weight in % of the TOTAL index."""
     is_re = lambda d: d["FactSet Industry"].isin(re_industries)
     rows = []
     for st_ in HELVETICA_STATIC:
@@ -2056,8 +2066,13 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries):
                      "Name": st_["name"], "ISIN": "", "Mapping Country": "", "FactSet Industry": "",
                      "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"]})
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
-        seg_df = (helv[(helv["Segment_New"] == seg) & (~is_re(helv))]
-                  .sort_values("Adj_FF_MCap", ascending=False).head(HELVETICA_TOPN))
+        _pool = (helv[(helv["Segment_New"] == seg) & (~is_re(helv))]
+                 .sort_values("Adj_FF_MCap", ascending=False).reset_index(drop=True))
+        if incumbents_isin:
+            _pool = _pool.assign(_isin_k=_pool["ISIN"].fillna("").astype(str).str.strip().str.upper())
+            seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
+        else:
+            seg_df = _pool.head(HELVETICA_TOPN)
         n = len(seg_df)
         w = sleeve_w / n if n else 0.0
         for _, r in seg_df.iterrows():
@@ -2272,10 +2287,9 @@ with tab_helvetica_mp:
         _c1, _c2, _c3, _c4 = st.columns(4)
         with _c1: _y0 = st.selectbox("Von Jahr", _years, index=0, key="helv_mp_y0")
         with _c2: _y1 = st.selectbox("Bis Jahr", _years, index=len(_years) - 1, key="helv_mp_y1")
-        with _c3: _mp_buffer = st.toggle("Schwellen-Buffer (experimentell)", value=False, key="helv_mp_buffer",
-                      help="Inkumbenten bekommen weichere Schwellen (FF 7.5%, Cuts 75/90/99.5). HINWEIS: Bei der "
-                           "Top-10-Auswahl ERHÖHT das den Turnover (verschiebt Segment-Ränge) statt ihn zu senken — "
-                           "echter Top-10-Bestandsschutz braucht einen Rang-Band-Buffer (geplant). Default: aus.")
+        with _c3: _mp_buffer = st.toggle("Maintenance Buffer", value=True, key="helv_mp_buffer",
+                      help="Inkumbenten-Bestandsschutz: Equity-Top-10 via Rang-Band (hart 8 / exit 13), "
+                           "Real Estate via FF-Buffer (Bestands-RE bleibt bei FF ≥ 7.5%). Senkt den Turnover.")
         with _c4: _mp_lowadtv = st.toggle("ADTV $0.25M", value=False, key="helv_mp_lowadtv")
         _mp_adtv = 250_000 if _mp_lowadtv else 500_000
 
@@ -2303,10 +2317,10 @@ with tab_helvetica_mp:
                         _cif, atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
                         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_sdd.year, fol_enabled=apply_fol)
                     _seed = (len(_prev) == 0)
+                    _inc = (_prev if (_mp_buffer and not _seed) else None)
                     _helv, _full, _ = build_helvetica_pipeline(
-                        _gmu, use_buffer=False, adtv_thr=_mp_adtv,
-                        incumbents_isin=(_prev if (_mp_buffer and not _seed) else None))
-                    _comp, _ = build_helvetica_composite(_helv, _full, _RE)
+                        _gmu, use_buffer=False, adtv_thr=_mp_adtv, incumbents_isin=_inc)
+                    _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
