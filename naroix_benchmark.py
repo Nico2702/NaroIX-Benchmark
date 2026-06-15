@@ -1259,13 +1259,14 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica, tab_multi = st.tabs([
+tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica, tab_helvetica_mp, tab_multi = st.tabs([
     "🌍 Universe Overview",
     "⚡ GIMI Method",
     "🇪🇺 Europe Index",
     "🇩🇪 Germany",
     "🇨🇭 Switzerland",
     "🏔️ Helvetica",
+    "🏔️ Helvetica MP",
     "🔁 Multi-Period Run",
 ])
 
@@ -2233,6 +2234,129 @@ with tab_helvetica:
         st.warning("⚠️ Universe ist leer. Bitte Datei-Upload und Filter-Einstellungen prüfen.")
     else:
         render_helvetica_tab(_gm_u_global)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6b: Helvetica Multi-Period
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_helvetica_mp:
+    st.markdown("## 🏔️ Helvetica Multi-Period")
+    st.caption("Mehrperioden-Lauf des Helvetica-Multi-Asset-Index mit frei wählbaren "
+               "Rebalancing-Terminen und echtem inkumbenten-basierten Maintenance-Buffer.")
+    if data_mode != "Master File (Multi-Period)":
+        st.info("Bitte im Sidebar **'Master File (Multi-Period)'** wählen und ein Master-File laden.")
+    elif master_data is None or not master_data.get("detected_dates"):
+        st.warning("⚠️ Kein Master-File geladen / keine Selection Dates erkannt.")
+    else:
+        _MON = {1: "Jan", 2: "Feb", 3: "Mär", 4: "Apr", 5: "Mai", 6: "Jun",
+                7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt", 11: "Nov", 12: "Dez"}
+        _dates_all = sorted(master_data["detected_dates"])
+        _months_avail = sorted({int(d.split("-")[1]) for d in _dates_all})
+        _years = sorted({int(d.split("-")[0]) for d in _dates_all})
+
+        st.markdown("### 📅 Rebalancing-Termine")
+        st.caption("Verfügbare Monate im Master: " + ", ".join(_MON[m] for m in _months_avail) +
+                   " — kein April/Oktober im Datensatz (halbjährlich = Mai + Nov).")
+        _preset = st.radio("Frequenz", ["Quartalsweise (alle)", "Halbjährlich", "Jährlich", "Eigene Monate"],
+                           horizontal=True, key="helv_mp_preset")
+        if _preset == "Quartalsweise (alle)":
+            _sel_months = list(_months_avail)
+        elif _preset == "Halbjährlich":
+            _sel_months = _months_avail[1::2] or list(_months_avail)
+        elif _preset == "Jährlich":
+            _sel_months = [_months_avail[-1]]
+        else:
+            _sel_months = st.multiselect("Monate", _months_avail, default=_months_avail,
+                                         format_func=lambda m: _MON[m], key="helv_mp_months")
+
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        with _c1: _y0 = st.selectbox("Von Jahr", _years, index=0, key="helv_mp_y0")
+        with _c2: _y1 = st.selectbox("Bis Jahr", _years, index=len(_years) - 1, key="helv_mp_y1")
+        with _c3: _mp_buffer = st.toggle("Schwellen-Buffer (experimentell)", value=False, key="helv_mp_buffer",
+                      help="Inkumbenten bekommen weichere Schwellen (FF 7.5%, Cuts 75/90/99.5). HINWEIS: Bei der "
+                           "Top-10-Auswahl ERHÖHT das den Turnover (verschiebt Segment-Ränge) statt ihn zu senken — "
+                           "echter Top-10-Bestandsschutz braucht einen Rang-Band-Buffer (geplant). Default: aus.")
+        with _c4: _mp_lowadtv = st.toggle("ADTV $0.25M", value=False, key="helv_mp_lowadtv")
+        _mp_adtv = 250_000 if _mp_lowadtv else 500_000
+
+        _reb = [d for d in _dates_all
+                if int(d.split("-")[1]) in set(_sel_months) and _y0 <= int(d.split("-")[0]) <= _y1]
+        if not _reb:
+            st.warning("Keine Rebalancing-Termine für die gewählten Monate/Jahre.")
+        else:
+            _mon_lbl = ", ".join(_MON[m] for m in _sel_months)
+            _term_lbl = ", ".join(_reb) if len(_reb) <= 14 else f"{_reb[0]} … {_reb[-1]} ({len(_reb)})"
+            st.caption(f"**{len(_reb)} Termine** ({_mon_lbl}): {_term_lbl}")
+            if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
+                _RE = {"Real Estate Development", "Real Estate Investment Trusts"}
+                _prev = set(); _comps = {}; _rows = []
+                _prog = st.progress(0, text="Starte…")
+                for _i, _sd in enumerate(_reb):
+                    _prog.progress(_i / len(_reb), text=f"{_sd} ({_i + 1}/{len(_reb)})")
+                    _sdd = pd.Timestamp(_sd).date()
+                    _cc = get_classification_dict(hc_df, _sdd)
+                    _cif = float(china_if_map.get(_sdd, 0.20))
+                    _snap = build_snapshot_from_master(master_data, _sd)
+                    _gmu = build_new_universe(
+                        _snap.copy(), _cc, thailand_sec_type, max_closing_price,
+                        exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                        _cif, atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
+                        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_sdd.year, fol_enabled=apply_fol)
+                    _seed = (len(_prev) == 0)
+                    _helv, _full, _ = build_helvetica_pipeline(
+                        _gmu, use_buffer=False, adtv_thr=_mp_adtv,
+                        incumbents_isin=(_prev if (_mp_buffer and not _seed) else None))
+                    _comp, _ = build_helvetica_composite(_helv, _full, _RE)
+                    _comps[_sd] = _comp
+                    _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
+                    _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
+                    _rows.append({
+                        "Termin": _sd, "Selektiert": len(_sel),
+                        "Equity": int((_comp["Type"] == "Equity").sum()),
+                        "Real Estate": int((_comp["Type"] == "Real Estate").sum()),
+                        "Gehalten": "Seed" if _seed else len(_cur & _prev),
+                        "Neu": "Seed" if _seed else len(_cur - _prev),
+                        "Raus": "Seed" if _seed else len(_prev - _cur),
+                        "Gewicht %": round(_comp["Index_Weight"].sum(), 2),
+                    })
+                    _prev = _cur
+                _prog.progress(1.0, text="✅ Fertig")
+                st.session_state["helv_mp_comps"] = _comps
+                st.session_state["helv_mp_summary"] = pd.DataFrame(_rows)
+
+            if st.session_state.get("helv_mp_comps"):
+                _comps = st.session_state["helv_mp_comps"]
+                _keys = sorted(_comps.keys())
+                st.markdown("---")
+                st.markdown("### 📊 Summary je Rebalancing")
+                st.caption("Turnover bezieht sich auf den selektierten 55%-Teil (Equity + Real Estate); "
+                           "die 45% statisch (Cash/ETFs) sind konstant.")
+                st.dataframe(st.session_state["helv_mp_summary"], width="stretch", hide_index=True)
+
+                st.markdown("### 🔍 Termin-Detail")
+                _pk = st.selectbox("Termin", _keys, index=len(_keys) - 1, key="helv_mp_pick")
+                _cd = _comps[_pk].copy()
+                _cd["Gewicht %"] = _cd["Index_Weight"].map(lambda x: f"{x:.4f}%")
+                st.caption(f"Helvetica am **{_pk}** — Gesamtgewicht {_comps[_pk]['Index_Weight'].sum():.2f}%")
+                st.dataframe(
+                    _cd[[c for c in ["Sleeve", "Type", "Exchange Ticker", "Name", "Mapping Country",
+                                     "FactSet Industry", "Gewicht %"] if c in _cd.columns]],
+                    width="stretch", hide_index=True, height=600)
+
+                _long = pd.concat(
+                    [_comps[k][["Exchange Ticker", "Name", "Sleeve", "Type", "Index_Weight"]].assign(Termin=k)
+                     for k in _keys], ignore_index=True)
+                _wide = _long.pivot_table(index=["Sleeve", "Exchange Ticker", "Name"], columns="Termin",
+                                          values="Index_Weight", aggfunc="first").reset_index()
+                st.markdown("### 📐 Gewichtsmatrix (Titel × Termin, %)")
+                st.dataframe(_wide, width="stretch", hide_index=True)
+
+                st.download_button(
+                    "⬇️ Helvetica Multi-Period Export (Excel)",
+                    data=to_excel_multi({"Summary": st.session_state["helv_mp_summary"],
+                                         "Long": _long, "Weight Matrix": _wide}),
+                    file_name=f"Helvetica_MultiPeriod_{_keys[0]}_to_{_keys[-1]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="helv_mp_dl")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
