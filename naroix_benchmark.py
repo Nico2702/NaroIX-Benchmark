@@ -2057,13 +2057,69 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
     return helv, helv_full_pool, params
 
 
+# ── Helvetica multi-asset allocation (target weights, % of the total index) ──────
+# 45% static (cash + ETFs, not selected by the tool) + 55% tool-selected
+# (Equity L/M/S = top-N each excl. Real Estate, equal-weighted; Real Estate = all
+# qualifying incl. Micro, equal-weighted). Single source of truth — reused for Multi-Period.
+HELVETICA_STATIC = [
+    {"sleeve": "Cash",             "ticker": "CASH-CHF",     "name": "Cash (CHF)",                                      "weight": 5.0},
+    {"sleeve": "Government Bonds", "ticker": "CSBGC7-SWX",   "name": "iShares Swiss Domestic Government Bond 3-7 ETF",  "weight": 5.0},
+    {"sleeve": "Government Bonds", "ticker": "CSBGC0-SWX",   "name": "iShares Swiss Domestic Government Bond 7-15 ETF", "weight": 5.0},
+    {"sleeve": "Corporate Bonds",  "ticker": "CHCORP-SWX",   "name": "iShares Core CHF Corporate Bond ETF",            "weight": 15.0},
+    {"sleeve": "Gold",             "ticker": "PPFB-XEX",     "name": "iShares Physical Gold ETC",                      "weight": 7.5},
+    {"sleeve": "Gold",             "ticker": "SGLD.EUR-SWX", "name": "Invesco Physical Gold ETC",                      "weight": 7.5},
+]  # = 45%
+HELVETICA_EQUITY_SLEEVES = {"Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0}  # 40% Equity; top-10 each, equal-weighted (Large 1%/title, Mid & Small 1.5%/title)
+HELVETICA_RE_WEIGHT = 15.0   # all qualifying Real Estate (incl. Micro), equal-weighted
+HELVETICA_TOPN = 10          # top-N constituents per equity sleeve
+HELVETICA_TARGET = {"Cash": 5.0, "Government Bonds": 10.0, "Corporate Bonds": 15.0,
+                    "Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0, "Real Estate": 15.0, "Gold": 15.0}
+
+def build_helvetica_composite(helv, helv_full_pool, re_industries):
+    """Compose the full Helvetica multi-asset index for one snapshot: 45% static sleeves
+    (cash + ETFs, fixed weights) + 55% tool-selected, equal-weighted (Equity L/M/S = top-N
+    each excl. Real Estate, ranked by Adj_FF_MCap; Real Estate = all qualifying incl. Micro).
+    Equal-weight fills the whole sleeve: each equity name = sleeve_weight / n (n<=top_n);
+    each RE name = 15% / n_re. Returns (composition_df, sleeve_summary_df); Index_Weight is
+    in % of the TOTAL index (sums to 100 when every sleeve has >=1 constituent)."""
+    is_re = lambda d: d["FactSet Industry"].isin(re_industries)
+    rows = []
+    for st_ in HELVETICA_STATIC:
+        rows.append({"Sleeve": st_["sleeve"], "Type": "Static (ETF/Cash)", "Exchange Ticker": st_["ticker"],
+                     "Name": st_["name"], "ISIN": "", "Mapping Country": "", "FactSet Industry": "",
+                     "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"]})
+    for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
+        seg_df = (helv[(helv["Segment_New"] == seg) & (~is_re(helv))]
+                  .sort_values("Adj_FF_MCap", ascending=False).head(HELVETICA_TOPN))
+        n = len(seg_df)
+        w = sleeve_w / n if n else 0.0
+        for _, r in seg_df.iterrows():
+            rows.append({"Sleeve": seg, "Type": "Equity", "Exchange Ticker": r.get("Exchange Ticker"),
+                         "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
+                         "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
+                         "Index_Weight": w})
+    re_df = helv_full_pool[is_re(helv_full_pool)].sort_values("Adj_FF_MCap", ascending=False)
+    n_re = len(re_df)
+    w_re = HELVETICA_RE_WEIGHT / n_re if n_re else 0.0
+    for _, r in re_df.iterrows():
+        rows.append({"Sleeve": "Real Estate", "Type": "Real Estate", "Exchange Ticker": r.get("Exchange Ticker"),
+                     "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
+                     "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
+                     "Index_Weight": w_re})
+    comp = pd.DataFrame(rows)
+    summ = comp.groupby("Sleeve", sort=False).agg(
+        Positionen=("Name", "size"), **{"Ist-Gewicht %": ("Index_Weight", "sum")}).reset_index()
+    summ["Ziel-Gewicht %"] = summ["Sleeve"].map(HELVETICA_TARGET)
+    return comp, summ
+
+
 def render_helvetica_tab(gm_universe):
     """Render Helvetica Tab — kundenspezifischer Schweizer Index."""
     st.markdown("## 🏔️ Helvetica")
     st.caption(
-        "Kundenspezifischer Schweizer Index — Exchange Country = Switzerland only. "
-        "Eigenständige Pipeline aus Universe (vor EUMSS), eigene Coverage-Cuts. "
-        "Real Estate (Development + REITs) als separate Section."
+        "Kundenspezifischer Schweizer Multi-Asset-Index — 45 % statisch (Cash + Bond-/Gold-ETFs), "
+        "55 % selektiert: Equity Large/Mid/Small (je Top 10, gleichgewichtet) + Real Estate "
+        "(alle qualifizierten, gleichgewichtet). Eigenständige Schweiz-Pipeline (vor EUMSS)."
     )
 
     # ── Toggles ────────────────────────────────────────────────────────────
@@ -2112,179 +2168,66 @@ def render_helvetica_tab(gm_universe):
     )
     st.info(_params_text)
 
-    # ── Section-Splits ──────────────────────────────────────────────────────
-    # RE = Real Estate Development + Real Estate Investment Trusts (REITs).
-    # (In CH praktisch nur "Development", aber methodisch vollständig — HANDOVER §6.)
+    # ── Composite: 45% statische Sleeves (Cash/ETFs) + 55% selektiert (Equity/RE) ──
     RE_INDUSTRIES = {"Real Estate Development", "Real Estate Investment Trusts"}
-    _is_re = lambda df: df["FactSet Industry"].isin(RE_INDUSTRIES)
+    comp, summ = build_helvetica_composite(helv, helv_full_pool, RE_INDUSTRIES)
+    _total_w = comp["Index_Weight"].sum()
 
-    _large_all = helv[helv["Segment_New"] == "Large Cap"].copy()
-    _mid_all   = helv[helv["Segment_New"] == "Mid Cap"].copy()
-    _small_all = helv[helv["Segment_New"] == "Small Cap"].copy()
-
-    # Alle 4 Standard-Sections OHNE Real Estate (symmetrisch)
-    _large_ex_re = _large_all[~_is_re(_large_all)]
-    _mid_ex_re   = _mid_all[~_is_re(_mid_all)]
-    _small_ex_re = _small_all[~_is_re(_small_all)]
-    _std_ex_re   = pd.concat([_large_ex_re, _mid_ex_re], ignore_index=True)      # Standard ohne RE
-    _real_estate = helv[_is_re(helv)]                  # nur Helvetica-Konstituenten (< 99% Coverage)
-    _real_estate_full = helv_full_pool[_is_re(helv_full_pool)]  # alle RE inkl. Micro Cap
-
-    # ── Header-Metrics ────────────────────────────────────────────────────
     st.markdown("---")
-    _mc1, _mc2, _mc3, _mc4, _mc5, _mc6 = st.columns(6)
-    _mc1.metric("Standard (L+M, excl. RE)", f"{len(_std_ex_re):,}")
-    _mc2.metric("Large excl. RE",            f"{len(_large_ex_re):,}")
-    _mc3.metric("Mid excl. RE",              f"{len(_mid_ex_re):,}")
-    _mc4.metric("Small excl. RE",            f"{len(_small_ex_re):,}")
-    _mc5.metric("Real Estate (in Index)",    f"{len(_real_estate):,}")
-    _mc6.metric("Real Estate (all incl. Micro)", f"{len(_real_estate_full):,}")
-
-    # ── 5 Sub-Sections ────────────────────────────────────────────────────
-    def _render_section(label, df, key_suffix, caption=""):
-        st.markdown("---")
-        if len(df) == 0:
-            st.markdown(f"### {label}")
-            st.caption(f"Keine Stocks in dieser Section.")
-            return
-        _df = df.copy()
-        _sec_total = _df["Adj_FF_MCap"].sum()
-        if _sec_total > 0:
-            _df["Section_Weight"] = (_df["Adj_FF_MCap"] / _sec_total * 100).round(6)
-        else:
-            _df["Section_Weight"] = 0.0
-        _df = _df.sort_values("Section_Weight", ascending=False)
-
-        st.markdown(f"### {label}")
-        if caption:
-            st.caption(caption)
-        _sc1, _sc2 = st.columns(2)
-        _sc1.metric("Stocks", f"{len(_df):,}")
-        _sc2.metric("Section Adj. FF MCap", f"${_sec_total/1e9:.2f}B")
-
-        # Top Table
-        _show_n = min(len(_df), 25)
-        _top_cols = [c for c in ["Exchange Ticker", "Name", "FactSet Industry",
-                                  "Listing", "Sec Type", "Segment_New",
-                                  "Adj_FF_MCap", "Section_Weight"] if c in _df.columns]
-        _top = _df[_top_cols].head(_show_n).copy()
-        if "Adj_FF_MCap" in _top.columns:
-            _top["Adj_FF_MCap"] = _top["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
-        if "Section_Weight" in _top.columns:
-            _top["Section_Weight"] = _top["Section_Weight"].map(lambda x: f"{x:.4f}%")
-        st.dataframe(_top, width='stretch', hide_index=True)
-        if len(_df) > _show_n:
-            st.caption(f"Anzeige: Top {_show_n} von {len(_df)} Stocks. Vollständige Liste im Excel-Download.")
-
-        # Download
-        _drop = ["_cum_pct", "_c", "_c_before", "_cp2", "_cp2_before", "ADTV_Best", "IF", "Section_Weight"]
-        _dl_df = _df[[c for c in _df.columns if c not in _drop]].copy()
-        _dl_df = normalize_index_weight(_dl_df)
-        _meta = {
-            "Index": "Helvetica",
-            "Section": label,
-            "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
-            "ADTV Schwelle": f"${params['adtv_thr']/1e6:.1f}M",
-            "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
-            "Large Cap Cut": f"{params['large_cut']:.1f}%",
-            "Standard Cut": f"{params['std_cut']:.1f}%",
-            "Small Cap Cut": f"{params['small_cut']:.1f}%",
-            "Snapshot Datum": _snapshot_label,
-        }
-        st.download_button(
-            f"⬇️ Download Helvetica {label} als Excel",
-            data=to_excel_multi({
-                f"Helvetica {label}": _dl_df,
-                "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _meta.items()]),
-            }),
-            file_name=f"Helvetica_{label.replace(' ','_').replace('(','').replace(')','').replace('+','und').replace('.','')}_{_snapshot_label.replace('.','')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_helvetica_{key_suffix}",
-        )
-
-    _render_section(
-        "Standard Index (Large + Mid, excl. Real Estate)", _std_ex_re, "std_ex",
-        "Standard Index = Large + Mid Cap. Real Estate (Development + REITs) ist in der separaten Real-Estate-Section.",
-    )
-    _render_section("Large Cap (excl. Real Estate)", _large_ex_re, "large_ex", "")
-    _render_section("Mid Cap (excl. Real Estate)",   _mid_ex_re,   "mid_ex",   "")
-    _render_section("Small Cap (excl. Real Estate)", _small_ex_re, "small_ex", "")
-    _render_section(
-        "Real Estate (Helvetica Constituents)", _real_estate, "re",
-        "FactSet Industry = 'Real Estate Development' oder 'Real Estate Investment Trusts'. Cap-Segmente Large + Mid + Small (Coverage < 99%, Micro Cap ausgeschlossen).",
-    )
-    _render_section(
-        "Real Estate Universe (incl. Micro Cap)", _real_estate_full, "re_full",
-        "Alle Schweizer Real-Estate-Stocks die ADV- und FF%-Filter erfüllen — inklusive Micro Cap (Coverage ≥ 99%). Keine Coverage-Begrenzung.",
-    )
-
-    # ── Konsolidierter Top-10-Export am Ende ──────────────────────────────
-    st.markdown("---")
-    st.markdown("### 📦 Konsolidierter Export")
+    st.markdown("### 🧱 Allokation — 45 % statisch + 55 % selektiert")
+    _order = {sl: i for i, sl in enumerate(
+        ["Cash", "Government Bonds", "Corporate Bonds", "Large Cap", "Mid Cap", "Small Cap", "Real Estate", "Gold"])}
+    _summ = summ.assign(_o=summ["Sleeve"].map(_order)).sort_values("_o").drop(columns="_o")
+    _summ_disp = _summ.copy()
+    _summ_disp["Ziel-Gewicht %"] = _summ_disp["Ziel-Gewicht %"].map(lambda x: f"{x:.1f}%")
+    _summ_disp["Ist-Gewicht %"] = _summ_disp["Ist-Gewicht %"].map(lambda x: f"{x:.2f}%")
+    st.dataframe(_summ_disp[["Sleeve", "Ziel-Gewicht %", "Ist-Gewicht %", "Positionen"]],
+                 width="stretch", hide_index=True)
     st.caption(
-        "Aggregiertes Excel mit Top 10 nach Adj_FF_MCap aus Large / Mid / Small Cap "
-        "(excl. Real Estate), plus vollständige Real Estate Universe (incl. Micro Cap)."
+        f"Gesamtgewicht **{_total_w:.2f} %** (Soll 100 %). Statisch (45 %): Cash 5 · Govt Bonds 10 "
+        f"(CSBGC7/CSBGC0) · Corp Bonds 15 (CHCORP) · Gold 15 (PPFB/SGLD). Selektiert (55 %): Equity 40 % "
+        f"(Large 10 % = 1 %/Titel · Mid 15 % = 1,5 %/Titel · Small 15 % = 1,5 %/Titel, je Top-{HELVETICA_TOPN}), "
+        f"Real Estate 15 % (alle qualifizierten gleichgewichtet)."
     )
-
-    def _topn_by_adj_ff(df, n=10):
-        if len(df) == 0:
-            return df.copy()
-        return df.sort_values("Adj_FF_MCap", ascending=False).head(n).copy()
-
-    # Sections zusammenbauen, jeweils Section-Spalte vorne dranhängen
-    _agg_rows = []
-    for _label, _sec_df in [
-        ("Large Cap",            _topn_by_adj_ff(_large_ex_re, 10)),
-        ("Mid Cap",              _topn_by_adj_ff(_mid_ex_re,   10)),
-        ("Small Cap",            _topn_by_adj_ff(_small_ex_re, 10)),
-        ("Real Estate Universe", _real_estate_full.sort_values("Adj_FF_MCap", ascending=False)),
-    ]:
-        if len(_sec_df) == 0:
-            continue
-        _tmp = _sec_df.copy()
-        _tmp.insert(0, "Section", _label)
-        # Spalten aufräumen — interne Berechnungs-Spalten raus
-        _drop_internal = ["_cum_pct", "_c", "_c_before", "_cp2", "_cp2_before",
-                          "ADTV_Best", "IF", "Section_Weight", "Index_Weight"]
-        _tmp = _tmp[[c for c in _tmp.columns if c not in _drop_internal]]
-        # Pool-Weight gegen Helvetica-Total
-        _pool_total = helv["Adj_FF_MCap"].sum()
-        if _pool_total > 0:
-            _tmp["Pool_Weight"] = (_tmp["Adj_FF_MCap"] / _pool_total * 100).round(6)
-        _agg_rows.append(_tmp)
-
-    if len(_agg_rows) > 0:
-        _agg_df = pd.concat(_agg_rows, ignore_index=True)
-        _params_meta = {
-            "Index": "Helvetica",
-            "Export Type": "Konsolidierter Top 10 + Real Estate Universe",
-            "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
-            "ADTV Schwelle": f"${params['adtv_thr']/1e6:.2f}M",
-            "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
-            "Large Cap Cut": f"{params['large_cut']:.1f}%",
-            "Standard Cut": f"{params['std_cut']:.1f}%",
-            "Small Cap Cut": f"{params['small_cut']:.1f}%",
-            "Snapshot Datum": _snapshot_label,
-            "Pool Total Adj_FF_MCap": f"${helv['Adj_FF_MCap'].sum():,.2f}",
-        }
-        st.download_button(
-            "⬇️ Download Helvetica Consolidated Export (Top 10 + Real Estate Universe)",
-            data=to_excel_multi({
-                "Helvetica Consolidated": _agg_df,
-                "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _params_meta.items()]),
-            }),
-            file_name=f"Helvetica_Consolidated_{_snapshot_label.replace('.','')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_helvetica_consolidated",
+    if abs(_total_w - 100.0) > 0.01:
+        st.warning(
+            f"⚠️ Gesamtgewicht {_total_w:.2f} % ≠ 100 % — ein Sleeve ist leer/unterbesetzt "
+            f"(zu wenige Titel im Schweizer Universe). Bitte prüfen."
         )
-        st.caption(
-            f"Export enthält: "
-            f"{min(len(_large_ex_re), 10)} Large + "
-            f"{min(len(_mid_ex_re), 10)} Mid + "
-            f"{min(len(_small_ex_re), 10)} Small + "
-            f"{len(_real_estate_full)} Real Estate Universe = "
-            f"{min(len(_large_ex_re),10) + min(len(_mid_ex_re),10) + min(len(_small_ex_re),10) + len(_real_estate_full)} Stocks total."
-        )
+
+    # ── Vollständige Index-Zusammensetzung ────────────────────────────────────
+    st.markdown("### 📋 Index-Zusammensetzung")
+    _disp = comp.copy()
+    _disp["Gewicht %"] = _disp["Index_Weight"].map(lambda x: f"{x:.4f}%")
+    _disp["Adj. FF MCap"] = _disp["Adj_FF_MCap"].map(
+        lambda x: "" if pd.isna(x) else (f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M"))
+    _cols = ["Sleeve", "Type", "Exchange Ticker", "Name", "Mapping Country",
+             "FactSet Industry", "Adj. FF MCap", "Gewicht %"]
+    st.dataframe(_disp[[c for c in _cols if c in _disp.columns]], width="stretch", hide_index=True,
+                 height=min(35 * (len(_disp) + 1) + 3, 720))
+
+    # ── Export ────────────────────────────────────────────────────────────────
+    _meta = {
+        "Index": "Helvetica (Multi-Asset)",
+        "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
+        "ADTV Schwelle": f"${params['adtv_thr']/1e6:.2f}M",
+        "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
+        "Cuts L/Std/Small": f"{params['large_cut']:.1f}/{params['std_cut']:.1f}/{params['small_cut']:.1f}%",
+        "Equity Top-N je Sleeve": HELVETICA_TOPN,
+        "Snapshot Datum": _snapshot_label,
+        "Gesamtgewicht %": f"{_total_w:.2f}",
+    }
+    st.download_button(
+        "⬇️ Download Helvetica Index Composition (Excel)",
+        data=to_excel_multi({
+            "Helvetica Composition": comp,
+            "Allocation Summary": _summ,
+            "Parameter Settings": pd.DataFrame([{"Parameter": k, "Wert": v} for k, v in _meta.items()]),
+        }),
+        file_name=f"Helvetica_Composition_{_snapshot_label.replace('.','')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_helvetica_composition",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
