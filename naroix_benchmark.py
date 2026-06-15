@@ -2119,18 +2119,15 @@ def render_helvetica_tab(gm_universe):
             ),
         )
     with _tg2:
-        _low_adtv = st.toggle(
-            "ADTV-Schwelle auf $0.25M senken (Default $0.5M)",
-            value=False,
-            key="helvetica_adtv_toggle",
-            help=(
-                "**Aus (Default):** 3M ADTV ≥ $0.5M — institutionelle Investability-Schwelle.\n\n"
-                "**An:** 3M ADTV ≥ $0.25M — inklusiverer Pool, fängt auch kleinere Schweizer "
-                "Stocks (z.B. weitere Real-Estate-Listings) ein. Unabhängig vom Buffer-Toggle."
-            ),
+        _adtv_lbl = st.radio(
+            "3M-ADTV-Schwelle", ["$0.25M", "$0.5M", "$1.0M"], index=1, horizontal=True,
+            key="helvetica_adtv_choice",
+            help="3M ADTV ≥ gewählte Schwelle. $0.5M = Default (institutionelle Investability); "
+                 "$0.25M = inklusiver (mehr kleine Titel / Real Estate); $1.0M = strenger "
+                 "(konzentrierterer Real-Estate-Korb). Unabhängig vom Buffer.",
         )
 
-    _adtv_thr = 250_000 if _low_adtv else 500_000
+    _adtv_thr = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_adtv_lbl]
 
     # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
     helv, helv_full_pool, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr)
@@ -2289,8 +2286,8 @@ with tab_helvetica_mp:
         with _c3: _mp_buffer = st.toggle("Maintenance Buffer", value=True, key="helv_mp_buffer",
                       help="Inkumbenten-Bestandsschutz: Equity-Top-10 via Rang-Band (hart 8 / exit 13), "
                            "Real Estate via FF-Buffer (Bestands-RE bleibt bei FF ≥ 7.5%). Senkt den Turnover.")
-        with _c4: _mp_lowadtv = st.toggle("ADTV $0.25M", value=False, key="helv_mp_lowadtv")
-        _mp_adtv = 250_000 if _mp_lowadtv else 500_000
+        with _c4: _mp_adtv_lbl = st.selectbox("3M-ADTV", ["$0.25M", "$0.5M", "$1.0M"], index=1, key="helv_mp_adtv")
+        _mp_adtv = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_mp_adtv_lbl]
 
         _reb = [d for d in _dates_all
                 if int(d.split("-")[1]) in set(_sel_months) and _y0 <= int(d.split("-")[0]) <= _y1]
