@@ -2229,6 +2229,35 @@ def render_helvetica_tab(gm_universe):
         key="dl_helvetica_composition",
     )
 
+    # ── Detail je Segment — alle qualifizierten Titel, markiert was im Index ist ──
+    st.markdown("---")
+    st.markdown("### 🔎 Detail je Segment (alle qualifizierten Titel)")
+    st.caption(
+        "Vollständiger Pool je Segment. ✓ = im Index (Equity: Top-10 nach Adj_FF_MCap; "
+        "Real Estate: alle). Index-Gewicht = Gewicht im Gesamtindex."
+    )
+    _is_re_d = lambda d: d["FactSet Industry"].isin(RE_INDUSTRIES)
+    _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
+
+    def _seg_detail(label, df):
+        if len(df) == 0:
+            st.markdown(f"**{label}** — keine qualifizierten Titel."); return
+        d = df.sort_values("Adj_FF_MCap", ascending=False).copy()
+        _w = d["Exchange Ticker"].map(lambda t: _comp_w.get(t, 0.0))
+        d["Im Index"] = np.where(_w > 0, "✓", "")
+        d["Index-Gewicht %"] = [f"{w:.3f}%" if w > 0 else "—" for w in _w]
+        d["Adj. FF MCap"] = d["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
+        _cols = ["Im Index", "Exchange Ticker", "Name", "Mapping Country", "FactSet Industry",
+                 "Segment_New", "Listing", "Adj. FF MCap", "Index-Gewicht %"]
+        st.markdown(f"**{label}** — {len(d)} qualifiziert, {(d['Im Index']=='✓').sum()} im Index")
+        st.dataframe(d[[c for c in _cols if c in d.columns]], width="stretch", hide_index=True,
+                     height=min(35 * (len(d) + 1) + 3, 430))
+
+    _seg_detail("Large Cap (excl. Real Estate)", helv[(helv["Segment_New"] == "Large Cap") & (~_is_re_d(helv))])
+    _seg_detail("Mid Cap (excl. Real Estate)",   helv[(helv["Segment_New"] == "Mid Cap") & (~_is_re_d(helv))])
+    _seg_detail("Small Cap (excl. Real Estate)", helv[(helv["Segment_New"] == "Small Cap") & (~_is_re_d(helv))])
+    _seg_detail("Real Estate (alle qualifizierten, inkl. Micro)", helv_full_pool[_is_re_d(helv_full_pool)])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: Helvetica
