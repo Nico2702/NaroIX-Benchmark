@@ -2120,11 +2120,11 @@ def render_helvetica_tab(gm_universe):
         )
     with _tg2:
         _adtv_lbl = st.radio(
-            "3M-ADTV-Schwelle", ["$0.25M", "$0.5M", "$1.0M"], index=1, horizontal=True,
+            "3M-ADTV-Schwelle", ["$0.25M", "$0.5M", "$1.0M"], index=2, horizontal=True,
             key="helvetica_adtv_choice",
-            help="3M ADTV ≥ gewählte Schwelle. $0.5M = Default (institutionelle Investability); "
-                 "$0.25M = inklusiver (mehr kleine Titel / Real Estate); $1.0M = strenger "
-                 "(konzentrierterer Real-Estate-Korb). Unabhängig vom Buffer.",
+            help="3M ADTV ≥ gewählte Schwelle. $1.0M = Default (strenger; konzentrierterer "
+                 "Real-Estate-Korb); $0.5M / $0.25M = inklusiver (mehr kleine Titel / Real Estate). "
+                 "Unabhängig vom Buffer.",
         )
 
     _adtv_thr = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_adtv_lbl]
@@ -2286,7 +2286,7 @@ with tab_helvetica_mp:
         with _c3: _mp_buffer = st.toggle("Maintenance Buffer", value=True, key="helv_mp_buffer",
                       help="Inkumbenten-Bestandsschutz: Equity-Top-10 via Rang-Band (hart 8 / exit 13), "
                            "Real Estate via FF-Buffer (Bestands-RE bleibt bei FF ≥ 7.5%). Senkt den Turnover.")
-        with _c4: _mp_adtv_lbl = st.selectbox("3M-ADTV", ["$0.25M", "$0.5M", "$1.0M"], index=1, key="helv_mp_adtv")
+        with _c4: _mp_adtv_lbl = st.selectbox("3M-ADTV", ["$0.25M", "$0.5M", "$1.0M"], index=2, key="helv_mp_adtv")
         _mp_adtv = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_mp_adtv_lbl]
 
         _reb = [d for d in _dates_all
