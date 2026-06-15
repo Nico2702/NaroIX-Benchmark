@@ -1959,102 +1959,68 @@ with tab_switzerland:
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
 # ══════════════════════════════════════════════════════════════════════════════
-def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000):
-    """
-    Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
+def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, incumbents_isin=None):
+    """Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
-    Filter & Schwellen:
+    Schwellen — Entry (Neukandidaten) vs Maintenance (Bestandstitel/Inkumbenten):
                        Entry        Maintenance
-      ADTV 3M          configurable: $0.5M oder $0.25M (kein Buffer)
       Min FF %         ≥ 10%        ≥ 7.5%
-      Large Cap        _c_before  < 70%    < 75%
-      Standard         _c_before  < 85%    < 90%
-      Small Cap        _c_before  < 99%    < 99.5%
+      Large Cap        _c_before <70%   <75%
+      Standard         _c_before <85%   <90%
+      Small Cap        _c_before <99%   <99.5%
+    ADTV 3M: ein fester Wert ($0.5M / $0.25M via Toggle), kein Buffer.
 
-    Listing-Logik (Variante B): Primary + Secondary laufen gemeinsam durch die Pipeline.
-    Beide Listings derselben Entity ID bleiben drin (z.B. Roche ROP-SWX + RO-SWX,
-    Swatch UHR-SWX + UHRN-SWX, Schindler SCHP-SWX + SCHN-SWX), sofern sie individuell
-    die Investability-Filter bestehen. Konsistent mit MSCI und Solactive (beide nehmen
-    Multi-Listings).
+    Buffer PRO TITEL: Maintenance-Schwellen gelten, wenn der Titel in `incumbents_isin`
+    (Vorperioden-Konstituenten, Multi-Period) ist ODER `use_buffer=True` (globaler
+    Vergleichsmodus im Single-Snapshot-Tab). Sonst Entry-Schwellen.
 
-    Returns DataFrame mit 'Segment_New' Spalte (Large Cap / Mid Cap / Small Cap).
-    """
-    # Liquidität: Parameter (Default $0.5M, optional $0.25M via UI-Toggle)
-    ADTV_THR = adtv_thr
+    Variante B: Primary + Secondary laufen gemeinsam durch (beide bleiben drin, sofern sie
+    die Filter individuell bestehen). Returns (helv [L/M/S], helv_full_pool [+Micro], params)."""
+    ENTRY = {"min_ff": 0.10,  "large": 70.0, "std": 85.0, "small": 99.0}
+    MAINT = {"min_ff": 0.075, "large": 75.0, "std": 90.0, "small": 99.5}
+    _inc = set(incumbents_isin or [])
 
-    # Buffer betrifft nur FF % und Coverage-Cuts
-    if use_buffer:
-        min_ff_pct   = 0.075
-        large_cut    = 75.0
-        std_cut      = 90.0
-        small_cut    = 99.5
-    else:
-        min_ff_pct   = 0.10
-        large_cut    = 70.0
-        std_cut      = 85.0
-        small_cut    = 99.0
+    def _maint(frame):
+        _is = frame["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc)
+        return (_is | bool(use_buffer)).to_numpy()
 
     # Step 1: Hard Filter — CH-gelistet, FF MCap > 0
-    df = gm_universe[
-        (gm_universe["Exchange Country Name"] == "SWITZERLAND") &
-        (gm_universe["Free Float MCap Y2025"] > 0)
-    ].copy()
+    df = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
+                     (gm_universe["Free Float MCap Y2025"] > 0)].copy()
 
-    # Step 2: Min FF %
-    df = df[df["Free Float Percent"] >= min_ff_pct].copy()
+    # Step 2: Min FF % — per-stock (Bestandstitel: 7.5%, sonst 10%)
+    m = _maint(df)
+    df = df[df["Free Float Percent"] >= np.where(m, MAINT["min_ff"], ENTRY["min_ff"])].copy()
 
-    # Step 3: Liquidity — nur 3M ADTV, fest $0.5M
-    df = df[df["3M ADTV Y2025"] >= ADTV_THR].copy()
+    # Step 3: Liquidity — ein fester 3M-ADTV-Schwellenwert (kein Buffer)
+    df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
 
+    _legacy = {"adtv_thr": adtv_thr, "use_buffer": use_buffer, "n_incumbents": len(_inc),
+               "min_ff_pct": (MAINT if use_buffer else ENTRY)["min_ff"],
+               "large_cut": (MAINT if use_buffer else ENTRY)["large"],
+               "std_cut":   (MAINT if use_buffer else ENTRY)["std"],
+               "small_cut": (MAINT if use_buffer else ENTRY)["small"]}
     if len(df) == 0:
-        return df, df.copy(), {"adtv_thr": ADTV_THR, "min_ff_pct": min_ff_pct,
-                               "large_cut": large_cut, "std_cut": std_cut, "small_cut": small_cut,
-                               "use_buffer": use_buffer}
+        return df, df.copy(), _legacy
 
-    # Variante B: Primary + Secondary laufen gemeinsam durch die Pipeline.
-    # Beide Listings derselben Entity ID (z.B. Roche ROP-SWX + RO-SWX, Swatch UHR/UHRN)
-    # sind separate Securities mit eigenen Orderbüchern und eigener Float-MCap — beide
-    # bleiben drin, sofern sie individuell die Investability-Filter bestehen.
-    # Konsistent mit MSCI Section 2.2.2 ("applied at individual security level") und
-    # Solactive seit Methodik-Änderung 04/2025.
-
-    # Step 4: Sort by Total MCap descending, mit Adj_FF_MCap als Tiebreaker
-    # (liquideres Listing kommt bei gleichem Total MCap zuerst)
+    # Step 4: Sort by Total MCap desc (Adj_FF tiebreaker), Straddle-Coverage auf Adj_FF
     df = df.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
     tot = df["Adj_FF_MCap"].sum()
-    df["_c_before"] = df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100
+    df["_c_before"] = (df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100) if tot > 0 else 0.0
 
-    # Step 5: Cut on Standard, Small, Outside
-    df_std   = df[df["_c_before"] < std_cut].copy()
-    df_small = df[(df["_c_before"] >= std_cut) & (df["_c_before"] < small_cut)].copy()
-    df_micro = df[df["_c_before"] >= small_cut].copy()   # Micro Cap (Coverage ≥ small_cut)
+    # Step 5: per-stock Coverage-Cuts → Segment (Bestandstitel bekommen die weicheren Cuts)
+    m = _maint(df)
+    cb = df["_c_before"].to_numpy()
+    lc = np.where(m, MAINT["large"], ENTRY["large"])
+    sd = np.where(m, MAINT["std"],   ENTRY["std"])
+    sm = np.where(m, MAINT["small"], ENTRY["small"])
+    df["Segment_New"] = np.where(cb < lc, "Large Cap",
+                          np.where(cb < sd, "Mid Cap",
+                            np.where(cb < sm, "Small Cap", "Micro Cap")))
 
-    # Within Standard: split Large vs Mid
-    # OPTION B: Large/Mid auf POOL-Basis (gleiche Skala wie _c_before für Standard-Cut).
-    # Large = _c_before < 70%, Mid = 70% ≤ _c_before < std_cut (85% bzw. 90%).
-    if len(df_std) > 0:
-        df_std["Segment_New"] = np.where(df_std["_c_before"] < large_cut, "Large Cap", "Mid Cap")
-    else:
-        df_std["Segment_New"] = pd.Series([], dtype="object")
-
-    df_small["Segment_New"] = "Small Cap"
-    df_micro["Segment_New"] = "Micro Cap"
-
-    # Combine: Standard + Small (= Helvetica-Konstituenten im engeren Sinne)
-    helv = pd.concat([df_std, df_small], ignore_index=True)
-
-    # Voller Pool (alle Stocks die ADV + FF% bestanden haben, inkl. Micro Cap)
-    helv_full_pool = pd.concat([df_std, df_small, df_micro], ignore_index=True)
-
-    params = {
-        "adtv_thr":   ADTV_THR,
-        "min_ff_pct": min_ff_pct,
-        "large_cut":  large_cut,
-        "std_cut":    std_cut,
-        "small_cut":  small_cut,
-        "use_buffer": use_buffer,
-    }
-    return helv, helv_full_pool, params
+    helv = df[df["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()  # Konstituenten i.e.S.
+    helv_full_pool = df.copy()                                                       # inkl. Micro Cap
+    return helv, helv_full_pool, _legacy
 
 
 # ── Helvetica multi-asset allocation (target weights, % of the total index) ──────
