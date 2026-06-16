@@ -1996,6 +1996,13 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     # Step 3: Liquidity — ein fester 3M-ADTV-Schwellenwert (kein Buffer)
     df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
 
+    # Step 3b: Company-level Dedup VOR dem Coverage-Cut — pro Firma nur die liquideste
+    # Linie (höchstes 3M-ADTV). Verhindert Doppelzählung von Mehrfach-Listings (Variante B)
+    # in der Coverage-Kumulation: jede Firma zählt genau einmal, mit derselben Linie, die
+    # später im Sleeve landet. Für echte Paare (Roche/Swatch/Schindler) = die Primary-Linie;
+    # hält aber z.B. Lindt korrekt über LISP, falls die Primary (LISN) preis-gefiltert wurde.
+    df = _helv_dedup_most_liquid(df)
+
     _legacy = {"adtv_thr": adtv_thr, "use_buffer": use_buffer, "n_incumbents": len(_inc),
                "min_ff_pct": (MAINT if use_buffer else ENTRY)["min_ff"],
                "large_cut": (MAINT if use_buffer else ENTRY)["large"],
