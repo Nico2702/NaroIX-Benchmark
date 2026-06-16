@@ -2105,14 +2105,18 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     Real Estate = all qualifying incl. Micro). Equal-weight fills the whole sleeve: each equity
     name = sleeve_weight / n (n<=10); each RE name = 15% / n_re.
 
-    Equity = FIXED 10/10/10. Each sleeve takes the top-10 of its OWN coverage segment (rank by
-    Total MCap, Adj_FF tiebreaker — same key as the coverage cut). Fill-up is a pure FALLBACK: if a
-    segment has <10 names, the next-largest from SMALLER segments fill up (Mid→Large, Small→Mid,
-    Micro→Small), marked "Aufrücker" (true size class preserved). LARGER segments are excluded as
-    candidates → NO overflow down: a segment with >10 names keeps its top-10, the surplus is dropped
-    (not pushed into the smaller sleeve). Each constituent carries True_Segment + Status
-    (Kern/Aufrücker). The RANK-BAND buffer (_rank_band_select, hard/exit) runs over each sleeve's
-    candidate list, so the fill-up seam is stabilised. Without `incumbents_isin` = plain top-10.
+    Equity = FIXED 10/10/10 as a SEQUENTIAL TOP-DOWN CASCADE (Large → Mid → Small). Each sleeve takes
+    the top-10 of its OWN coverage segment, ranked by FREE-FLOAT MCap (Adj_FF_MCap, Total MCap as
+    tiebreaker — the same key as the Swiss-size sub-indices; the size CLASS itself comes from Total MCap
+    in the pipeline). Selected names are removed from the remaining pool before the next sleeve. If a
+    segment has <10 own names, it pulls the BEST names (by Adj_FF_MCap) from the next-smaller segment
+    (Large←Mid, Mid←Small, Small←Micro), marked "Aufrücker" (true size class preserved). Because those
+    are removed, the next sleeve checks ">=10" on the REDUCED pool and the cascade propagates (a short
+    Large can push Mid below 10 → Mid pulls from Small, etc.). LARGER segments are excluded as a source
+    → NO overflow down: a segment keeping >10 names after deductions takes its top-10, the surplus is
+    dropped. Each constituent carries True_Segment + Status (Kern/Aufrücker). The RANK-BAND buffer
+    (_rank_band_select, hard/exit) runs over each sleeve's OWN segment, so the rank-10 cut is stabilised.
+    Without `incumbents_isin` = plain top-10.
 
     Turnover control (Multi-Period): `incumbents_isin` (prior-period selected constituents) feeds the
     rank-band buffer per tranche. (The Real-Estate FF-incumbent buffer lives in build_helvetica_pipeline,
@@ -2185,31 +2189,41 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
 
 
 def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=None,
-                                incumbents_isin=None, re_industries=None):
+                                incumbents_isin=None, re_industries=None, use_buffer=False,
+                                full=None):
     """Drei eigenständige Swiss-Size-Sub-Indizes (Large / Mid / Small Cap), aus denen Helvetica
     die Top-10 zieht. Eigenschaften:
-      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent ≥ 7,5 %), 3M-ADTV ≥ adtv_thr.
+      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent/use_buffer ≥ 7,5 %), 3M-ADTV ≥ adtv_thr.
       - Variante B: ALLE Share Lines (kein Dedup) — Mehrfach-Listings dürfen vertreten sein.
       - Segment: firmen-interner Coverage-Cut (über build_helvetica_pipeline → eine Linie/Firma,
         inkl. ±5/±0,5-Hysterese via prior_segments). Jede Linie erbt das Segment IHRER Firma.
       - Gewichtung: Float-MCap (Adj_FF_MCap) cap-gewichtet, je Sub-Index auf 100 % normiert.
     `incumbents_isin` (Multi-Period): identische FF%-Maintenance (7,5 %) wie Helveticas Pipeline,
-    damit Helveticas selektierte Titel stets eine Teilmenge des Sub-Index sind.
+    damit Helveticas selektierte Titel stets eine Teilmenge des Sub-Index sind. `use_buffer` muss
+    mit dem Helvetica-Composite übereinstimmen (Single-Tab-Vergleich), sonst weichen Segmentgrenzen
+    und FF%-Schwelle ab. `full` = bereits berechneter helv_full_pool (mit Segment_New); wird er
+    übergeben, entfällt der zweite, identische Pipeline-Lauf (Performance).
     Real Estate wird ausgeschlossen (eigenes Helvetica-Sleeve). Gibt dict {Segment: DataFrame}.
     """
     _re = re_industries or {"Real Estate Development", "Real Estate Investment Trusts"}
-    # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut + Hysterese)
-    helv, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=adtv_thr,
-                                             incumbents_isin=incumbents_isin, prior_segments=prior_segments)
-    if len(full) == 0:
-        return {s: full.iloc[0:0].copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
+    # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut +
+    #    Hysterese). `full` kann vom Aufrufer vorberechnet hereingereicht werden (identische Args)
+    #    → spart den doppelten Pipeline-Lauf.
+    if full is None:
+        _, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=use_buffer, adtv_thr=adtv_thr,
+                                              incumbents_isin=incumbents_isin, prior_segments=prior_segments)
+    if full is None or len(full) == 0:
+        _empty = full.iloc[0:0].copy() if full is not None else pd.DataFrame()
+        return {s: _empty.copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
     _seg_by_ent = dict(zip(full["Entity ID"].fillna("").astype(str).str.strip(), full["Segment_New"]))
     # 2) Voller CH-Pool, ALLE Linien (gleiche Filter wie Helvetica, KEIN Dedup), ohne Real Estate.
-    #    FF%-Maintenance (7,5 %) fuer Inkumbenten — sonst koennte ein Helvetica-Titel fehlen.
+    #    FF%-Maintenance (7,5 %) fuer Inkumbenten ODER use_buffer (identisch zur Pipeline) — sonst
+    #    koennte ein Helvetica-Titel fehlen bzw. der Pool-Filter vom Composite abweichen.
     pool = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
                        (gm_universe["Free Float MCap Y2025"] > 0)].copy()
     _inc = set(incumbents_isin or [])
-    _ff_min = np.where(pool["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc), 0.075, 0.10)
+    _maint_pool = pool["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc) | bool(use_buffer)
+    _ff_min = np.where(_maint_pool, 0.075, 0.10)
     pool = pool[(pool["Free Float Percent"] >= _ff_min) & (pool["3M ADTV Y2025"] >= adtv_thr)]
     pool = pool[~pool["FactSet Industry"].isin(_re)].copy()
     # 3) Jede Linie erbt das Segment ihrer Firma (firmen-interner Cut)
@@ -2311,7 +2325,7 @@ def render_helvetica_tab(gm_universe):
     _disp["Adj. FF MCap"] = _disp["Adj_FF_MCap"].map(
         lambda x: "" if pd.isna(x) else (f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M"))
     # Klassifikation: zeigt die "echte" Coverage-Klasse vs. den Sleeve. Kern = passt;
-    # Aufrücker = aus kleinerer Klasse aufgefüllt; Übertrag = aus größerer Klasse übergelaufen.
+    # Aufrücker = via Kaskade aus kleinerer Klasse nachgezogen (Übertrag nach unten gibt es nicht).
     def _klass(row):
         if row.get("Type") != "Equity":
             return ""
@@ -2382,7 +2396,8 @@ def render_helvetica_tab(gm_universe):
         "**alle** Share Lines, Float-MCap-gewichtet, je Sub-Index 100 %). Helvetica zieht je Sub-Index "
         "die Top-10 (liquideste Linie je Firma, gleichgewichtet) — ✓ = von Helvetica selektiert."
     )
-    _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr)
+    _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr,
+                                        use_buffer=_use_buffer, full=helv_full_pool)
     _helv_eq_isin = set(comp[comp["Type"] == "Equity"]["ISIN"].fillna("").astype(str).str.strip().str.upper())
     _sub_export = {}
     for _seg in ["Large Cap", "Mid Cap", "Small Cap"]:
@@ -2493,7 +2508,7 @@ with tab_helvetica_mp:
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _subs_by_date[_sd] = build_swiss_size_subindices(
-                        _gmu, adtv_thr=_mp_adtv, prior_segments=_pseg, incumbents_isin=_inc)
+                        _gmu, adtv_thr=_mp_adtv, incumbents_isin=_inc, full=_full)
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
@@ -2501,7 +2516,7 @@ with tab_helvetica_mp:
                                 for sg in ["Large Cap", "Mid Cap", "Small Cap"]}
                     _lms = sum(_seg_cnt.values())
                     _lms_str = f"{_seg_cnt['Large Cap']}/{_seg_cnt['Mid Cap']}/{_seg_cnt['Small Cap']}"
-                    # Aufrücker je Segment (Equity-Fallback-Auffüller)
+                    # Aufrücker je Segment (Equity-Kaskaden-Aufrücker aus kleinerer Klasse)
                     _eq = _comp[_comp["Type"] == "Equity"]
                     _auf = {sg: int(((_eq["Sleeve"] == sg) & (_eq.get("Status") == "Aufrücker")).sum())
                             for sg in ["Large Cap", "Mid Cap", "Small Cap"]}
@@ -2538,7 +2553,7 @@ with tab_helvetica_mp:
                 st.caption("**Universe (CH)** = alle qualifizierten CH-Titel (dedupliziert, inkl. Micro) · "
                            "**L+M+S** = davon in den drei Größenklassen (gesamt) · "
                            "**L/M/S** = Aufteilung auf Large/Mid/Small (Coverage-Segmente) · "
-                           "**Aufrücker L/M/S** = Equity-Fallback-Auffüller je Segment (Large/Mid/Small; "
+                           "**Aufrücker L/M/S** = via Kaskade nachgezogene Equity-Titel je Segment (Large/Mid/Small; "
                            "„–\" = keine). Turnover (Gehalten/Neu/Raus) bezieht sich auf den selektierten "
                            "55%-Teil (Equity + Real Estate); die 45% statisch (Cash/ETFs) sind konstant.")
                 st.dataframe(st.session_state["helv_mp_summary"], width="stretch", hide_index=True)
