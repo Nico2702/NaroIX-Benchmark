@@ -2146,9 +2146,14 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     _available = helv_eq
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
         _sr = _SEG_RANK.get(seg, 9)
-        # Kandidaten = eigenes Segment + KLEINERE (Fallback); größere ausgeschlossen → kein Übertrag.
-        _cand = _available[_available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9) >= _sr)]
-        _pool = _cand.sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False]).reset_index(drop=True)
+        # Kandidaten = EIGENES Segment ZUERST (nach FF-MCap), DANN kleinere als Fallback (nach FF-MCap).
+        # Eigenes Segment muss VOR den Fallback-Kandidaten ranken — sonst könnte ein kleiner-
+        # klassifizierter Hoch-Float-Titel (z.B. Givaudan, Mid) einen echten Large-Titel verdrängen,
+        # obwohl das eigene Segment ≥ 10 hat. Größere Segmente sind ausgeschlossen (kein Übertrag).
+        _srank = _available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9))
+        _own = _available[_srank == _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
+        _fb  = _available[_srank >  _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
+        _pool = pd.concat([_own, _fb], ignore_index=True)
         if incumbents_isin:
             seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:
