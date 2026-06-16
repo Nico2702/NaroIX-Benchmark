@@ -2069,6 +2069,7 @@ HELVETICA_STATIC = [
 ]  # = 45%
 HELVETICA_EQUITY_SLEEVES = {"Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0}  # 40% Equity; top-10 each, equal-weighted (Large 1%/title, Mid & Small 1.5%/title)
 HELVETICA_RE_WEIGHT = 15.0   # all qualifying Real Estate (incl. Micro), equal-weighted
+HELVETICA_RE_INDUSTRIES = {"Real Estate Development", "Real Estate Investment Trusts"}  # FactSet RE-Klassen
 HELVETICA_TOPN = 10          # top-N constituents per equity sleeve
 HELVETICA_TARGET = {"Cash": 5.0, "Government Bonds": 10.0, "Corporate Bonds": 15.0,
                     "Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0, "Real Estate": 15.0, "Gold": 15.0}
@@ -2205,7 +2206,7 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     übergeben, entfällt der zweite, identische Pipeline-Lauf (Performance).
     Real Estate wird ausgeschlossen (eigenes Helvetica-Sleeve). Gibt dict {Segment: DataFrame}.
     """
-    _re = re_industries or {"Real Estate Development", "Real Estate Investment Trusts"}
+    _re = re_industries or HELVETICA_RE_INDUSTRIES
     # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut +
     #    Hysterese). `full` kann vom Aufrufer vorberechnet hereingereicht werden (identische Args)
     #    → spart den doppelten Pipeline-Lauf.
@@ -2292,7 +2293,7 @@ def render_helvetica_tab(gm_universe):
     st.info(_params_text)
 
     # ── Composite: 45% statische Sleeves (Cash/ETFs) + 55% selektiert (Equity/RE) ──
-    RE_INDUSTRIES = {"Real Estate Development", "Real Estate Investment Trusts"}
+    RE_INDUSTRIES = HELVETICA_RE_INDUSTRIES
     comp, summ = build_helvetica_composite(helv, helv_full_pool, RE_INDUSTRIES)
     _total_w = comp["Index_Weight"].sum()
 
@@ -2363,8 +2364,9 @@ def render_helvetica_tab(gm_universe):
     st.markdown("---")
     st.markdown("### 🔎 Detail je Segment (alle qualifizierten Titel)")
     st.caption(
-        "Vollständiger Pool je Segment. ✓ = im Index (Equity: feste 10/10/10 via gepufferte "
-        "Kaskade auf der Größenrangliste; Real Estate: alle). Index-Gewicht = Gewicht im Gesamtindex."
+        "Vollständiger Pool je Segment. ✓ = im Index (Equity: feste 10/10/10 via Kaskade auf der "
+        "Größenrangliste — Top-10 je Segment, Rang-Band-Buffer nur im Multi-Period; Real Estate: alle). "
+        "Index-Gewicht = Gewicht im Gesamtindex."
     )
     _is_re_d = lambda d: d["FactSet Industry"].isin(RE_INDUSTRIES)
     _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
@@ -2484,8 +2486,11 @@ with tab_helvetica_mp:
             _mon_lbl = ", ".join(_MON[m] for m in _sel_months)
             _term_lbl = ", ".join(_reb) if len(_reb) <= 14 else f"{_reb[0]} … {_reb[-1]} ({len(_reb)})"
             st.caption(f"**{len(_reb)} Termine** ({_mon_lbl}): {_term_lbl}")
+            # Konfig-Signatur des Laufs (Termine + Buffer + ADTV) — ändert sie sich nach einem Lauf,
+            # werden die gespeicherten Ergebnisse ausgeblendet (sie passen dann nicht mehr zur Steuerung).
+            _cfg = (tuple(_reb), bool(_mp_buffer), _mp_adtv)
             if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
-                _RE = {"Real Estate Development", "Real Estate Investment Trusts"}
+                _RE = HELVETICA_RE_INDUSTRIES
                 _prev = set(); _prev_seg = {}; _comps = {}; _subs_by_date = {}; _rows = []
                 _prog = st.progress(0, text="Starte…")
                 for _i, _sd in enumerate(_reb):
@@ -2544,6 +2549,15 @@ with tab_helvetica_mp:
                 st.session_state["helv_mp_comps"] = _comps
                 st.session_state["helv_mp_subs"] = _subs_by_date
                 st.session_state["helv_mp_summary"] = pd.DataFrame(_rows)
+                st.session_state["helv_mp_cfg"] = _cfg
+
+            # Stale-Guard: weicht die aktuelle Steuerung von der des letzten Laufs ab, alte Ergebnisse
+            # ausblenden (session_state leeren) und zum Neustart auffordern — sonst zeigt die Anzeige
+            # unten einen Lauf, der nicht mehr zu Frequenz/Jahren/Buffer/ADTV oben passt.
+            if st.session_state.get("helv_mp_comps") and st.session_state.get("helv_mp_cfg") != _cfg:
+                for _k in ("helv_mp_comps", "helv_mp_subs", "helv_mp_summary", "helv_mp_cfg"):
+                    st.session_state.pop(_k, None)
+                st.info("ℹ️ Einstellungen geändert — bitte den Multi-Period-Lauf erneut starten.")
 
             if st.session_state.get("helv_mp_comps"):
                 _comps = st.session_state["helv_mp_comps"]
