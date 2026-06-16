@@ -2389,10 +2389,22 @@ with tab_helvetica_mp:
                     _comps[_sd] = _comp
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
+                    # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
+                    _lms = int(_helv["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"]).sum())
+                    # Aufrücker je Segment (Equity-Fallback-Auffüller)
+                    _eq = _comp[_comp["Type"] == "Equity"]
+                    _auf = {sg: int(((_eq["Sleeve"] == sg) & (_eq.get("Status") == "Aufrücker")).sum())
+                            for sg in ["Large Cap", "Mid Cap", "Small Cap"]}
+                    _auf_str = (f"{_auf['Large Cap']}/{_auf['Mid Cap']}/{_auf['Small Cap']}"
+                                if sum(_auf.values()) > 0 else "–")
                     _rows.append({
-                        "Termin": _sd, "Selektiert": len(_sel),
+                        "Termin": _sd,
+                        "Universe (CH)": len(_full),
+                        "L+M+S": _lms,
+                        "Selektiert": len(_sel),
                         "Equity": int((_comp["Type"] == "Equity").sum()),
                         "Real Estate": int((_comp["Type"] == "Real Estate").sum()),
+                        "Aufrücker L/M/S": _auf_str,
                         "Gehalten": "Seed" if _seed else len(_cur & _prev),
                         "Neu": "Seed" if _seed else len(_cur - _prev),
                         "Raus": "Seed" if _seed else len(_prev - _cur),
@@ -2408,8 +2420,11 @@ with tab_helvetica_mp:
                 _keys = sorted(_comps.keys())
                 st.markdown("---")
                 st.markdown("### 📊 Summary je Rebalancing")
-                st.caption("Turnover bezieht sich auf den selektierten 55%-Teil (Equity + Real Estate); "
-                           "die 45% statisch (Cash/ETFs) sind konstant.")
+                st.caption("**Universe (CH)** = alle qualifizierten CH-Titel (dedupliziert, inkl. Micro) · "
+                           "**L+M+S** = davon in den drei Größenklassen · "
+                           "**Aufrücker L/M/S** = Equity-Fallback-Auffüller je Segment (Large/Mid/Small; "
+                           "„–\" = keine). Turnover (Gehalten/Neu/Raus) bezieht sich auf den selektierten "
+                           "55%-Teil (Equity + Real Estate); die 45% statisch (Cash/ETFs) sind konstant.")
                 st.dataframe(st.session_state["helv_mp_summary"], width="stretch", hide_index=True)
 
                 st.markdown("### 🔍 Termin-Detail")
