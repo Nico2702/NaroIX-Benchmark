@@ -2248,19 +2248,22 @@ def render_helvetica_tab(gm_universe):
         "55 % selektiert: Equity Large/Mid/Small (je Top 10, gleichgewichtet) + Real Estate "
         "(alle qualifizierten, gleichgewichtet). Eigenständige Schweiz-Pipeline (vor EUMSS)."
     )
+    st.caption(f"📅 Snapshot: **{_snapshot_label}**")
 
     # ── Toggles ────────────────────────────────────────────────────────────
     _tg1, _tg2 = st.columns(2)
     with _tg1:
         _use_buffer = st.toggle(
-            "Maintenance Buffer aktivieren (75% / 90% / 99.5% statt 70% / 85% / 99%)",
+            "Maintenance-Schwellen (Vergleich, alle Titel) — 75 / 90 / 99.5 % statt 70 / 85 / 99 %",
             value=False,
             key="helvetica_buffer_toggle",
             help=(
-                "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99%, FF% ≥ 10%.\n\n"
-                "**An (Buffer):** Maintenance-Schwellen — Coverage 75/90/99.5%, FF% ≥ 7.5%. "
-                "Im Single-Snapshot-Modus dient dies zum Vergleichen — der Effekt der Buffer-Logik bei "
-                "tatsächlicher Multi-Period-Pflege wird erst mit Historie sichtbar."
+                "Reiner **Single-Snapshot-Vergleich** — NICHT der echte inkumbenten-basierte Buffer "
+                "des Multi-Period-Tabs (dort: Rang-Band 8/13 + ±5/±0,5-Hysterese nur für Bestandstitel).\n\n"
+                "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99 %, FF % ≥ 10 %.\n\n"
+                "**An:** Maintenance-Schwellen für **alle** Titel — Coverage 75/90/99.5 %, FF % ≥ 7.5 %. "
+                "Zeigt, wie sich die gelockerten Schwellen auf das Universe auswirken; die Auswahl bleibt "
+                "plain Top-10."
             ),
         )
     with _tg2:
