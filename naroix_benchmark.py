@@ -2390,7 +2390,10 @@ with tab_helvetica_mp:
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
-                    _lms = int(_helv["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"]).sum())
+                    _seg_cnt = {sg: int((_helv["Segment_New"] == sg).sum())
+                                for sg in ["Large Cap", "Mid Cap", "Small Cap"]}
+                    _lms = sum(_seg_cnt.values())
+                    _lms_str = f"{_seg_cnt['Large Cap']}/{_seg_cnt['Mid Cap']}/{_seg_cnt['Small Cap']}"
                     # Aufrücker je Segment (Equity-Fallback-Auffüller)
                     _eq = _comp[_comp["Type"] == "Equity"]
                     _auf = {sg: int(((_eq["Sleeve"] == sg) & (_eq.get("Status") == "Aufrücker")).sum())
@@ -2401,6 +2404,7 @@ with tab_helvetica_mp:
                         "Termin": _sd,
                         "Universe (CH)": len(_full),
                         "L+M+S": _lms,
+                        "L/M/S": _lms_str,
                         "Selektiert": len(_sel),
                         "Equity": int((_comp["Type"] == "Equity").sum()),
                         "Real Estate": int((_comp["Type"] == "Real Estate").sum()),
@@ -2421,7 +2425,8 @@ with tab_helvetica_mp:
                 st.markdown("---")
                 st.markdown("### 📊 Summary je Rebalancing")
                 st.caption("**Universe (CH)** = alle qualifizierten CH-Titel (dedupliziert, inkl. Micro) · "
-                           "**L+M+S** = davon in den drei Größenklassen · "
+                           "**L+M+S** = davon in den drei Größenklassen (gesamt) · "
+                           "**L/M/S** = Aufteilung auf Large/Mid/Small (Coverage-Segmente) · "
                            "**Aufrücker L/M/S** = Equity-Fallback-Auffüller je Segment (Large/Mid/Small; "
                            "„–\" = keine). Turnover (Gehalten/Neu/Raus) bezieht sich auf den selektierten "
                            "55%-Teil (Equity + Real Estate); die 45% statisch (Cash/ETFs) sind konstant.")
