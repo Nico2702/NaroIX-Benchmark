@@ -2462,7 +2462,7 @@ with tab_helvetica_mp:
             st.caption(f"**{len(_reb)} Termine** ({_mon_lbl}): {_term_lbl}")
             if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
                 _RE = {"Real Estate Development", "Real Estate Investment Trusts"}
-                _prev = set(); _prev_seg = {}; _comps = {}; _rows = []
+                _prev = set(); _prev_seg = {}; _comps = {}; _subs_by_date = {}; _rows = []
                 _prog = st.progress(0, text="Starte…")
                 for _i, _sd in enumerate(_reb):
                     _prog.progress(_i / len(_reb), text=f"{_sd} ({_i + 1}/{len(_reb)})")
@@ -2483,6 +2483,7 @@ with tab_helvetica_mp:
                         prior_segments=_pseg)
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
+                    _subs_by_date[_sd] = build_swiss_size_subindices(_gmu, adtv_thr=_mp_adtv, prior_segments=_pseg)
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
@@ -2516,6 +2517,7 @@ with tab_helvetica_mp:
                                          _full["Segment_New"])) if len(_full) else {}
                 _prog.progress(1.0, text="✅ Fertig")
                 st.session_state["helv_mp_comps"] = _comps
+                st.session_state["helv_mp_subs"] = _subs_by_date
                 st.session_state["helv_mp_summary"] = pd.DataFrame(_rows)
 
             if st.session_state.get("helv_mp_comps"):
@@ -2540,9 +2542,31 @@ with tab_helvetica_mp:
                     _cd[[c for c in ["Sleeve", "Type", "Exchange Ticker", "Name", "Mapping Country",
                                      "FactSet Industry", "Gewicht %"] if c in _cd.columns]],
                     width="stretch", hide_index=True, height=600)
+
+                # Swiss Size Sub-Indizes für diesen Termin (cap-gewichtet, Variante B)
+                _detail_export = {f"Helvetica {_pk}": _comps[_pk]}
+                _subp = st.session_state.get("helv_mp_subs", {}).get(_pk, {})
+                if _subp:
+                    st.markdown(f"**🇨🇭 Swiss Size Sub-Indizes am {_pk}** "
+                                "(Float-MCap-gewichtet, alle Share Lines; ✓ = von Helvetica selektiert):")
+                    _hisin = set(_comps[_pk][_comps[_pk]["Type"] == "Equity"]["ISIN"]
+                                 .fillna("").astype(str).str.strip().str.upper())
+                    _c3 = st.columns(3)
+                    for _i, _seg in enumerate(["Large Cap", "Mid Cap", "Small Cap"]):
+                        _sdf = _subp.get(_seg)
+                        with _c3[_i]:
+                            if _sdf is None or len(_sdf) == 0:
+                                st.caption(f"{_seg}: –"); continue
+                            st.caption(f"{_seg}: {len(_sdf)} Linien / {_sdf['Entity ID'].nunique()} Firmen")
+                            _t = _sdf.copy()
+                            _t["✓"] = np.where(_t["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_hisin), "✓", "")
+                            _t["Gew %"] = _t["Index_Weight"].map(lambda x: f"{x:.2f}")
+                            st.dataframe(_t[["✓", "Exchange Ticker", "Gew %"]], width="stretch",
+                                         hide_index=True, height=260)
+                        _detail_export[f"Swiss {_seg}"] = _sdf
                 st.download_button(
                     f"⬇️ Termin-Detail {_pk} herunterladen (Excel)",
-                    data=to_excel_multi({f"Helvetica {_pk}": _comps[_pk]}),
+                    data=to_excel_multi(_detail_export),
                     file_name=f"Helvetica_Composition_{_pk.replace('-', '')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="helv_mp_dl_detail")
