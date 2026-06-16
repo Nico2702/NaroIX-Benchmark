@@ -2078,40 +2078,63 @@ def _helv_dedup_most_liquid(df, id_col="Entity ID", liq_col="3M ADTV Y2025"):
 def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_isin=None,
                               buffer_hard=HELVETICA_BUFFER_HARD, buffer_exit=HELVETICA_BUFFER_EXIT):
     """Compose the full Helvetica multi-asset index for one snapshot: 45% static sleeves
-    (cash + ETFs, fixed weights) + 55% tool-selected, equal-weighted (Equity L/M/S = top-N
-    each excl. Real Estate, ranked by Adj_FF_MCap; Real Estate = all qualifying incl. Micro).
-    Equal-weight fills the whole sleeve: each equity name = sleeve_weight / n (n<=top_n);
-    each RE name = 15% / n_re.
+    (cash + ETFs, fixed weights) + 55% tool-selected, equal-weighted (Equity L/M/S = 10 each;
+    Real Estate = all qualifying incl. Micro). Equal-weight fills the whole sleeve: each equity
+    name = sleeve_weight / n (n<=10); each RE name = 15% / n_re.
 
-    Turnover control (Multi-Period): if `incumbents_isin` (prior-period selected constituents)
-    is given, each equity sleeve uses a RANK-BAND buffer (_rank_band_select, hard/exit) instead
-    of a hard top-N — incumbents stay in the top-10 while within the band. (The Real-Estate
-    FF-incumbent buffer lives in build_helvetica_pipeline, since RE = all qualifying.)
-    Returns (composition_df, sleeve_summary_df); Index_Weight in % of the TOTAL index."""
+    Equity = FIXED 10/10/10 via a BUFFERED CASCADE on the full size ranking (Total MCap, Adj_FF
+    tiebreaker — same key as the coverage cut). The coverage segment (Segment_New) stays the
+    "true" size class; if a segment has <10 names the next-largest fill up ("Aufrücker"), if it
+    has >10 the surplus overflows down ("Übertrag"). Each constituent carries True_Segment + Status
+    (Kern/Aufrücker/Übertrag). The RANK-BAND buffer (_rank_band_select, hard/exit) runs over the
+    full ranking per tranche, so the fill-up seam (rank 10/11) is stabilised — no turnover at the
+    seam. Without `incumbents_isin` (seed/single-snapshot) tranches are plain top-10 (= rank-buckets).
+
+    Turnover control (Multi-Period): `incumbents_isin` (prior-period selected constituents) feeds the
+    rank-band buffer per tranche. (The Real-Estate FF-incumbent buffer lives in build_helvetica_pipeline,
+    since RE = all qualifying.) Returns (composition_df, sleeve_summary_df); Index_Weight in % of TOTAL."""
     is_re = lambda d: d["FactSet Industry"].isin(re_industries)
     # Company-level Dedup: pro Firma nur die liquideste Linie (höchstes 3M-ADTV) — so kann
     # keine Firma mit Mehrfach-Listing (Variante B) zwei Plätze belegen → nie Doppelgewichte.
-    helv_eq = _helv_dedup_most_liquid(helv[~is_re(helv)])
+    # Rangordnung wie der Coverage-Cut (Total MCap, Adj_FF als Tiebreaker), damit die 10er-
+    # Tranchen sauber in die Coverage-Segmente nisten und die Aufrücker/Übertrag-Labels
+    # aussagekräftig sind (kein Rauschen aus abweichendem Sortierschlüssel).
+    helv_eq = (_helv_dedup_most_liquid(helv[~is_re(helv)])
+               .sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True))
+    helv_eq = helv_eq.assign(_isin_k=helv_eq["ISIN"].fillna("").astype(str).str.strip().str.upper())
+
     rows = []
     for st_ in HELVETICA_STATIC:
         rows.append({"Sleeve": st_["sleeve"], "Type": "Static (ETF/Cash)", "Exchange Ticker": st_["ticker"],
                      "Name": st_["name"], "ISIN": "", "Mapping Country": "", "FactSet Industry": "",
-                     "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"]})
+                     "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"],
+                     "True_Segment": "", "Status": ""})
+
+    # Equity: feste 10/10/10-Sleeves via GEPUFFERTE KASKADE auf der vollen Rangliste.
+    # Der Coverage-Cut (Segment_New) bleibt die "echte" Klassifikation. Reicht ein Segment nicht
+    # für 10 Titel, rücken die nächstgrößten auf ("Aufrücker", nur geduldet — die Kategorie bleibt
+    # erhalten); hat ein Segment mehr als 10, fließt der Überhang nach unten ("Übertrag"). Der
+    # Rang-Band-Buffer (8/13) läuft über die volle Rangliste je Tranche, sodass auch der Auffüll-
+    # Rand (Rang 10/11) stabilisiert ist und an der Naht kein Turnover entsteht.
+    _SEG_RANK = {"Large Cap": 0, "Mid Cap": 1, "Small Cap": 2, "Micro Cap": 3}
+    _available = helv_eq
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
-        _pool = (helv_eq[helv_eq["Segment_New"] == seg]
-                 .sort_values("Adj_FF_MCap", ascending=False).reset_index(drop=True))
+        _pool = _available.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
         if incumbents_isin:
-            _pool = _pool.assign(_isin_k=_pool["ISIN"].fillna("").astype(str).str.strip().str.upper())
             seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:
             seg_df = _pool.head(HELVETICA_TOPN)
+        _available = _available[~_available["_isin_k"].isin(set(seg_df["_isin_k"]))]
         n = len(seg_df)
         w = sleeve_w / n if n else 0.0
         for _, r in seg_df.iterrows():
+            _true = r.get("Segment_New")
+            _sr, _tr = _SEG_RANK.get(seg, 9), _SEG_RANK.get(_true, 9)
+            _status = "Kern" if _tr == _sr else ("Aufrücker" if _tr > _sr else "Übertrag")
             rows.append({"Sleeve": seg, "Type": "Equity", "Exchange Ticker": r.get("Exchange Ticker"),
                          "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
                          "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
-                         "Index_Weight": w})
+                         "Index_Weight": w, "True_Segment": _true, "Status": _status})
     re_df = _helv_dedup_most_liquid(helv_full_pool[is_re(helv_full_pool)]) \
             .sort_values("Adj_FF_MCap", ascending=False)
     n_re = len(re_df)
@@ -2120,7 +2143,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
         rows.append({"Sleeve": "Real Estate", "Type": "Real Estate", "Exchange Ticker": r.get("Exchange Ticker"),
                      "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
                      "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
-                     "Index_Weight": w_re})
+                     "Index_Weight": w_re, "True_Segment": "Real Estate", "Status": ""})
     comp = pd.DataFrame(rows)
     summ = comp.groupby("Sleeve", sort=False).agg(
         Positionen=("Name", "size"), **{"Ist-Gewicht %": ("Index_Weight", "sum")}).reset_index()
@@ -2213,7 +2236,14 @@ def render_helvetica_tab(gm_universe):
     _disp["Gewicht %"] = _disp["Index_Weight"].map(lambda x: f"{x:.4f}%")
     _disp["Adj. FF MCap"] = _disp["Adj_FF_MCap"].map(
         lambda x: "" if pd.isna(x) else (f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M"))
-    _cols = ["Sleeve", "Type", "Exchange Ticker", "Name", "Mapping Country",
+    # Klassifikation: zeigt die "echte" Coverage-Klasse vs. den Sleeve. Kern = passt;
+    # Aufrücker = aus kleinerer Klasse aufgefüllt; Übertrag = aus größerer Klasse übergelaufen.
+    def _klass(row):
+        if row.get("Type") != "Equity":
+            return ""
+        return "Kern" if row.get("Status") == "Kern" else f"{row.get('Status')} (echt: {row.get('True_Segment')})"
+    _disp["Klassifikation"] = _disp.apply(_klass, axis=1)
+    _cols = ["Sleeve", "Klassifikation", "Type", "Exchange Ticker", "Name", "Mapping Country",
              "FactSet Industry", "Adj. FF MCap", "Gewicht %"]
     st.dataframe(_disp[[c for c in _cols if c in _disp.columns]], width="stretch", hide_index=True,
                  height=min(35 * (len(_disp) + 1) + 3, 720))
@@ -2245,8 +2275,8 @@ def render_helvetica_tab(gm_universe):
     st.markdown("---")
     st.markdown("### 🔎 Detail je Segment (alle qualifizierten Titel)")
     st.caption(
-        "Vollständiger Pool je Segment. ✓ = im Index (Equity: Top-10 nach Adj_FF_MCap; "
-        "Real Estate: alle). Index-Gewicht = Gewicht im Gesamtindex."
+        "Vollständiger Pool je Segment. ✓ = im Index (Equity: feste 10/10/10 via gepufferte "
+        "Kaskade auf der Größenrangliste; Real Estate: alle). Index-Gewicht = Gewicht im Gesamtindex."
     )
     _is_re_d = lambda d: d["FactSet Industry"].isin(RE_INDUSTRIES)
     _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
