@@ -39,9 +39,9 @@ Diese Sleeves sind feste Zielgewichte — keine Titelselektion, kein Buffer, kei
 
 | Sleeve | Auswahl | Ziel-Gewicht | Gewicht je Titel |
 |--------|---------|--------------|------------------|
-| Large Cap | Top 10 des Large-Segments (Fallback: aus Mid auffüllen) | 10 % | 1,0 % |
-| Mid Cap | Top 10 des Mid-Segments (Fallback: aus Small auffüllen) | 15 % | 1,5 % |
-| Small Cap | Top 10 des Small-Segments (Fallback: aus Micro auffüllen) | 15 % | 1,5 % |
+| Large Cap | Top 10 des Large-Segments (Kaskade: aus Mid nachziehen) | 10 % | 1,0 % |
+| Mid Cap | Top 10 des Mid-Segments (Kaskade: aus Small nachziehen) | 15 % | 1,5 % |
+| Small Cap | Top 10 des Small-Segments (Kaskade: aus Micro nachziehen) | 15 % | 1,5 % |
 | Real Estate | **alle** qualifizierten (inkl. Micro) | 15 % | 15 % / n |
 | **Summe** | | **55 %** | |
 
@@ -108,21 +108,29 @@ bleibt in ihrem Segment, solange ihre Coverage im Band liegt; **neue Firmen** we
 Größenklassen **deckungsgleich mit den Swiss-Size-Sub-Indizes** (siehe „Swiss Size Sub-Indizes"). Der
 zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schritt 5).
 
-### Schritt 5 — Sleeve-Zusammenstellung (feste 10/10/10)
-- **Equity je Sleeve (Large/Mid/Small):** Jeder Sleeve nimmt die **Top 10 seines EIGENEN
-  Coverage-Segments** (Rang nach **Free-Float-MCap = Adj_FF_MCap**, Total MCap als Tiebreaker).
-  Gewicht = Sleeve-Gewicht / n.
-  - **Auffüllen = reine Fallback-Lösung:** Hat ein Segment **weniger als 10** qualifizierte Titel,
-    rücken die nächstgrößten aus den **kleineren** Segmenten auf (Mid → Large, Small → Mid,
-    Micro → Small). Solche Titel werden als **„Aufrücker"** markiert; ihre echte Coverage-Klasse
-    (`True_Segment`) bleibt im Reporting erhalten.
-  - **Kein Übertrag nach unten:** Größere Segmente sind als Auffüll-Kandidaten **ausgeschlossen**.
-    Hat ein Segment **mehr als 10** Titel, behält es seine Top 10; der **Überschuss wird verworfen**
-    (nicht in den kleineren Sleeve verschoben).
-  - **Inkumbenten-Schutz:** Im Multi-Period läuft der **Rang-Band-Buffer (8 / 13)** über die
-    Kandidatenliste je Sleeve (eigenes Segment + Fallback), sodass auch der Auffüll-Rand stabil ist.
+### Schritt 5 — Sleeve-Zusammenstellung (feste 10/10/10, sequenzielle Kaskade)
+- **Equity als Top-down-Kaskade (Large → Mid → Small):** Die Sleeves werden **nacheinander** aus
+  einem gemeinsamen Restbestand befüllt. Jeder Sleeve nimmt die **Top 10 seines EIGENEN
+  Coverage-Segments** (Rang nach **Free-Float-MCap = Adj_FF_MCap**, Total MCap als Tiebreaker;
+  Gewicht = Sleeve-Gewicht / n). Die gewählten Titel werden danach **aus dem Restbestand entfernt**,
+  bevor das nächstkleinere Segment an der Reihe ist.
+  - **Kaskaden-Auffüllen:** Hat ein Segment **weniger als 10** eigene Titel im Restbestand, zieht es
+    die **besten** Titel (nach Adj_FF_MCap) des **nächstkleineren** Segments nach
+    (Large ← Mid, Mid ← Small, Small ← Micro). Solche Titel werden als **„Aufrücker"** markiert; ihre
+    echte Coverage-Klasse (`True_Segment`) bleibt im Reporting erhalten.
+  - **„≥ 10" gilt auf dem Restbestand:** Weil die nachgezogenen Titel entfernt sind, prüft das nächste
+    Segment seine 10er-Schwelle auf dem **reduzierten** Bestand. Drückt ein knappes Large das
+    Mid-Segment unter 10, zieht **Mid** seinerseits aus Small nach (usw.) — die Kaskade pflanzt sich
+    fort. Aufrücker entsteht also **genau dann**, wenn ein Segment **nach Abzug** der größeren
+    Sleeves selbst < 10 Titel hat.
+  - **Kein Übertrag nach unten:** Größere Segmente sind als Auffüll-Quelle **ausgeschlossen**.
+    Behält ein Segment nach Abzug **mehr als 10** Titel, nimmt es seine Top 10; der **Überschuss wird
+    verworfen** (nicht in den kleineren Sleeve verschoben).
+  - **Inkumbenten-Schutz:** Im Multi-Period läuft der **Rang-Band-Buffer (8 / 13)** über die Top-10
+    des **eigenen** Segments, sodass der Rang-10-Schnitt stabil ist; das Kaskaden-Nachziehen deckt nur
+    den echten Fehlbetrag.
   - **Status je Titel:** `Kern` (echte Klasse = Sleeve) oder `Aufrücker` (aus kleinerer Klasse
-    aufgefüllt) — beides in der Index-Anzeige und im Excel-Export ausgewiesen.
+    nachgezogen) — beides in der Index-Anzeige und im Excel-Export ausgewiesen.
 - **Real Estate:** **alle** qualifizierten CH-RE-Titel (FactSet Industry *Real Estate Development*
   oder *Real Estate Investment Trusts*, **inkl. Micro**, kein Coverage-Cut). Gewicht = 15 % / n.
 
@@ -140,7 +148,7 @@ Der Equity-Teil ist konzeptionell ein **Zwei-Schichten-Modell**:
 
 **Schicht 2 — Helvetica** zieht je Sub-Index die **Top 10 Firmen** (bei Mehrfach-Listing nur die
 **liquideste Linie**), **gleichgewichtet** auf die SAA (Large 10 % / Mid 15 % / Small 15 %), mit
-Rang-Band-Buffer (8/13) und Fallback-Auffüllen (Schritt 5).
+Rang-Band-Buffer (8/13) und Kaskaden-Nachziehen (Schritt 5).
 
 Damit sind die Größenklassen familien-konsistent (gleiche Logik wie die NaroIX-Coverage-Indizes), und
 Helvetica ist als „Top-10 je Sub-Index, gleichgewichtet" sauber definiert. Die cap-gewichteten
@@ -208,8 +216,8 @@ Inkumbenten-Buffer gedämpft:
 3. **Zwei Schichten:** Sub-Indizes = Variante B (alle Share Lines, cap-gewichtet); **Helvetica** nimmt
    pro Firma nur die **liquideste Linie** (Top-10, gleichgewichtet) — keine Doppelgewichte, kein
    Doppelzählen in der Coverage.
-4. **Gleichgewichtung** je Sleeve; feste 10/10/10 (Top 10 je Segment + Fallback-Auffüllen),
-   RE alle qualifizierten.
+4. **Gleichgewichtung** je Sleeve; feste 10/10/10 (Top 10 je Segment, sequenzielle Kaskade
+   Large → Mid → Small zum Nachziehen), RE alle qualifizierten.
 5. **Eigenständige CH-Pipeline** (kein EUMSS, kein DM/EM-Split).
 6. **Inkumbenten-Buffer** (Rang-Band Equity 8/13, FF-Buffer RE 7,5 %) nur im Multi-Period.
 
@@ -220,11 +228,13 @@ Inkumbenten-Buffer gedämpft:
 - **Konzentration im Large-Cap-Segment:** Der Schweizer Large-Cap-Markt wird von wenigen Giganten
   dominiert (Nestlé/Novartis/Roche), sodass der Coverage-Cut (Large = erste 70 % der CH-Adj-FF-MCap)
   historisch teils **weniger als 10** echte Large Caps liefert (z. B. 2014: nur 5). Das feste
-  10/10/10-Design löst das per **Fallback-Auffüllen**: fehlende Slots werden mit den nächstgrößten
-  Titeln aus dem Mid-Segment besetzt (als „Aufrücker" markiert). So bleibt der Large-Cap-Sleeve
-  stets mit 10 Titeln (je 1 %) besetzt, ohne die echte MSCI-Klassifikation zu verlieren.
+  10/10/10-Design löst das per **Kaskaden-Nachziehen**: fehlende Slots werden mit den besten
+  Titeln aus dem Mid-Segment besetzt (als „Aufrücker" markiert). Da diese aus dem Restbestand
+  entfernt werden, kann ein knappes Large das Mid-Segment unter 10 drücken, das dann seinerseits aus
+  Small nachzieht (Kaskade). So bleibt der Large-Cap-Sleeve stets mit 10 Titeln (je 1 %) besetzt,
+  ohne die echte MSCI-Klassifikation zu verlieren.
 - **Bezug zu MSCI:** Die Coverage-Schwellen (70/85/99 %) entsprechen exakt der MSCI-GIMI-Logik
   (Large 70 %, Standard 85 %, IMI 99 %). MSCI verzichtet bewusst auf feste Titelzahlen je Klasse;
-  Helvetica ergänzt das feste 10/10/10 als Kunden-Anforderung über das Fallback-Auffüllen — die
+  Helvetica ergänzt das feste 10/10/10 als Kunden-Anforderung über das Kaskaden-Nachziehen — die
   Klassifikation selbst bleibt MSCI-konform, der Überschuss großer Segmente wird **nicht** abgestuft,
   sondern verworfen (kein „Übertrag").
