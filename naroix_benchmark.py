@@ -1960,7 +1960,8 @@ with tab_switzerland:
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
 # ══════════════════════════════════════════════════════════════════════════════
-def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, incumbents_isin=None):
+def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, incumbents_isin=None,
+                             prior_segments=None):
     """Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
     Schwellen — Entry (Neukandidaten) vs Maintenance (Bestandstitel/Inkumbenten):
@@ -1974,6 +1975,11 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     Buffer PRO TITEL: Maintenance-Schwellen gelten, wenn der Titel in `incumbents_isin`
     (Vorperioden-Konstituenten, Multi-Period) ist ODER `use_buffer=True` (globaler
     Vergleichsmodus im Single-Snapshot-Tab). Sonst Entry-Schwellen.
+
+    `prior_segments` (Multi-Period): dict {Entity ID -> Segment_New der Vorperiode}. Aktiviert die
+    firmen-interne ±5/±0,5-Coverage-Hysterese (Bestands-Firma bleibt in ihrem Segment, solange die
+    Coverage im Band liegt) — so sind Helveticas Größenklassen deckungsgleich mit den Swiss-Size-
+    Sub-Indizes. Ohne prior_segments: harter Cut.
 
     Variante B: Primary + Secondary laufen gemeinsam durch (beide bleiben drin, sofern sie
     die Filter individuell bestehen). Returns (helv [L/M/S], helv_full_pool [+Micro], params)."""
@@ -2016,16 +2022,33 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     tot = df["Adj_FF_MCap"].sum()
     df["_c_before"] = (df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100) if tot > 0 else 0.0
 
-    # Step 5: Coverage-Cuts → Segment. Cuts hängen NUR am globalen use_buffer (Single-Snapshot-
-    # Vergleich). Der inkumbenten-FF-Buffer (Step 2) hält Bestandstitel (v.a. Real Estate) im Pool,
-    # OHNE die Segment-Grenzen pro Titel zu verschieben — sonst stiege der Top-10-Turnover (siehe
-    # Helvetica-MP-Befund). Equity-Top-10-Bestandsschutz läuft über den Rang-Band-Buffer in
-    # build_helvetica_composite, nicht über die Coverage-Cuts.
+    # Step 5: Coverage-Cuts → Segment (firmen-intern, da der Cut über Total MCap läuft; Mehrfach-
+    # Listings sind durch Step 3b ohnehin schon auf eine Linie reduziert).
+    # ±5/±0,5-Maintenance-Hysterese: eine Bestands-Firma (war in der Vorperiode im jeweiligen
+    # Segment laut `prior_segments`) bleibt in ihrem Segment, solange ihre Coverage im Band liegt
+    # (Large < 75 %, Mid 65–90 %, Small 84,5–99,5 %). Neue Firmen: harter Cut. So sind Helveticas
+    # Größenklassen deckungsgleich mit den Swiss-Size-Sub-Indizes (familien-konsistent). Die
+    # ausgewählten 30 ändern sich dadurch praktisch nicht (Top-10 ist rang-basiert), nur die
+    # Kern/Aufrücker-Labels. `use_buffer` (Single-Snapshot-Vergleich) verschiebt die harten Cuts
+    # global; im Multi-Period ist use_buffer=False und die Hysterese übernimmt den Bestandsschutz.
     _cut = MAINT if use_buffer else ENTRY
     cb = df["_c_before"].to_numpy()
-    df["Segment_New"] = np.where(cb < _cut["large"], "Large Cap",
-                          np.where(cb < _cut["std"], "Mid Cap",
-                            np.where(cb < _cut["small"], "Small Cap", "Micro Cap")))
+    _hard = np.where(cb < _cut["large"], "Large Cap",
+              np.where(cb < _cut["std"], "Mid Cap",
+                np.where(cb < _cut["small"], "Small Cap", "Micro Cap")))
+    if prior_segments:
+        _L, _M, _S = ENTRY["large"], ENTRY["std"], ENTRY["small"]  # 70 / 85 / 99
+        _ent = df["Entity ID"].fillna("").astype(str).str.strip().to_numpy()
+        _seg = []
+        for _i in range(len(df)):
+            _p = prior_segments.get(_ent[_i]); _c = cb[_i]; _s = _hard[_i]
+            if   _p == "Large Cap" and _c < _L + 5.0:               _s = "Large Cap"
+            elif _p == "Mid Cap"   and (_L - 5.0) <= _c < _M + 5.0: _s = "Mid Cap"
+            elif _p == "Small Cap" and (_M - 0.5) <= _c < _S + 0.5: _s = "Small Cap"
+            _seg.append(_s)
+        df["Segment_New"] = _seg
+    else:
+        df["Segment_New"] = _hard
 
     helv = df[df["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()  # Konstituenten i.e.S.
     helv_full_pool = df.copy()                                                       # inkl. Micro Cap
@@ -2368,7 +2391,7 @@ with tab_helvetica_mp:
             st.caption(f"**{len(_reb)} Termine** ({_mon_lbl}): {_term_lbl}")
             if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
                 _RE = {"Real Estate Development", "Real Estate Investment Trusts"}
-                _prev = set(); _comps = {}; _rows = []
+                _prev = set(); _prev_seg = {}; _comps = {}; _rows = []
                 _prog = st.progress(0, text="Starte…")
                 for _i, _sd in enumerate(_reb):
                     _prog.progress(_i / len(_reb), text=f"{_sd} ({_i + 1}/{len(_reb)})")
@@ -2383,8 +2406,10 @@ with tab_helvetica_mp:
                         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_sdd.year, fol_enabled=apply_fol)
                     _seed = (len(_prev) == 0)
                     _inc = (_prev if (_mp_buffer and not _seed) else None)
+                    _pseg = (_prev_seg if (_mp_buffer and not _seed) else None)
                     _helv, _full, _ = build_helvetica_pipeline(
-                        _gmu, use_buffer=False, adtv_thr=_mp_adtv, incumbents_isin=_inc)
+                        _gmu, use_buffer=False, adtv_thr=_mp_adtv, incumbents_isin=_inc,
+                        prior_segments=_pseg)
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
@@ -2415,6 +2440,9 @@ with tab_helvetica_mp:
                         "Gewicht %": round(_comp["Index_Weight"].sum(), 2),
                     })
                     _prev = _cur
+                    # Vorperioden-Segmente (firmen-eben) für die ±5/±0,5-Hysterese der nächsten Periode
+                    _prev_seg = dict(zip(_full["Entity ID"].fillna("").astype(str).str.strip(),
+                                         _full["Segment_New"])) if len(_full) else {}
                 _prog.progress(1.0, text="✅ Fertig")
                 st.session_state["helv_mp_comps"] = _comps
                 st.session_state["helv_mp_summary"] = pd.DataFrame(_rows)
