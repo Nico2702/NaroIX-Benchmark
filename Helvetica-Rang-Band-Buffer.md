@@ -1,4 +1,4 @@
-# Rang-Band-Buffer (8/13)
+# Helvetica — Rang-Band-Buffer (8/13)
 
 Die **Rang-Band-Buffer 8/13** ist eine Hysterese-Regel, die den Turnover dämpft — sie entscheidet,
 **wer** die 10 Sleeve-Plätze bekommt, wenn es mehr Kandidaten als Plätze gibt. „Rang" = Position
