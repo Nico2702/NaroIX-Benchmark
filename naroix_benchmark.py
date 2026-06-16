@@ -2134,23 +2134,19 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
                      "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"],
                      "True_Segment": "", "Status": ""})
 
-    # Equity: feste 10/10/10-Sleeves. Pro Sleeve werden die Top-10 des EIGENEN Coverage-Segments
-    # genommen (Rang nach Free-Float-MCap = Adj_FF_MCap, Total MCap als Tiebreaker). Auffüllen ist
-    # eine reine FALLBACK-Lösung: hat ein Segment < 10 Titel, rücken die nächstgrößten aus den
-    # KLEINEREN Segmenten auf (Mid→Large, Small→Mid, Micro→Small) — markiert als "Aufrücker"
-    # (geduldet, Kategorie bleibt erhalten). GRÖSSERE Segmente sind als Kandidaten ausgeschlossen,
-    # d.h. KEIN Übertrag nach unten: hat ein Segment > 10 Titel, wird der Überschuss verworfen
-    # (nicht in den kleineren Sleeve geschoben). Der Rang-Band-Buffer (8/13) läuft über die
-    # Kandidatenliste je Sleeve, sodass auch der Auffüll-Rand stabilisiert ist.
+    # Equity: feste 10/10/10-Sleeves als SEQUENZIELLE KASKADE (top-down: Large -> Mid -> Small). Jedes
+    # Segment nimmt seine Top-10 aus dem RESTBESTAND (Rang nach Free-Float-MCap = Adj_FF_MCap, Total
+    # MCap als Tiebreaker; Rang-Band-Buffer 8/13 NUR unter den eigenen Mitgliedern), und die gewählten
+    # Titel werden danach aus dem Restbestand ENTFERNT. Hat ein Segment < 10 eigene Titel, zieht es die
+    # BESTEN Titel des nächstkleineren Segments ab (Large<-Mid, Mid<-Small, Small<-Micro) — markiert als
+    # "Aufrücker". Weil diese abgezogen sind, prüft das nächste Segment ">= 10" auf dem REDUZIERTEN
+    # Bestand: drückt ein knappes Large das Mid unter 10, zieht Mid seinerseits aus Small nach usw.
+    # (gewollte Kaskade). GRÖSSERE Segmente sind als Quelle ausgeschlossen (kein Übertrag nach unten);
+    # der Überschuss eines Segments mit > 10 Titeln wird verworfen.
     _SEG_RANK = {"Large Cap": 0, "Mid Cap": 1, "Small Cap": 2, "Micro Cap": 3}
     _available = helv_eq
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
         _sr = _SEG_RANK.get(seg, 9)
-        # Top-10 STRIKT aus dem EIGENEN Segment (nach FF-MCap), inkl. Rang-Band-Inkumbenz NUR unter
-        # den eigenen Mitgliedern. Erst wenn das eigene Segment < 10 hat, füllt ein FALLBACK aus den
-        # kleineren Segmenten den Fehlbetrag auf (größte nach FF-MCap). So kann ein kleiner-
-        # klassifizierter Titel NIE einen echten Segment-Titel verdrängen — auch nicht über das
-        # Inkumbenten-Band. Größere Segmente sind ausgeschlossen (kein Übertrag).
         _srank = _available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9))
         _own = _available[_srank == _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"],
                                                      ascending=[False, False]).reset_index(drop=True)
@@ -2158,7 +2154,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
             seg_df = _rank_band_select(_own, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:
             seg_df = _own.head(HELVETICA_TOPN)
-        if len(seg_df) < HELVETICA_TOPN:  # Fallback: Fehlbetrag aus kleineren Segmenten (nach FF-MCap)
+        if len(seg_df) < HELVETICA_TOPN:  # Kaskade: beste Titel aus kleineren Segmenten nachziehen (nach FF-MCap)
             _fb = _available[_srank > _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
             seg_df = pd.concat([seg_df, _fb.head(HELVETICA_TOPN - len(seg_df))], ignore_index=True)
         _available = _available[~_available["_isin_k"].isin(set(seg_df["_isin_k"]))]
