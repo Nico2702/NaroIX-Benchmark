@@ -2580,9 +2580,16 @@ with tab_helvetica_mp:
                 _long = pd.concat(
                     [_comps[k][["Exchange Ticker", "Name", "Sleeve", "Type", "Index_Weight"]].assign(Termin=k)
                      for k in _keys], ignore_index=True)
-                _wide = _long.pivot_table(index=["Sleeve", "Exchange Ticker", "Name"], columns="Termin",
+                # Pro TITEL pivotieren (nicht nach Sleeve) — sonst wird ein Titel, der über die Zeit das
+                # Segment wechselt, in mehrere Zeilen gesplittet und das Gewicht "fehlt" scheinbar.
+                _wide = _long.pivot_table(index=["Exchange Ticker", "Name"], columns="Termin",
                                           values="Index_Weight", aggfunc="first").reset_index()
+                # Sleeve-Info = Sleeve in der jüngsten Periode, in der der Titel vorkommt
+                _last_sleeve = _long.sort_values("Termin").groupby("Exchange Ticker")["Sleeve"].last()
+                _wide.insert(2, "Sleeve (zuletzt)", _wide["Exchange Ticker"].map(_last_sleeve))
                 st.markdown("### 📐 Gewichtsmatrix (Titel × Termin, %)")
+                st.caption("Eine Zeile je Titel über alle Termine. Wechselt ein Titel das Segment, zeigt "
+                           "„Sleeve (zuletzt)\" das jüngste Segment; die Gewichte stehen lückenlos in der Zeile.")
                 st.dataframe(_wide, width="stretch", hide_index=True)
 
                 st.download_button(
