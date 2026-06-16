@@ -11,3 +11,7 @@ venv/
 
 # Large local master files (proprietary FactSet data — do not commit)
 *Master*.xlsx
+
+# Scratch / temp commit message files
+.commitmsg.tmp
+_*.txt
