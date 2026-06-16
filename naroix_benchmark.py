@@ -2180,6 +2180,42 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     return comp, summ
 
 
+def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=None,
+                                re_industries=None):
+    """Drei eigenständige Swiss-Size-Sub-Indizes (Large / Mid / Small Cap), aus denen Helvetica
+    die Top-10 zieht. Eigenschaften:
+      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 %, 3M-ADTV ≥ adtv_thr.
+      - Variante B: ALLE Share Lines (kein Dedup) — Mehrfach-Listings dürfen vertreten sein.
+      - Segment: firmen-interner Coverage-Cut (über build_helvetica_pipeline → eine Linie/Firma,
+        inkl. ±5/±0,5-Hysterese via prior_segments). Jede Linie erbt das Segment IHRER Firma.
+      - Gewichtung: Float-MCap (Adj_FF_MCap) cap-gewichtet, je Sub-Index auf 100 % normiert.
+    Real Estate wird ausgeschlossen (eigenes Helvetica-Sleeve). Gibt dict {Segment: DataFrame}.
+    """
+    _re = re_industries or {"Real Estate Development", "Real Estate Investment Trusts"}
+    # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut + Hysterese)
+    helv, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=adtv_thr,
+                                             prior_segments=prior_segments)
+    if len(full) == 0:
+        return {s: full.iloc[0:0].copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
+    _seg_by_ent = dict(zip(full["Entity ID"].fillna("").astype(str).str.strip(), full["Segment_New"]))
+    # 2) Voller CH-Pool, ALLE Linien (gleiche Filter, KEIN Dedup), ohne Real Estate
+    pool = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
+                       (gm_universe["Free Float MCap Y2025"] > 0)].copy()
+    pool = pool[(pool["Free Float Percent"] >= 0.10) & (pool["3M ADTV Y2025"] >= adtv_thr)]
+    pool = pool[~pool["FactSet Industry"].isin(_re)].copy()
+    # 3) Jede Linie erbt das Segment ihrer Firma (firmen-interner Cut)
+    pool["Segment_New"] = pool["Entity ID"].fillna("").astype(str).str.strip().map(_seg_by_ent)
+    pool = pool[pool["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()
+    # 4) Float-MCap-Gewicht je Sub-Index (auf 100 % normiert)
+    out = {}
+    for seg in ["Large Cap", "Mid Cap", "Small Cap"]:
+        s = pool[pool["Segment_New"] == seg].copy()
+        _tot = s["Adj_FF_MCap"].sum()
+        s["Index_Weight"] = (s["Adj_FF_MCap"] / _tot * 100.0) if _tot > 0 else 0.0
+        out[seg] = s.sort_values("Adj_FF_MCap", ascending=False).reset_index(drop=True)
+    return out
+
+
 def render_helvetica_tab(gm_universe):
     """Render Helvetica Tab — kundenspezifischer Schweizer Index."""
     st.markdown("## 🏔️ Helvetica")
@@ -2328,6 +2364,41 @@ def render_helvetica_tab(gm_universe):
     _seg_detail("Mid Cap (excl. Real Estate)",   helv[(helv["Segment_New"] == "Mid Cap") & (~_is_re_d(helv))])
     _seg_detail("Small Cap (excl. Real Estate)", helv[(helv["Segment_New"] == "Small Cap") & (~_is_re_d(helv))])
     _seg_detail("Real Estate (alle qualifizierten, inkl. Micro)", helv_full_pool[_is_re_d(helv_full_pool)])
+
+    # ── Swiss Size Sub-Indizes (Float-MCap-gewichtet, Variante B) ─────────────
+    st.markdown("---")
+    st.markdown("### 🇨🇭 Swiss Size Sub-Indizes (Float-MCap-gewichtet, Variante B)")
+    st.caption(
+        "Eigenständige Large/Mid/Small Cap Sub-Indizes (Exchange Country = CH, CH-interne Coverage, "
+        "**alle** Share Lines, Float-MCap-gewichtet, je Sub-Index 100 %). Helvetica zieht je Sub-Index "
+        "die Top-10 (liquideste Linie je Firma, gleichgewichtet) — ✓ = von Helvetica selektiert."
+    )
+    _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr)
+    _helv_eq_isin = set(comp[comp["Type"] == "Equity"]["ISIN"].fillna("").astype(str).str.strip().str.upper())
+    _sub_export = {}
+    for _seg in ["Large Cap", "Mid Cap", "Small Cap"]:
+        _sdf = _subs.get(_seg)
+        if _sdf is None or len(_sdf) == 0:
+            st.markdown(f"**{_seg}** — keine Titel."); continue
+        _d = _sdf.copy()
+        _d["In Helvetica"] = np.where(
+            _d["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_helv_eq_isin), "✓", "")
+        _d["Float-Gewicht %"] = _d["Index_Weight"].map(lambda x: f"{x:.2f}%")
+        _d["Adj. FF MCap"] = _d["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
+        st.markdown(f"**{_seg}** — {len(_d)} Linien / {_d['Entity ID'].nunique()} Firmen "
+                    f"(Helvetica: Top-{min(HELVETICA_TOPN, _d['Entity ID'].nunique())})")
+        _cols = ["In Helvetica", "Exchange Ticker", "Name", "Listing", "Adj. FF MCap", "Float-Gewicht %"]
+        st.dataframe(_d[[c for c in _cols if c in _d.columns]], width="stretch", hide_index=True,
+                     height=min(35 * (len(_d) + 1) + 3, 430))
+        _sub_export[f"Swiss {_seg}"] = _sdf
+    if _sub_export:
+        st.download_button(
+            "⬇️ Swiss Size Sub-Indizes (Excel)",
+            data=to_excel_multi(_sub_export),
+            file_name=f"Swiss_Size_SubIndices_{_snapshot_label.replace('.','')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_swiss_subindices",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
