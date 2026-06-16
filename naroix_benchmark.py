@@ -2120,11 +2120,11 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     is_re = lambda d: d["FactSet Industry"].isin(re_industries)
     # Company-level Dedup: pro Firma nur die liquideste Linie (höchstes 3M-ADTV) — so kann
     # keine Firma mit Mehrfach-Listing (Variante B) zwei Plätze belegen → nie Doppelgewichte.
-    # Rangordnung wie der Coverage-Cut (Total MCap, Adj_FF als Tiebreaker), damit die 10er-
-    # Tranchen sauber in die Coverage-Segmente nisten und die Aufrücker/Übertrag-Labels
-    # aussagekräftig sind (kein Rauschen aus abweichendem Sortierschlüssel).
+    # Top-10-Auswahl je Sleeve: Rang nach FREE-FLOAT-MCAP (Adj_FF_MCap, Total MCap als Tiebreaker).
+    # Damit zieht Helvetica genau die 10 größten Konstituenten des Float-MCap-gewichteten
+    # Swiss-Size-Sub-Index (Segment-KLASSE bleibt firmen-intern über Total MCap, siehe Pipeline).
     helv_eq = (_helv_dedup_most_liquid(helv[~is_re(helv)])
-               .sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True))
+               .sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False]).reset_index(drop=True))
     helv_eq = helv_eq.assign(_isin_k=helv_eq["ISIN"].fillna("").astype(str).str.strip().str.upper())
 
     rows = []
@@ -2135,7 +2135,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
                      "True_Segment": "", "Status": ""})
 
     # Equity: feste 10/10/10-Sleeves. Pro Sleeve werden die Top-10 des EIGENEN Coverage-Segments
-    # genommen (Rang nach Total MCap, Adj_FF als Tiebreaker — wie der Coverage-Cut). Auffüllen ist
+    # genommen (Rang nach Free-Float-MCap = Adj_FF_MCap, Total MCap als Tiebreaker). Auffüllen ist
     # eine reine FALLBACK-Lösung: hat ein Segment < 10 Titel, rücken die nächstgrößten aus den
     # KLEINEREN Segmenten auf (Mid→Large, Small→Mid, Micro→Small) — markiert als "Aufrücker"
     # (geduldet, Kategorie bleibt erhalten). GRÖSSERE Segmente sind als Kandidaten ausgeschlossen,
@@ -2148,7 +2148,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
         _sr = _SEG_RANK.get(seg, 9)
         # Kandidaten = eigenes Segment + KLEINERE (Fallback); größere ausgeschlossen → kein Übertrag.
         _cand = _available[_available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9) >= _sr)]
-        _pool = _cand.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
+        _pool = _cand.sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False]).reset_index(drop=True)
         if incumbents_isin:
             seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:

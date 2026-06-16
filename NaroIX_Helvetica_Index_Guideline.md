@@ -45,8 +45,10 @@ Diese Sleeves sind feste Zielgewichte — keine Titelselektion, kein Buffer, kei
 | Real Estate | **alle** qualifizierten (inkl. Micro) | 15 % | 15 % / n |
 | **Summe** | | **55 %** | |
 
-Die Equity-Sleeves sind auf **feste 10/10/10** ausgelegt (siehe Schritt 5). Rangkriterium ist die
-Größe (Total MCap, Adj_FF_MCap als Tiebreaker — derselbe Schlüssel wie der Coverage-Cut).
+Die Equity-Sleeves sind auf **feste 10/10/10** ausgelegt (siehe Schritt 5). Die **Top-10-Auswahl** je
+Sleeve erfolgt nach **Free-Float-MCap (Adj_FF_MCap)** — also die 10 größten Konstituenten des
+Float-MCap-gewichteten Sub-Index. (Die Segment-KLASSE Large/Mid/Small wird separat über Total MCap
+bestimmt, Schritt 4.)
 
 **Gleichgewichtung:** Jeder Sleeve wird durch die Anzahl seiner tatsächlichen Titel (n) geteilt
 (`Sleeve-Gewicht / n`). Durch das feste 10/10/10-Design (Schritt 5) ist in der Regel n = 10 je
@@ -108,7 +110,8 @@ zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schrit
 
 ### Schritt 5 — Sleeve-Zusammenstellung (feste 10/10/10)
 - **Equity je Sleeve (Large/Mid/Small):** Jeder Sleeve nimmt die **Top 10 seines EIGENEN
-  Coverage-Segments** (Rang nach Total MCap, Adj_FF_MCap als Tiebreaker). Gewicht = Sleeve-Gewicht / n.
+  Coverage-Segments** (Rang nach **Free-Float-MCap = Adj_FF_MCap**, Total MCap als Tiebreaker).
+  Gewicht = Sleeve-Gewicht / n.
   - **Auffüllen = reine Fallback-Lösung:** Hat ein Segment **weniger als 10** qualifizierte Titel,
     rücken die nächstgrößten aus den **kleineren** Segmenten auf (Mid → Large, Small → Mid,
     Micro → Small). Solche Titel werden als **„Aufrücker"** markiert; ihre echte Coverage-Klasse
@@ -147,8 +150,10 @@ Sub-Indizes werden im Tool als eigene Sicht/Export ausgewiesen (ohne eigene ISIN
 
 ## 5. Größenmaße: Total MCap, Adj_FF_MCap & FOL/IF
 
-- **Größen-Rang (Coverage-Cut + Sleeve-Tranchen):** **Total MCap** absteigend, **Adj_FF_MCap** als
-  Tiebreaker. Die Coverage-Grenzen (70/85/99 %) werden auf der **kumulierten Adj_FF_MCap** gezogen.
+- **Coverage-Cut / Segment-Klasse:** **Total MCap** absteigend (Adj_FF_MCap als Tiebreaker); die
+  Coverage-Grenzen (70/85/99 %) werden auf der **kumulierten Adj_FF_MCap** gezogen.
+- **Top-10-Auswahl je Sleeve:** nach **Free-Float-MCap (Adj_FF_MCap)** (Total MCap als Tiebreaker) —
+  die 10 größten Konstituenten des Float-MCap-gewichteten Sub-Index.
 - **Real-Estate-Korb:** nach **Adj_FF_MCap** sortiert (alle qualifizierten, gleichgewichtet).
 - **Gewichtung:** in allen Equity-/RE-Sleeves **gleichgewichtet** (Sleeve-Gewicht / n), nicht
   kapitalgewichtet.
