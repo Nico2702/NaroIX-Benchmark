@@ -2360,66 +2360,62 @@ def render_helvetica_tab(gm_universe):
         key="dl_helvetica_composition",
     )
 
-    # ── Detail je Segment — alle qualifizierten Titel, markiert was im Index ist ──
+    # ── Swiss Size Sub-Indizes & Helvetica-Selektion (Float-MCap-gewichtet, Variante B) ──
+    # Konsolidiert: die frühere separate "Detail je Segment"-Ansicht ist hier aufgegangen. Die
+    # Sub-Indizes zeigen je Größenklasse ALLE Share Lines (Float-MCap-Gewicht), markieren die von
+    # Helvetica selektierten (✓) und deren Gewicht im Gesamtindex. Real Estate hat keinen Sub-Index
+    # (eigenes Sleeve = alle qualifizierten) und steht als separater Block darunter.
     st.markdown("---")
-    st.markdown("### 🔎 Detail je Segment (alle qualifizierten Titel)")
-    st.caption(
-        "Vollständiger Pool je Segment. ✓ = im Index (Equity: feste 10/10/10 via Kaskade auf der "
-        "Größenrangliste — Top-10 je Segment, Rang-Band-Buffer nur im Multi-Period; Real Estate: alle). "
-        "Index-Gewicht = Gewicht im Gesamtindex."
-    )
-    _is_re_d = lambda d: d["FactSet Industry"].isin(RE_INDUSTRIES)
-    _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
-
-    def _seg_detail(label, df):
-        if len(df) == 0:
-            st.markdown(f"**{label}** — keine qualifizierten Titel."); return
-        d = df.sort_values("Adj_FF_MCap", ascending=False).copy()
-        _w = d["Exchange Ticker"].map(lambda t: _comp_w.get(t, 0.0))
-        d["Im Index"] = np.where(_w > 0, "✓", "")
-        d["Index-Gewicht %"] = [f"{w:.3f}%" if w > 0 else "—" for w in _w]
-        d["Adj. FF MCap"] = d["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
-        _cols = ["Im Index", "Exchange Ticker", "Name", "Mapping Country", "FactSet Industry",
-                 "Segment_New", "Listing", "Adj. FF MCap", "Index-Gewicht %"]
-        st.markdown(f"**{label}** — {len(d)} qualifiziert, {(d['Im Index']=='✓').sum()} im Index")
-        st.dataframe(d[[c for c in _cols if c in d.columns]], width="stretch", hide_index=True,
-                     height=min(35 * (len(d) + 1) + 3, 430))
-
-    _seg_detail("Large Cap (excl. Real Estate)", helv[(helv["Segment_New"] == "Large Cap") & (~_is_re_d(helv))])
-    _seg_detail("Mid Cap (excl. Real Estate)",   helv[(helv["Segment_New"] == "Mid Cap") & (~_is_re_d(helv))])
-    _seg_detail("Small Cap (excl. Real Estate)", helv[(helv["Segment_New"] == "Small Cap") & (~_is_re_d(helv))])
-    _seg_detail("Real Estate (alle qualifizierten, inkl. Micro)", helv_full_pool[_is_re_d(helv_full_pool)])
-
-    # ── Swiss Size Sub-Indizes (Float-MCap-gewichtet, Variante B) ─────────────
-    st.markdown("---")
-    st.markdown("### 🇨🇭 Swiss Size Sub-Indizes (Float-MCap-gewichtet, Variante B)")
+    st.markdown("### 🇨🇭 Swiss Size Sub-Indizes & Helvetica-Selektion")
     st.caption(
         "Eigenständige Large/Mid/Small Cap Sub-Indizes (Exchange Country = CH, CH-interne Coverage, "
         "**alle** Share Lines, Float-MCap-gewichtet, je Sub-Index 100 %). Helvetica zieht je Sub-Index "
-        "die Top-10 (liquideste Linie je Firma, gleichgewichtet) — ✓ = von Helvetica selektiert."
+        "die Top-10 (liquideste Linie je Firma, gleichgewichtet). ✓ = von Helvetica selektiert · "
+        "**Float-Gewicht** = Gewicht im Sub-Index · **Helvetica-Gewicht** = Gewicht im Gesamtindex "
+        "(„–“ = nicht selektiert)."
     )
+    _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
     _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr,
                                         use_buffer=_use_buffer, full=helv_full_pool)
-    _helv_eq_isin = set(comp[comp["Type"] == "Equity"]["ISIN"].fillna("").astype(str).str.strip().str.upper())
     _sub_export = {}
     for _seg in ["Large Cap", "Mid Cap", "Small Cap"]:
         _sdf = _subs.get(_seg)
         if _sdf is None or len(_sdf) == 0:
             st.markdown(f"**{_seg}** — keine Titel."); continue
-        _d = _sdf.copy()
-        _d["In Helvetica"] = np.where(
-            _d["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_helv_eq_isin), "✓", "")
+        _d = _sdf.sort_values("Adj_FF_MCap", ascending=False).copy()
+        _hw = _d["Exchange Ticker"].map(lambda t: _comp_w.get(t, 0.0))
+        _d["In Helvetica"] = np.where(_hw > 0, "✓", "")
         _d["Float-Gewicht %"] = _d["Index_Weight"].map(lambda x: f"{x:.2f}%")
+        _d["Helvetica-Gewicht %"] = [f"{w:.3f}%" if w > 0 else "—" for w in _hw]
         _d["Adj. FF MCap"] = _d["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
-        st.markdown(f"**{_seg}** — {len(_d)} Linien / {_d['Entity ID'].nunique()} Firmen "
-                    f"(Helvetica: Top-{min(HELVETICA_TOPN, _d['Entity ID'].nunique())})")
-        _cols = ["In Helvetica", "Exchange Ticker", "Name", "Listing", "Adj. FF MCap", "Float-Gewicht %"]
+        st.markdown(f"**{_seg}** — {len(_d)} Linien / {_d['Entity ID'].nunique()} Firmen · "
+                    f"{(_d['In Helvetica']=='✓').sum()} in Helvetica "
+                    f"(Top-{min(HELVETICA_TOPN, _d['Entity ID'].nunique())})")
+        _cols = ["In Helvetica", "Exchange Ticker", "Name", "Listing", "Adj. FF MCap",
+                 "Float-Gewicht %", "Helvetica-Gewicht %"]
         st.dataframe(_d[[c for c in _cols if c in _d.columns]], width="stretch", hide_index=True,
                      height=min(35 * (len(_d) + 1) + 3, 430))
         _sub_export[f"Swiss {_seg}"] = _sdf
+
+    # Real Estate: kein Sub-Index — eigenes Sleeve = alle qualifizierten (inkl. Micro), gleichgewichtet.
+    _re_pool = helv_full_pool[helv_full_pool["FactSet Industry"].isin(RE_INDUSTRIES)]
+    if len(_re_pool):
+        _r = _re_pool.sort_values("Adj_FF_MCap", ascending=False).copy()
+        _rw = _r["Exchange Ticker"].map(lambda t: _comp_w.get(t, 0.0))
+        _r["In Helvetica"] = np.where(_rw > 0, "✓", "")
+        _r["Helvetica-Gewicht %"] = [f"{w:.3f}%" if w > 0 else "—" for w in _rw]
+        _r["Adj. FF MCap"] = _r["Adj_FF_MCap"].map(lambda x: f"${x/1e9:.2f}B" if x >= 1e9 else f"${x/1e6:.0f}M")
+        st.markdown(f"**Real Estate** (kein Sub-Index — alle qualifizierten inkl. Micro, gleichgewichtet) · "
+                    f"{len(_r)} Titel, {(_r['In Helvetica']=='✓').sum()} in Helvetica")
+        _cols = ["In Helvetica", "Exchange Ticker", "Name", "Mapping Country", "FactSet Industry",
+                 "Adj. FF MCap", "Helvetica-Gewicht %"]
+        st.dataframe(_r[[c for c in _cols if c in _r.columns]], width="stretch", hide_index=True,
+                     height=min(35 * (len(_r) + 1) + 3, 430))
+        _sub_export["Real Estate"] = _re_pool
+
     if _sub_export:
         st.download_button(
-            "⬇️ Swiss Size Sub-Indizes (Excel)",
+            "⬇️ Swiss Size Sub-Indizes + Real Estate (Excel)",
             data=to_excel_multi(_sub_export),
             file_name=f"Swiss_Size_SubIndices_{_snapshot_label.replace('.','')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
