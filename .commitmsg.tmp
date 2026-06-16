@@ -1,0 +1,6 @@
+Docs: Rang-Band-Buffer.md -> Helvetica-Rang-Band-Buffer.md
+
+Umbenannt, da die konkrete 8/13-Logik Helvetica-spezifisch ist; Titelzeile
+entsprechend angepasst.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
