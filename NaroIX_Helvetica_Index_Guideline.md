@@ -93,16 +93,18 @@ der globale Buffer-Modus aktiv ist.
 - Kumulative Coverage `_c_before` = vorlaufende Summe Adj_FF_MCap / Gesamt-Adj_FF_MCap (in %).
 - Zuordnung nach Coverage-Schwellen:
 
-| Segment | Entry | Maintenance (Buffer) |
-|---------|-------|----------------------|
-| Large Cap | _c_before < 70 % | < 75 % |
-| Mid Cap | < 85 % | < 90 % |
-| Small Cap | < 99 % | < 99,5 % |
-| Micro Cap (nur für RE-Pool relevant) | ≥ 99 % | ≥ 99,5 % |
+| Segment | Entry (neue Firma) | Maintenance-Band (Bestands-Firma) |
+|---------|--------------------|-----------------------------------|
+| Large Cap | _c_before < 70 % | bleibt Large bis < **75 %** (+5 pp) |
+| Mid Cap | 70 – 85 % | bleibt Mid **65 – 90 %** (±5 pp) |
+| Small Cap | 85 – 99 % | bleibt Small **84,5 – 99,5 %** (±0,5 pp) |
+| Micro Cap (nur für RE-Pool relevant) | ≥ 99 % | — |
 
-Die Coverage-Schwellen hängen **nur am globalen Buffer-Modus** (Single-Snapshot-Vergleich), **nicht**
-pro Inkumbent — so verschieben sie nicht die Segment-Ränge. Der Bestandsschutz für die Top-10 läuft
-über den Rang-Band-Buffer (Schritt 5).
+**Firmen-interne ±5/±0,5-Hysterese (Multi-Period):** Eine **Bestands-Firma** (Segment der Vorperiode)
+bleibt in ihrem Segment, solange ihre Coverage im Band liegt; **neue Firmen** werden hart geschnitten
+(70/85/99 %). Der Cut läuft über **Total MCap** (firmenweit → pro Firma einmal). Damit sind Helveticas
+Größenklassen **deckungsgleich mit den Swiss-Size-Sub-Indizes** (siehe „Swiss Size Sub-Indizes"). Der
+zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schritt 5).
 
 ### Schritt 5 — Sleeve-Zusammenstellung (feste 10/10/10)
 - **Equity je Sleeve (Large/Mid/Small):** Jeder Sleeve nimmt die **Top 10 seines EIGENEN
@@ -120,6 +122,26 @@ pro Inkumbent — so verschieben sie nicht die Segment-Ränge. Der Bestandsschut
     aufgefüllt) — beides in der Index-Anzeige und im Excel-Export ausgewiesen.
 - **Real Estate:** **alle** qualifizierten CH-RE-Titel (FactSet Industry *Real Estate Development*
   oder *Real Estate Investment Trusts*, **inkl. Micro**, kein Coverage-Cut). Gewicht = 15 % / n.
+
+### Swiss Size Sub-Indizes (Zwei-Schichten-Logik)
+
+Der Equity-Teil ist konzeptionell ein **Zwei-Schichten-Modell**:
+
+**Schicht 1 — drei eigenständige Swiss Size Sub-Indizes** (Large / Mid / Small Cap):
+- gleiches CH-Universe wie oben (Exchange Country = CH, FF % ≥ 10 %, 3M-ADTV ≥ Schwelle, Preis < 20k);
+- **Variante B:** *alle* Share Lines dürfen vertreten sein (z. B. Roche ROP **und** RO);
+- Segment = firmen-interner Coverage-Cut (Schritt 4, inkl. ±5/±0,5-Hysterese); jede Linie erbt das
+  Segment **ihrer Firma**;
+- **Float-MCap-gewichtet** (Adj_FF_MCap), je Sub-Index auf 100 % normiert;
+- Real Estate ausgeschlossen (eigenes Sleeve).
+
+**Schicht 2 — Helvetica** zieht je Sub-Index die **Top 10 Firmen** (bei Mehrfach-Listing nur die
+**liquideste Linie**), **gleichgewichtet** auf die SAA (Large 10 % / Mid 15 % / Small 15 %), mit
+Rang-Band-Buffer (8/13) und Fallback-Auffüllen (Schritt 5).
+
+Damit sind die Größenklassen familien-konsistent (gleiche Logik wie die NaroIX-Coverage-Indizes), und
+Helvetica ist als „Top-10 je Sub-Index, gleichgewichtet" sauber definiert. Die cap-gewichteten
+Sub-Indizes werden im Tool als eigene Sicht/Export ausgewiesen (ohne eigene ISINs).
 
 ---
 
@@ -166,7 +188,7 @@ Inkumbenten-Buffer gedämpft:
 |---------|--------------|
 | **Equity (je Sleeve)** | **Rang-Band-Buffer**: neuer Titel muss in die **Top 8** (hart); ein Bestandstitel bleibt in den Top 10, solange sein Rang **≤ 13** ist. |
 | **Real Estate** | **FF-Inkumbenten-Buffer**: Bestands-RE-Titel bleiben mit **FF % ≥ 7,5 %** drin. |
-| **Coverage-Cuts** | Maintenance-Schwellen (75 / 90 / 99,5 %) gelten **global**, wenn der Buffer-Modus aktiv ist (nicht pro Titel). |
+| **Coverage-Cuts (Segment)** | **±5/±0,5-Hysterese pro Firma**: eine Bestands-Firma bleibt in ihrem Segment (Large < 75 %, Mid 65–90 %, Small 84,5–99,5 %); neue Firmen werden hart geschnitten (70/85/99 %). |
 
 - Inkumbenten = die selektierten Konstituenten (55 %) der **Vorperiode**.
 - Rebalancing-Termine sind frei wählbar (Quartalsweise / Halbjährlich / Jährlich / eigene Monate),
@@ -178,8 +200,9 @@ Inkumbenten-Buffer gedämpft:
 
 1. **Multi-Asset, fix:** 45 % statische ETF-/Cash-Sleeves + 55 % selektiert.
 2. **Schweiz über Exchange Country** (Listing), nicht Domizil.
-3. **Variante B**, aber **eine Linie je Unternehmen** (liquideste) — keine Doppelgewichte und keine
-   Doppelzählung in der Coverage.
+3. **Zwei Schichten:** Sub-Indizes = Variante B (alle Share Lines, cap-gewichtet); **Helvetica** nimmt
+   pro Firma nur die **liquideste Linie** (Top-10, gleichgewichtet) — keine Doppelgewichte, kein
+   Doppelzählen in der Coverage.
 4. **Gleichgewichtung** je Sleeve; feste 10/10/10 (Top 10 je Segment + Fallback-Auffüllen),
    RE alle qualifizierten.
 5. **Eigenständige CH-Pipeline** (kein EUMSS, kein DM/EM-Split).
