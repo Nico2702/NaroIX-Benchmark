@@ -2146,18 +2146,21 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     _available = helv_eq
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
         _sr = _SEG_RANK.get(seg, 9)
-        # Kandidaten = EIGENES Segment ZUERST (nach FF-MCap), DANN kleinere als Fallback (nach FF-MCap).
-        # Eigenes Segment muss VOR den Fallback-Kandidaten ranken — sonst könnte ein kleiner-
-        # klassifizierter Hoch-Float-Titel (z.B. Givaudan, Mid) einen echten Large-Titel verdrängen,
-        # obwohl das eigene Segment ≥ 10 hat. Größere Segmente sind ausgeschlossen (kein Übertrag).
+        # Top-10 STRIKT aus dem EIGENEN Segment (nach FF-MCap), inkl. Rang-Band-Inkumbenz NUR unter
+        # den eigenen Mitgliedern. Erst wenn das eigene Segment < 10 hat, füllt ein FALLBACK aus den
+        # kleineren Segmenten den Fehlbetrag auf (größte nach FF-MCap). So kann ein kleiner-
+        # klassifizierter Titel NIE einen echten Segment-Titel verdrängen — auch nicht über das
+        # Inkumbenten-Band. Größere Segmente sind ausgeschlossen (kein Übertrag).
         _srank = _available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9))
-        _own = _available[_srank == _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
-        _fb  = _available[_srank >  _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
-        _pool = pd.concat([_own, _fb], ignore_index=True)
+        _own = _available[_srank == _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"],
+                                                     ascending=[False, False]).reset_index(drop=True)
         if incumbents_isin:
-            seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
+            seg_df = _rank_band_select(_own, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:
-            seg_df = _pool.head(HELVETICA_TOPN)
+            seg_df = _own.head(HELVETICA_TOPN)
+        if len(seg_df) < HELVETICA_TOPN:  # Fallback: Fehlbetrag aus kleineren Segmenten (nach FF-MCap)
+            _fb = _available[_srank > _sr].sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False])
+            seg_df = pd.concat([seg_df, _fb.head(HELVETICA_TOPN - len(seg_df))], ignore_index=True)
         _available = _available[~_available["_isin_k"].isin(set(seg_df["_isin_k"]))]
         n = len(seg_df)
         w = sleeve_w / n if n else 0.0
