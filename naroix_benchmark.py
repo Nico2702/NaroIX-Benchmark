@@ -2181,27 +2181,32 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
 
 
 def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=None,
-                                re_industries=None):
+                                incumbents_isin=None, re_industries=None):
     """Drei eigenständige Swiss-Size-Sub-Indizes (Large / Mid / Small Cap), aus denen Helvetica
     die Top-10 zieht. Eigenschaften:
-      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 %, 3M-ADTV ≥ adtv_thr.
+      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent ≥ 7,5 %), 3M-ADTV ≥ adtv_thr.
       - Variante B: ALLE Share Lines (kein Dedup) — Mehrfach-Listings dürfen vertreten sein.
       - Segment: firmen-interner Coverage-Cut (über build_helvetica_pipeline → eine Linie/Firma,
         inkl. ±5/±0,5-Hysterese via prior_segments). Jede Linie erbt das Segment IHRER Firma.
       - Gewichtung: Float-MCap (Adj_FF_MCap) cap-gewichtet, je Sub-Index auf 100 % normiert.
+    `incumbents_isin` (Multi-Period): identische FF%-Maintenance (7,5 %) wie Helveticas Pipeline,
+    damit Helveticas selektierte Titel stets eine Teilmenge des Sub-Index sind.
     Real Estate wird ausgeschlossen (eigenes Helvetica-Sleeve). Gibt dict {Segment: DataFrame}.
     """
     _re = re_industries or {"Real Estate Development", "Real Estate Investment Trusts"}
     # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut + Hysterese)
     helv, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=adtv_thr,
-                                             prior_segments=prior_segments)
+                                             incumbents_isin=incumbents_isin, prior_segments=prior_segments)
     if len(full) == 0:
         return {s: full.iloc[0:0].copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
     _seg_by_ent = dict(zip(full["Entity ID"].fillna("").astype(str).str.strip(), full["Segment_New"]))
-    # 2) Voller CH-Pool, ALLE Linien (gleiche Filter, KEIN Dedup), ohne Real Estate
+    # 2) Voller CH-Pool, ALLE Linien (gleiche Filter wie Helvetica, KEIN Dedup), ohne Real Estate.
+    #    FF%-Maintenance (7,5 %) fuer Inkumbenten — sonst koennte ein Helvetica-Titel fehlen.
     pool = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
                        (gm_universe["Free Float MCap Y2025"] > 0)].copy()
-    pool = pool[(pool["Free Float Percent"] >= 0.10) & (pool["3M ADTV Y2025"] >= adtv_thr)]
+    _inc = set(incumbents_isin or [])
+    _ff_min = np.where(pool["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc), 0.075, 0.10)
+    pool = pool[(pool["Free Float Percent"] >= _ff_min) & (pool["3M ADTV Y2025"] >= adtv_thr)]
     pool = pool[~pool["FactSet Industry"].isin(_re)].copy()
     # 3) Jede Linie erbt das Segment ihrer Firma (firmen-interner Cut)
     pool["Segment_New"] = pool["Entity ID"].fillna("").astype(str).str.strip().map(_seg_by_ent)
@@ -2483,7 +2488,8 @@ with tab_helvetica_mp:
                         prior_segments=_pseg)
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
-                    _subs_by_date[_sd] = build_swiss_size_subindices(_gmu, adtv_thr=_mp_adtv, prior_segments=_pseg)
+                    _subs_by_date[_sd] = build_swiss_size_subindices(
+                        _gmu, adtv_thr=_mp_adtv, prior_segments=_pseg, incumbents_isin=_inc)
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
