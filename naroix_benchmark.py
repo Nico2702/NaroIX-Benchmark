@@ -2046,6 +2046,28 @@ HELVETICA_TARGET = {"Cash": 5.0, "Government Bonds": 10.0, "Corporate Bonds": 15
 HELVETICA_BUFFER_HARD = 8    # Equity-Top-10 Rang-Band: hart drin <= Rang 8
 HELVETICA_BUFFER_EXIT = 13   # Inkumbent bleibt in den Top-10, solange Rang <= 13
 
+def _helv_dedup_most_liquid(df, id_col="Entity ID", liq_col="3M ADTV Y2025"):
+    """Pro Firma (Entity ID) nur die LIQUIDESTE Linie (höchstes 3M-ADTV) behalten —
+    verhindert Doppelgewichte bei Mehrfach-Listings (Variante B, z.B. Roche ROP/RO,
+    Swatch UHR/UHRN, Schindler SCHP/SCHN, Lindt LISN/LISP). Fehlt die Entity ID, wird
+    auf die ISIN zurückgegriffen, sodass solche Zeilen NICHT fälschlich kollabieren."""
+    if df is None or len(df) == 0:
+        return df
+    d = df.copy()
+    eid = (d[id_col].astype(str).str.strip() if id_col in d.columns
+           else pd.Series("", index=d.index))
+    isin = d["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    valid = eid.ne("") & eid.str.lower().ne("nan")
+    key = eid.where(valid, "ISIN::" + isin)
+    liq = pd.to_numeric(d[liq_col], errors="coerce").fillna(0.0) if liq_col in d.columns \
+          else pd.Series(0.0, index=d.index)
+    d = d.assign(_dedup_k=key.to_numpy(), _dedup_liq=liq.to_numpy())
+    d = (d.sort_values("_dedup_liq", ascending=False)
+           .drop_duplicates("_dedup_k", keep="first")
+           .drop(columns=["_dedup_k", "_dedup_liq"]))
+    return d
+
+
 def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_isin=None,
                               buffer_hard=HELVETICA_BUFFER_HARD, buffer_exit=HELVETICA_BUFFER_EXIT):
     """Compose the full Helvetica multi-asset index for one snapshot: 45% static sleeves
@@ -2060,13 +2082,16 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     FF-incumbent buffer lives in build_helvetica_pipeline, since RE = all qualifying.)
     Returns (composition_df, sleeve_summary_df); Index_Weight in % of the TOTAL index."""
     is_re = lambda d: d["FactSet Industry"].isin(re_industries)
+    # Company-level Dedup: pro Firma nur die liquideste Linie (höchstes 3M-ADTV) — so kann
+    # keine Firma mit Mehrfach-Listing (Variante B) zwei Plätze belegen → nie Doppelgewichte.
+    helv_eq = _helv_dedup_most_liquid(helv[~is_re(helv)])
     rows = []
     for st_ in HELVETICA_STATIC:
         rows.append({"Sleeve": st_["sleeve"], "Type": "Static (ETF/Cash)", "Exchange Ticker": st_["ticker"],
                      "Name": st_["name"], "ISIN": "", "Mapping Country": "", "FactSet Industry": "",
                      "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"]})
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
-        _pool = (helv[(helv["Segment_New"] == seg) & (~is_re(helv))]
+        _pool = (helv_eq[helv_eq["Segment_New"] == seg]
                  .sort_values("Adj_FF_MCap", ascending=False).reset_index(drop=True))
         if incumbents_isin:
             _pool = _pool.assign(_isin_k=_pool["ISIN"].fillna("").astype(str).str.strip().str.upper())
@@ -2080,7 +2105,8 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
                          "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
                          "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
                          "Index_Weight": w})
-    re_df = helv_full_pool[is_re(helv_full_pool)].sort_values("Adj_FF_MCap", ascending=False)
+    re_df = _helv_dedup_most_liquid(helv_full_pool[is_re(helv_full_pool)]) \
+            .sort_values("Adj_FF_MCap", ascending=False)
     n_re = len(re_df)
     w_re = HELVETICA_RE_WEIGHT / n_re if n_re else 0.0
     for _, r in re_df.iterrows():
