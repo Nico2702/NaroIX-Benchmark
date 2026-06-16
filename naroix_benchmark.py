@@ -2082,13 +2082,14 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     Real Estate = all qualifying incl. Micro). Equal-weight fills the whole sleeve: each equity
     name = sleeve_weight / n (n<=10); each RE name = 15% / n_re.
 
-    Equity = FIXED 10/10/10 via a BUFFERED CASCADE on the full size ranking (Total MCap, Adj_FF
-    tiebreaker — same key as the coverage cut). The coverage segment (Segment_New) stays the
-    "true" size class; if a segment has <10 names the next-largest fill up ("Aufrücker"), if it
-    has >10 the surplus overflows down ("Übertrag"). Each constituent carries True_Segment + Status
-    (Kern/Aufrücker/Übertrag). The RANK-BAND buffer (_rank_band_select, hard/exit) runs over the
-    full ranking per tranche, so the fill-up seam (rank 10/11) is stabilised — no turnover at the
-    seam. Without `incumbents_isin` (seed/single-snapshot) tranches are plain top-10 (= rank-buckets).
+    Equity = FIXED 10/10/10. Each sleeve takes the top-10 of its OWN coverage segment (rank by
+    Total MCap, Adj_FF tiebreaker — same key as the coverage cut). Fill-up is a pure FALLBACK: if a
+    segment has <10 names, the next-largest from SMALLER segments fill up (Mid→Large, Small→Mid,
+    Micro→Small), marked "Aufrücker" (true size class preserved). LARGER segments are excluded as
+    candidates → NO overflow down: a segment with >10 names keeps its top-10, the surplus is dropped
+    (not pushed into the smaller sleeve). Each constituent carries True_Segment + Status
+    (Kern/Aufrücker). The RANK-BAND buffer (_rank_band_select, hard/exit) runs over each sleeve's
+    candidate list, so the fill-up seam is stabilised. Without `incumbents_isin` = plain top-10.
 
     Turnover control (Multi-Period): `incumbents_isin` (prior-period selected constituents) feeds the
     rank-band buffer per tranche. (The Real-Estate FF-incumbent buffer lives in build_helvetica_pipeline,
@@ -2110,16 +2111,21 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
                      "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"],
                      "True_Segment": "", "Status": ""})
 
-    # Equity: feste 10/10/10-Sleeves via GEPUFFERTE KASKADE auf der vollen Rangliste.
-    # Der Coverage-Cut (Segment_New) bleibt die "echte" Klassifikation. Reicht ein Segment nicht
-    # für 10 Titel, rücken die nächstgrößten auf ("Aufrücker", nur geduldet — die Kategorie bleibt
-    # erhalten); hat ein Segment mehr als 10, fließt der Überhang nach unten ("Übertrag"). Der
-    # Rang-Band-Buffer (8/13) läuft über die volle Rangliste je Tranche, sodass auch der Auffüll-
-    # Rand (Rang 10/11) stabilisiert ist und an der Naht kein Turnover entsteht.
+    # Equity: feste 10/10/10-Sleeves. Pro Sleeve werden die Top-10 des EIGENEN Coverage-Segments
+    # genommen (Rang nach Total MCap, Adj_FF als Tiebreaker — wie der Coverage-Cut). Auffüllen ist
+    # eine reine FALLBACK-Lösung: hat ein Segment < 10 Titel, rücken die nächstgrößten aus den
+    # KLEINEREN Segmenten auf (Mid→Large, Small→Mid, Micro→Small) — markiert als "Aufrücker"
+    # (geduldet, Kategorie bleibt erhalten). GRÖSSERE Segmente sind als Kandidaten ausgeschlossen,
+    # d.h. KEIN Übertrag nach unten: hat ein Segment > 10 Titel, wird der Überschuss verworfen
+    # (nicht in den kleineren Sleeve geschoben). Der Rang-Band-Buffer (8/13) läuft über die
+    # Kandidatenliste je Sleeve, sodass auch der Auffüll-Rand stabilisiert ist.
     _SEG_RANK = {"Large Cap": 0, "Mid Cap": 1, "Small Cap": 2, "Micro Cap": 3}
     _available = helv_eq
     for seg, sleeve_w in HELVETICA_EQUITY_SLEEVES.items():
-        _pool = _available.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
+        _sr = _SEG_RANK.get(seg, 9)
+        # Kandidaten = eigenes Segment + KLEINERE (Fallback); größere ausgeschlossen → kein Übertrag.
+        _cand = _available[_available["Segment_New"].map(lambda s: _SEG_RANK.get(s, 9) >= _sr)]
+        _pool = _cand.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
         if incumbents_isin:
             seg_df = _rank_band_select(_pool, HELVETICA_TOPN, incumbents_isin, buffer_hard, buffer_exit, id_col="_isin_k")
         else:
@@ -2129,8 +2135,8 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
         w = sleeve_w / n if n else 0.0
         for _, r in seg_df.iterrows():
             _true = r.get("Segment_New")
-            _sr, _tr = _SEG_RANK.get(seg, 9), _SEG_RANK.get(_true, 9)
-            _status = "Kern" if _tr == _sr else ("Aufrücker" if _tr > _sr else "Übertrag")
+            _tr = _SEG_RANK.get(_true, 9)
+            _status = "Kern" if _tr == _sr else "Aufrücker"   # _tr >= _sr garantiert → nie Übertrag
             rows.append({"Sleeve": seg, "Type": "Equity", "Exchange Ticker": r.get("Exchange Ticker"),
                          "Name": r.get("Name"), "ISIN": r.get("ISIN"), "Mapping Country": r.get("Mapping Country"),
                          "FactSet Industry": r.get("FactSet Industry"), "Adj_FF_MCap": r.get("Adj_FF_MCap"),
