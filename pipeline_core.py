@@ -1311,6 +1311,8 @@ def run_selection_pipeline(
     ineligible_df=None, apply_ineligible=False, selection_date=None,
     # Reihenfolge-Toggle: Labeling vor Liquidität (Markt-Coverage) statt danach
     label_before_liquidity=False,
+    # Performance: vorgebautes Universe wiederverwenden (überspringt build_new_universe)
+    prebuilt_universe=None,
 ):
     """Run the complete selection pipeline for one snapshot.
 
@@ -1319,6 +1321,11 @@ def run_selection_pipeline(
         die Liquidität wirkt danach nur noch als Mitgliedschafts-Gate (Label ∩ liquide).
         Default False = bisheriges Verhalten (Liquidität zuerst, Coverage auf gm_liq).
         Der EUMSS-Floor und alle anderen Parameter bleiben unverändert.
+
+    prebuilt_universe: optionales, bereits gebautes Universe (build_new_universe-Output).
+        Wenn gesetzt, wird der interne Universe-Build übersprungen (Performance). NUR
+        übergeben, wenn es mit EXAKT denselben Universe-Parametern (Snapshot, Exclusions,
+        FOL-Jahr/-Matrix, Klassifikation) gebaut wurde — sonst weicht das Ergebnis ab.
 
     Returns dict with:
         - 'gm_complete': final DataFrame with all segments and Index_Weight
@@ -1338,17 +1345,23 @@ def run_selection_pipeline(
     if buffer_atvr_dm is None:   buffer_atvr_dm = atvr_dm
     if buffer_atvr_em is None:   buffer_atvr_em = atvr_em
 
-    # 1) Build universe (incl. FOL)
-    gm_u = build_new_universe(
-        df_raw_in, country_cls, thailand_mode, max_price,
-        exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds,
-        exclude_euro_mtf, exclude_etf_sicav,
-        china_if,
-        atvr_mcap_col=atvr_mcap_col,
-        excl_delisted=excl_delisted,
-        fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
-        fol_year=fol_year, fol_enabled=fol_enabled,
-    )
+    # 1) Build universe (incl. FOL). Wenn der Aufrufer ein bereits gebautes Universe
+    # mit IDENTISCHEN Parametern übergibt (z.B. GIMI-Tab reicht _gm_u_global durch),
+    # den teuren Rebuild (~1s/Lauf) überspringen. Copy, weil die Pipeline gm_u als
+    # eigenes Objekt behandelt (Subsets/Masken) — schützt den geteilten Original-Frame.
+    if prebuilt_universe is not None:
+        gm_u = prebuilt_universe.copy()
+    else:
+        gm_u = build_new_universe(
+            df_raw_in, country_cls, thailand_mode, max_price,
+            exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds,
+            exclude_euro_mtf, exclude_etf_sicav,
+            china_if,
+            atvr_mcap_col=atvr_mcap_col,
+            excl_delisted=excl_delisted,
+            fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
+            fol_year=fol_year, fol_enabled=fol_enabled,
+        )
 
     # 2) EUMSS calibration on DM **Primary-only** (top small_thr% coverage point).
     # Wichtig: Auf Primary-only kalibrieren, um Doppelzählung von Companies mit

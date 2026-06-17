@@ -1614,6 +1614,7 @@ with tab_gimi:
         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
         selection_date=_active_selection_date,
         label_before_liquidity=label_before_liquidity,
+        prebuilt_universe=_gm_u_global,  # identische Universe-Params → Rebuild sparen (~1s/Rerun)
     )
     if _res["eumss_full"] > 0 and len(_res["gm_complete"]) > 0:
         _gm_complete   = _res["gm_complete"]
