@@ -218,9 +218,9 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
         # rank is its best line's position. Count to top_n COMPANIES, then keep ALL their lines.
         if "Entity ID" in df.columns:
             _ck = df["Entity ID"].fillna("").astype(str).str.strip()
-            _ck = _ck.where(_ck != "", df["ISIN"].fillna("").astype(str).str.strip().str.upper())
+            _ck = _ck.where(_ck != "", _norm_isin(df["ISIN"]))
         else:
-            _ck = df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            _ck = _norm_isin(df["ISIN"])
         df = df.assign(_ckey=_ck)
         comp = df.drop_duplicates("_ckey", keep="first").reset_index(drop=True)  # one row/company, rank order
         if incumbents_isin and buffer_hard and buffer_exit:
@@ -229,6 +229,12 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
             keys = set(comp["_ckey"].head(int(top_n)))   # plain top-N companies (seed / buffer off)
         df = df[df["_ckey"].isin(keys)].drop(columns=["_rank", "_tb", "_ckey"])
     return normalize_index_weight(df)
+
+def _norm_isin(s):
+    """Normalisiere eine ISIN- (oder Key-)Series: NaN→'', str, getrimmt, GROSS.
+    Eine Stelle für das überall wiederholte fillna("").astype(str).str.strip().str.upper()."""
+    return s.fillna("").astype(str).str.strip().str.upper()
+
 
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
     """Map (prior segment, _c_before coverage %) → size segment with hysteresis.
@@ -679,7 +685,7 @@ def load_master_excel(file, valid_selection_dates_iso):
                 )
 
         if "ISIN" in static_df.columns and "Listing" in static_df.columns:
-            _isin = static_df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            _isin = _norm_isin(static_df["ISIN"])
             _listing = static_df["Listing"].fillna("").astype(str).str.strip()
 
             # Gruppiere pro ISIN: zähle Primary und Secondary Zeilen
@@ -997,6 +1003,13 @@ def _norm_fol_key(sector, industry):
     'Cruiselines' aus, ohne unterschiedliche Industrien zu vermischen."""
     return ("".join(str(sector).lower().split()), "".join(str(industry).lower().split()))
 
+# Cross-Call-Memo für FOL-Auflösung: pro Session werden dieselben (year, country, sector,
+# industry)-Tripel über viele Perioden immer wieder aufgelöst. _resolve_fol_row ist rein
+# (gegeben Matrix), daher cachebar. Schlüssel ist an die Matrix-OBJEKTIDENTITÄT gebunden:
+# wechselt die Matrix (neuer Upload), wird der Cache verworfen → keine veralteten Treffer.
+_FOL_ROW_CACHE = {"matrix": None, "rows": {}}
+
+
 def _resolve_fol_row(ecn_upper, sector, industry, year, fol_matrix, sector_fallback):
     """Returns (fol_value, source_label) for a single stock.
 
@@ -1078,8 +1091,17 @@ def apply_fol_matrix(df, fol_matrix, sector_fallback, year, thailand_mode,
     # a pure function of these (year + matrix fixed per call), so the ~28k rows collapse to
     # a few hundred unique combos. (Was: one _resolve_fol_row call per row → ~470ms/period.)
     _combo = pd.DataFrame({"e": ecn.values, "s": sectors.values, "i": industries.values})
-    _fol_map = {(r.e, r.s, r.i): _resolve_fol_row(r.e, r.s, r.i, year, fol_matrix, sector_fallback)
-                for r in _combo.drop_duplicates().itertuples(index=False)}
+    # Cross-Call-Memo: an Matrix-Identität gebunden, bei Matrixwechsel verwerfen.
+    if _FOL_ROW_CACHE["matrix"] is not fol_matrix:
+        _FOL_ROW_CACHE["matrix"] = fol_matrix
+        _FOL_ROW_CACHE["rows"] = {}
+    _rows = _FOL_ROW_CACHE["rows"]
+    _fol_map = {}
+    for r in _combo.drop_duplicates().itertuples(index=False):
+        _ck = (year, r.e, r.s, r.i)
+        if _ck not in _rows:
+            _rows[_ck] = _resolve_fol_row(r.e, r.s, r.i, year, fol_matrix, sector_fallback)
+        _fol_map[(r.e, r.s, r.i)] = _rows[_ck]
     _keys = list(zip(ecn.values, sectors.values, industries.values))
     df["FOL_Value"] = [_fol_map[k][0] for k in _keys]
     df["IF_Source"] = [_fol_map[k][1] for k in _keys]
@@ -1247,7 +1269,7 @@ def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
     if incumbents_isin is None:
         incumbents_isin = set()
 
-    _isin = df["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    _isin = _norm_isin(df["ISIN"])
     _is_incumbent = _isin.isin(incumbents_isin)
 
     _adtv_dm_thr = np.where(_is_incumbent, m_adtv_dm, adtv_dm)
@@ -1354,7 +1376,7 @@ def run_selection_pipeline(
     eumss_ff = eumss_full * eumss_ff_ratio
 
     # 3) EUMSS filter — buffer-aware Min FF%
-    gm_isin = gm_u["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    gm_isin = _norm_isin(gm_u["ISIN"])
     gm_is_inc = gm_isin.isin(incumbents_isin) if apply_buffer else pd.Series(False, index=gm_u.index)
     gm_min_ff_thr = np.where(gm_is_inc, buffer_min_ff, min_ff_pct)
     eumss_mask = ((gm_u["Total MCap Y2025"] >= eumss_full) &
@@ -1401,7 +1423,7 @@ def run_selection_pipeline(
 
         if use_size_buffer:
             # Pro-Segment-Hysterese: Vorsegment je Titel → Übergangsfunktion (auf _c_before).
-            _isin = grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
+            _isin = _norm_isin(grp["ISIN"])
             grp["Segment_New"] = [
                 _size_segment(incumbent_segments.get(_i), _cb, large_thr, mid_thr, size_buffer_pp)
                 for _i, _cb in zip(_isin.values, grp["_c_before"].values)
@@ -1410,7 +1432,7 @@ def run_selection_pipeline(
             # Legacy: harter Standard-Cut (buffer_coverage für Incumbents), 70%-Split Large/Mid.
             # Straddle-Stock bleibt im höheren Bucket (konsistent mit 85%-Cut).
             if apply_buffer and len(incumbents_isin) > 0:
-                _isin = grp["ISIN"].fillna("").astype(str).str.strip().str.upper()
+                _isin = _norm_isin(grp["ISIN"])
                 grp_is_inc = _isin.isin(incumbents_isin)
                 thr_per_stock = np.where(grp_is_inc, buffer_coverage, mid_thr)
             else:
@@ -1437,7 +1459,7 @@ def run_selection_pipeline(
     # Audit-Flag: Titel, deren Segment durch den Size Buffer abweichend vom reinen
     # Cut-off gehalten wurde (= Hysterese griff). Nur relevant bei aktivem Size Buffer.
     if use_size_buffer and len(gm_all_cov) > 0:
-        _isin_all = gm_all_cov["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        _isin_all = _norm_isin(gm_all_cov["ISIN"])
         _prior_all = _isin_all.map(incumbent_segments)
         _cb_all = gm_all_cov["_c_before"].values
         _plain = np.where(_cb_all < large_thr, "Large Cap",
@@ -1455,7 +1477,7 @@ def run_selection_pipeline(
     # Einheitlich über beide Modi: wenn kein Puffer aktiv, ist ein Titel mit _c_before
     # ≥ mid_thr ohnehin nicht im Standard → Flag bleibt automatisch False.
     if len(gm_all_cov) > 0 and incumbents_isin:
-        _isin_k = gm_all_cov["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        _isin_k = _norm_isin(gm_all_cov["ISIN"])
         gm_all_cov["Kept_In_Standard_By_Buffer"] = (
             _isin_k.isin(incumbents_isin)
             & (gm_all_cov["_c_before"] >= mid_thr)
@@ -1509,7 +1531,7 @@ def run_selection_pipeline(
     # Buffer breakdown
     buffer_breakdown = None
     if apply_buffer and len(incumbents_isin) > 0 and len(gm_index_only) > 0:
-        final_isin = gm_index_only["ISIN"].fillna("").astype(str).str.strip().str.upper()
+        final_isin = _norm_isin(gm_index_only["ISIN"])
         final_isin_set = set(final_isin)
         kept = final_isin_set & incumbents_isin
         new_entries = final_isin_set - incumbents_isin
