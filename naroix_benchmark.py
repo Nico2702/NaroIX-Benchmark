@@ -1975,7 +1975,7 @@ with tab_switzerland:
 # Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
 # ══════════════════════════════════════════════════════════════════════════════
 def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, incumbents_isin=None,
-                             prior_segments=None):
+                             prior_segments=None, label_before_liquidity=False):
     """Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
     Schwellen — Entry (Neukandidaten) vs Maintenance (Bestandstitel/Inkumbenten):
@@ -2013,8 +2013,12 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     m = _maint(df)
     df = df[df["Free Float Percent"] >= np.where(m, MAINT["min_ff"], ENTRY["min_ff"])].copy()
 
-    # Step 3: Liquidity — ein fester 3M-ADTV-Schwellenwert (kein Buffer)
-    df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
+    # Step 3: Liquidity — ein fester 3M-ADTV-Schwellenwert (kein Buffer).
+    # Reihenfolge-Toggle: im Default VOR der Coverage; bei label_before_liquidity erst
+    # NACH dem Labeling als Mitgliedschafts-Gate (Coverage läuft dann auf dem vollen
+    # CH-Pool — illiquide Titel bestimmen die Größengrenzen mit, fallen aber unten raus).
+    if not label_before_liquidity:
+        df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
 
     # Step 3b: Company-level Dedup VOR dem Coverage-Cut — pro Firma nur die liquideste
     # Linie (höchstes 3M-ADTV). Verhindert Doppelzählung von Mehrfach-Listings (Variante B)
@@ -2063,6 +2067,11 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
         df["Segment_New"] = _seg
     else:
         df["Segment_New"] = _hard
+
+    # Reihenfolge-Toggle: Liquidität jetzt als Mitgliedschafts-Gate (nach dem Labeling).
+    # Segment-Labels stammen aus der vollen Markt-Coverage; illiquide Titel fallen hier raus.
+    if label_before_liquidity:
+        df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
 
     helv = df[df["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()  # Konstituenten i.e.S.
     helv_full_pool = df.copy()                                                       # inkl. Micro Cap
@@ -2254,7 +2263,7 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     return out
 
 
-def render_helvetica_tab(gm_universe):
+def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     """Render Helvetica Tab — kundenspezifischer Schweizer Index."""
     st.markdown("## 🏔️ Helvetica")
     st.caption(
@@ -2292,7 +2301,8 @@ def render_helvetica_tab(gm_universe):
     _adtv_thr = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_adtv_lbl]
 
     # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
-    helv, helv_full_pool, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr)
+    helv, helv_full_pool, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr,
+                                                            label_before_liquidity=label_before_liquidity)
 
     if len(helv) == 0:
         st.warning("⚠️ Keine Stocks im Helvetica-Universe (Exchange Country = Switzerland, FF MCap > 0, Min FF%, ADTV-Schwellen).")
@@ -2447,7 +2457,7 @@ with tab_helvetica:
     if _gm_u_global is None or len(_gm_u_global) == 0:
         st.warning("⚠️ Universe ist leer. Bitte Datei-Upload und Filter-Einstellungen prüfen.")
     else:
-        render_helvetica_tab(_gm_u_global)
+        render_helvetica_tab(_gm_u_global, label_before_liquidity)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2522,7 +2532,7 @@ with tab_helvetica_mp:
                     _pseg = (_prev_seg if (_mp_buffer and not _seed) else None)
                     _helv, _full, _ = build_helvetica_pipeline(
                         _gmu, use_buffer=False, adtv_thr=_mp_adtv, incumbents_isin=_inc,
-                        prior_segments=_pseg)
+                        prior_segments=_pseg, label_before_liquidity=label_before_liquidity)
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _subs_by_date[_sd] = build_swiss_size_subindices(
