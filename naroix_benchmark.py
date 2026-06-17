@@ -8,7 +8,7 @@ from io import BytesIO
 
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
-from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select  # internal helpers used by UI
+from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select, _norm_isin  # internal helpers used by UI
 from pipeline_core import (
     load_master_excel as _c_load_master_excel,
     load_fol_matrix as _c_load_fol_matrix,
@@ -930,7 +930,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 💧 Liquidität")
-    st.caption("Post-Filter für Tabs 2–4 | Pre-Filter für Tab 5 (GIMI)")
+    st.caption("Entry-Schwellen | Rolle (Pre-/Post-Filter bzw. Mitgliedschafts-Gate) je nach Tab & Coverage-Reihenfolge-Toggle unten")
     _adtv_a, _adtv_b = st.columns([3,4])
     with _adtv_a: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>DM ADTV (USD)</div>", unsafe_allow_html=True)
     with _adtv_b: _adtv_dm_raw = st.text_input("DM ADTV", value="2000000", key="adtv_dm_new", label_visibility="collapsed")
@@ -1591,7 +1591,9 @@ with tab_overview:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_gimi:
     st.markdown("## ⚡ GIMI Method")
-    st.caption("Primary + Secondary konsistent durch EUMSS, Liquidität, Coverage | EUMSS-Kalibrierung auf DM Primary-only | Coverage per Land auf Adj_FF_MCap")
+    _order_txt = ("EUMSS, Coverage (Markt), Liquidität (Gate)" if label_before_liquidity
+                  else "EUMSS, Liquidität, Coverage")
+    st.caption(f"Primary + Secondary konsistent durch {_order_txt} | EUMSS-Kalibrierung auf DM Primary-only | Coverage per Land auf Adj_FF_MCap")
 
     # Selektion über die zentrale Engine (identisch zum Multi-Period-Tab, keine Dublette).
     # GIMI = aktiver Einzel-Snapshot → kein Size Buffer (keine Vorperiode).
@@ -1642,8 +1644,8 @@ with tab_gimi:
             {"Schritt":"0 — Raw (Primary + Secondary, klassifiziert)","DM":(_gm_all["Classification"]=="DM").sum(),"EM":(_gm_all["Classification"]=="EM").sum(),"Total":len(_gm_all),"Δ":"—"},
             {"Schritt":"1 — Universe (nach Exclusions + FOL)","DM":(_gm_u["Classification"]=="DM").sum(),"EM":(_gm_u["Classification"]=="EM").sum(),"Total":len(_gm_u),"Δ":f"-{len(_gm_all)-len(_gm_u):,}"},
             {"Schritt":f"2 — EUMSS Filter ({_gm_eumss_full/1e6:.0f}M)","DM":(_gm_eumss["Classification"]=="DM").sum(),"EM":(_gm_eumss["Classification"]=="EM").sum(),"Total":len(_gm_eumss),"Δ":f"-{len(_gm_u)-len(_gm_eumss):,}"},
-            {"Schritt":"3 — Liquiditätsfilter","DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
-            {"Schritt":f"4 — {mid_thr}% Coverage → Standard Index" + (f" (+ Buffer {buffer_coverage}% für Incumbents)" if apply_buffer and len(incumbents_isin_set)>0 else ""),"DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
+            {"Schritt":"3 — Liquiditätsfilter" + (" (Mitgliedschafts-Gate)" if label_before_liquidity else ""),"DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
+            {"Schritt":f"4 — {mid_thr}% Coverage → Standard Index" + (" (Markt-Coverage auf vollem Pool vor Liquidität)" if label_before_liquidity else "") + (f" (+ Buffer {buffer_coverage}% für Incumbents)" if apply_buffer and len(incumbents_isin_set)>0 else ""),"DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
             {"Schritt":f"    ├─ Large Cap (_c_before < {large_thr}%)","DM":(_gm_large["Classification"]=="DM").sum() if len(_gm_large)>0 else 0,"EM":(_gm_large["Classification"]=="EM").sum() if len(_gm_large)>0 else 0,"Total":len(_gm_large),"Δ":"—"},
             {"Schritt":f"    └─ Mid Cap   (_c_before ≥ {large_thr}%)","DM":(_gm_mid["Classification"]=="DM").sum() if len(_gm_mid)>0 else 0,"EM":(_gm_mid["Classification"]=="EM").sum() if len(_gm_mid)>0 else 0,"Total":len(_gm_mid),"Δ":"—"},
             {"Schritt":f"5 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
@@ -2002,7 +2004,7 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     _inc = set(incumbents_isin or [])
 
     def _maint(frame):
-        _is = frame["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc)
+        _is = _norm_isin(frame["ISIN"]).isin(_inc)
         return (_is | bool(use_buffer)).to_numpy()
 
     # Step 1: Hard Filter — CH-gelistet, FF MCap > 0
@@ -2110,7 +2112,7 @@ def _helv_dedup_most_liquid(df, id_col="Entity ID", liq_col="3M ADTV Y2025"):
     d = df.copy()
     eid = (d[id_col].astype(str).str.strip() if id_col in d.columns
            else pd.Series("", index=d.index))
-    isin = d["ISIN"].fillna("").astype(str).str.strip().str.upper()
+    isin = _norm_isin(d["ISIN"])
     valid = eid.ne("") & eid.str.lower().ne("nan")
     key = eid.where(valid, "ISIN::" + isin)
     liq = pd.to_numeric(d[liq_col], errors="coerce").fillna(0.0) if liq_col in d.columns \
@@ -2153,7 +2155,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     # Swiss-Size-Sub-Index (Segment-KLASSE bleibt firmen-intern über Total MCap, siehe Pipeline).
     helv_eq = (_helv_dedup_most_liquid(helv[~is_re(helv)])
                .sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False]).reset_index(drop=True))
-    helv_eq = helv_eq.assign(_isin_k=helv_eq["ISIN"].fillna("").astype(str).str.strip().str.upper())
+    helv_eq = helv_eq.assign(_isin_k=_norm_isin(helv_eq["ISIN"]))
 
     rows = []
     for st_ in HELVETICA_STATIC:
@@ -2214,7 +2216,7 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
 
 def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=None,
                                 incumbents_isin=None, re_industries=None, use_buffer=False,
-                                full=None):
+                                full=None, label_before_liquidity=False):
     """Drei eigenständige Swiss-Size-Sub-Indizes (Large / Mid / Small Cap), aus denen Helvetica
     die Top-10 zieht. Eigenschaften:
       - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent/use_buffer ≥ 7,5 %), 3M-ADTV ≥ adtv_thr.
@@ -2235,7 +2237,8 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     #    → spart den doppelten Pipeline-Lauf.
     if full is None:
         _, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=use_buffer, adtv_thr=adtv_thr,
-                                              incumbents_isin=incumbents_isin, prior_segments=prior_segments)
+                                              incumbents_isin=incumbents_isin, prior_segments=prior_segments,
+                                              label_before_liquidity=label_before_liquidity)
     if full is None or len(full) == 0:
         _empty = full.iloc[0:0].copy() if full is not None else pd.DataFrame()
         return {s: _empty.copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
@@ -2246,7 +2249,7 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     pool = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
                        (gm_universe["Free Float MCap Y2025"] > 0)].copy()
     _inc = set(incumbents_isin or [])
-    _maint_pool = pool["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_inc) | bool(use_buffer)
+    _maint_pool = _norm_isin(pool["ISIN"]).isin(_inc) | bool(use_buffer)
     _ff_min = np.where(_maint_pool, 0.075, 0.10)
     pool = pool[(pool["Free Float Percent"] >= _ff_min) & (pool["3M ADTV Y2025"] >= adtv_thr)]
     pool = pool[~pool["FactSet Industry"].isin(_re)].copy()
@@ -2403,7 +2406,8 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     )
     _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
     _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr,
-                                        use_buffer=_use_buffer, full=helv_full_pool)
+                                        use_buffer=_use_buffer, full=helv_full_pool,
+                                        label_before_liquidity=label_before_liquidity)
     _sub_export = {}
     for _seg in ["Large Cap", "Mid Cap", "Small Cap"]:
         _sdf = _subs.get(_seg)
@@ -2536,9 +2540,10 @@ with tab_helvetica_mp:
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _subs_by_date[_sd] = build_swiss_size_subindices(
-                        _gmu, adtv_thr=_mp_adtv, incumbents_isin=_inc, full=_full)
+                        _gmu, adtv_thr=_mp_adtv, incumbents_isin=_inc, full=_full,
+                        label_before_liquidity=label_before_liquidity)
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
-                    _cur = set(_sel["ISIN"].fillna("").astype(str).str.strip().str.upper()) - {""}
+                    _cur = set(_norm_isin(_sel["ISIN"])) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
                     _seg_cnt = {sg: int((_helv["Segment_New"] == sg).sum())
                                 for sg in ["Large Cap", "Mid Cap", "Small Cap"]}
@@ -2611,8 +2616,7 @@ with tab_helvetica_mp:
                 if _subp:
                     st.markdown(f"**🇨🇭 Swiss Size Sub-Indizes am {_pk}** "
                                 "(Float-MCap-gewichtet, alle Share Lines; ✓ = von Helvetica selektiert):")
-                    _hisin = set(_comps[_pk][_comps[_pk]["Type"] == "Equity"]["ISIN"]
-                                 .fillna("").astype(str).str.strip().str.upper())
+                    _hisin = set(_norm_isin(_comps[_pk][_comps[_pk]["Type"] == "Equity"]["ISIN"]))
                     _c3 = st.columns(3)
                     for _i, _seg in enumerate(["Large Cap", "Mid Cap", "Small Cap"]):
                         _sdf = _subp.get(_seg)
@@ -2621,7 +2625,7 @@ with tab_helvetica_mp:
                                 st.caption(f"{_seg}: –"); continue
                             st.caption(f"{_seg}: {len(_sdf)} Linien / {_sdf['Entity ID'].nunique()} Firmen")
                             _t = _sdf.copy()
-                            _t["✓"] = np.where(_t["ISIN"].fillna("").astype(str).str.strip().str.upper().isin(_hisin), "✓", "")
+                            _t["✓"] = np.where(_norm_isin(_t["ISIN"]).isin(_hisin), "✓", "")
                             _t["Gew %"] = _t["Index_Weight"].map(lambda x: f"{x:.2f}")
                             st.dataframe(_t[["✓", "Exchange Ticker", "Gew %"]], width="stretch",
                                          hide_index=True, height=260)
@@ -2779,7 +2783,7 @@ with tab_multi:
                             _ck = cons.get("Entity ID")
                             if _ck is not None:
                                 _ck = _ck.fillna("").astype(str).str.strip()
-                                _ck = _ck.where(_ck != "", cons["ISIN"].fillna("").astype(str).str.strip().str.upper())
+                                _ck = _ck.where(_ck != "", _norm_isin(cons["ISIN"]))
                                 prev_prod_ckey[code] = set(_ck) - {""}
 
                         cur = set(cons["ISIN"].dropna().astype(str).str.strip().str.upper())
@@ -2805,7 +2809,7 @@ with tab_multi:
 
                     # Globalen Incumbent-State weiterreichen: investierbares Universe (L+M+S)
                     _inv = _gmc[_gmc["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])]
-                    _inv_isin = _inv["ISIN"].fillna("").astype(str).str.strip().str.upper()
+                    _inv_isin = _norm_isin(_inv["ISIN"])
                     prev_isin = set(_inv_isin)
                     prev_seg = {i: s for i, s in zip(_inv_isin.values, _inv["Segment_New"].values) if i}
 
