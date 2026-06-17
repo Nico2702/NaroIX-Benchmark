@@ -964,6 +964,17 @@ with st.sidebar:
     )
     atvr_mcap_col = "Free Float MCap Y2025" if atvr_denominator == "Free Float MCap" else "Total MCap Y2025"
 
+    st.caption("Coverage-Reihenfolge")
+    label_before_liquidity = st.toggle(
+        "Labeling vor Liquidität (Markt-Coverage)",
+        value=False,
+        key="label_before_liquidity",
+        help="Aus (Default): Liquidität zuerst, Coverage auf dem liquiden Pool (bisheriges Verhalten).\n"
+             "An: Large/Mid/Small-Labeling auf dem vollen post-EUMSS-Pool VOR der Liquidität — "
+             "der Markt definiert die Größengrenzen, Liquidität wirkt nur noch als Mitgliedschafts-Gate. "
+             "EUMSS-Floor und alle anderen Parameter (inkl. ATVR) bleiben aus der Sidebar unverändert."
+    )
+
     st.markdown("---")
     st.markdown("### ⚖️ Inclusion Factors")
 
@@ -1034,6 +1045,7 @@ with st.sidebar:
 
     apply_buffer = st.checkbox(
         "Buffer Rules aktivieren",
+        value=True,
         key="apply_buffer",
         help="Bestehende Konstituenten (Incumbents) werden mit weicheren Maintenance-Schwellen geprüft.\n\n"
              "Neue Kandidaten müssen die strengeren Entry-Schwellen (oben konfiguriert) erfüllen.\n\n"
@@ -1101,6 +1113,7 @@ with st.sidebar:
     st.markdown("---")
     apply_size_buffer = st.checkbox(
         "Size Buffer aktivieren",
+        value=True,
         key="apply_size_buffer",
         help="Hysterese an den Segment-Grenzen Large↔Mid (70%) und Mid↔Small (85%): "
              "Bestandstitel wechseln das Size-Segment erst beim Durchschreiten der "
@@ -1598,6 +1611,7 @@ with tab_gimi:
         excl_delisted=exclude_delisted,
         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
         selection_date=_active_selection_date,
+        label_before_liquidity=label_before_liquidity,
     )
     if _res["eumss_full"] > 0 and len(_res["gm_complete"]) > 0:
         _gm_complete   = _res["gm_complete"]
@@ -2733,6 +2747,7 @@ with tab_multi:
                         ineligible_df=ineligible_df,
                         apply_ineligible=apply_ineligible,
                         selection_date=sd_dt,
+                        label_before_liquidity=label_before_liquidity,
                     )
                     _gmc = result["gm_complete"]
                     _eumss_by_period[sd_iso] = (float(result.get("eumss_full") or 0.0),

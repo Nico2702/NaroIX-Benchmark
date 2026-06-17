@@ -1287,8 +1287,16 @@ def run_selection_pipeline(
     excl_delisted=True,
     # Ineligible
     ineligible_df=None, apply_ineligible=False, selection_date=None,
+    # Reihenfolge-Toggle: Labeling vor Liquidität (Markt-Coverage) statt danach
+    label_before_liquidity=False,
 ):
     """Run the complete selection pipeline for one snapshot.
+
+    label_before_liquidity: wenn True, läuft der Coverage-Waterfall (Large/Mid/Small
+        Labeling) auf dem vollen post-EUMSS-Pool VOR der Liquidität (Markt-Coverage);
+        die Liquidität wirkt danach nur noch als Mitgliedschafts-Gate (Label ∩ liquide).
+        Default False = bisheriges Verhalten (Liquidität zuerst, Coverage auf gm_liq).
+        Der EUMSS-Floor und alle anderen Parameter bleiben unverändert.
 
     Returns dict with:
         - 'gm_complete': final DataFrame with all segments and Index_Weight
@@ -1375,7 +1383,12 @@ def run_selection_pipeline(
     _adj_for_cov = pd.to_numeric(gm_liq["Adj_FF_MCap"], errors="coerce").fillna(0)
     gm_noninv = gm_liq[_adj_for_cov <= 0].copy()
     gm_noninv["Segment_New"] = "Non-Investable"
-    gm_liq_cov = gm_liq[_adj_for_cov > 0].copy()
+    # Reihenfolge-Toggle: Coverage-Pool = gm_liq (Liquidität zuerst, Default) ODER
+    # gm_eumss (Labeling zuerst — Markt-Coverage auf vollem Float, illiquide Titel
+    # zählen im Nenner mit und fallen erst per Mitgliedschafts-Gate unten raus).
+    _seg_pool = gm_eumss if label_before_liquidity else gm_liq
+    _adj_seg = pd.to_numeric(_seg_pool["Adj_FF_MCap"], errors="coerce").fillna(0)
+    gm_liq_cov = _seg_pool[_adj_seg > 0].copy()
 
     use_size_buffer = bool(apply_size_buffer and incumbent_segments)
     gm_results = []
@@ -1412,6 +1425,14 @@ def run_selection_pipeline(
 
     gm_all_cov = (pd.concat(gm_results, ignore_index=True) if gm_results
                   else pd.DataFrame(columns=gm_liq.columns.tolist() + ["Segment_New"]))
+
+    # Labeling-zuerst: Mitgliedschaft = Label ∩ liquide. Auf dem vollen gm_eumss
+    # gelabelte, aber illiquide Titel haben den Coverage-Nenner mitbestimmt, fallen
+    # aber jetzt raus — alles Downstream (gm_std, gm_above85, gm_complete) wird so
+    # automatisch liquiditäts-gefiltert.
+    if label_before_liquidity and len(gm_all_cov) > 0:
+        _liq_syms = set(gm_liq["Symbol"].dropna().unique())
+        gm_all_cov = gm_all_cov[gm_all_cov["Symbol"].isin(_liq_syms)].copy()
 
     # Audit-Flag: Titel, deren Segment durch den Size Buffer abweichend vom reinen
     # Cut-off gehalten wurde (= Hysterese griff). Nur relevant bei aktivem Size Buffer.
