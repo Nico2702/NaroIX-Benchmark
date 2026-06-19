@@ -9,6 +9,8 @@ from io import BytesIO
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
 from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select, _norm_isin  # internal helpers used by UI
+from pipeline_core import derive_mapping_country  # zentrale Mapping-Country-Regel (File-Feld + Risk-First-Fallback)
+from pipeline_core import apply_universe_exclusions, fif_inclusion_factor  # zentrale Exclusions + FIF-Formel
 from pipeline_core import (
     load_master_excel as _c_load_master_excel,
     load_fol_matrix as _c_load_fol_matrix,
@@ -1213,9 +1215,7 @@ europe_countries = EUROPE_COUNTRIES
 # This must happen before any exclusions or filters so every stock — including
 # secondaries that may later be excluded — carries its DM/EM classification.
 for _df in [df_raw, df_raw_original]:
-    _df["Mapping Country"] = _df.apply(
-        lambda r: r["Country of Incorp"] if r.get("Exchange Country Name","") == r.get("Country of Incorp","")
-                  else r.get("Country of Risk",""), axis=1)
+    _df["Mapping Country"] = derive_mapping_country(_df)
     _df["Classification"] = _df["Mapping Country"].map(country_cls)
 
 # ── Tab 2 (ACWI) specific: build All universe (legacy) ───────────────────────
@@ -1228,21 +1228,13 @@ elif thailand_sec_type == "NVDR only":
 else:  # SHARE → NVDR: keep SHAREs for all-listings, NVDRs handled in build_new_universe
     df_raw_all = df_raw[~(_th_mask & (df_raw["Sec Type"].fillna("") == "NVDR"))].copy()
 
-# Exclusions on All universe
-df_raw_all = df_raw_all[df_raw_all["Free Float MCap Y2025"] > 0].copy()
-if max_closing_price:
-    df_raw_all = df_raw_all[df_raw_all["Closing Price"].fillna(0) < max_closing_price].copy()
-if exclude_hk_cny:
-    df_raw_all = df_raw_all[~(df_raw_all["Exchange Ticker"].str.contains("HKG", na=False) & (df_raw_all["Trading Currency"] == "CNY"))].copy()
-if exclude_country_risk_na:
-    df_raw_all = df_raw_all[df_raw_all["Country of Risk"].fillna("") != "@NA"].copy()
-if exclude_naics_funds:
-    df_raw_all = df_raw_all[~df_raw_all["NAICS"].fillna("").str.contains("Open-End Investment Fund", case=False, na=False)].copy()
-if exclude_euro_mtf:
-    df_raw_all = df_raw_all[~df_raw_all["Exchange Name"].fillna("").isin(["Euro MTF","@NA"])].copy()
-if exclude_etf_sicav:
-    import re as _re_etf
-    df_raw_all = df_raw_all[~df_raw_all["Name"].fillna("").str.contains(_re_etf.compile(r'\bETF\b|\bSICAV\b|%', _re_etf.IGNORECASE))].copy()
+# Exclusions on All universe — zentral via apply_universe_exclusions (gleiche Logik wie Engine).
+# excl_delisted=False: df_raw_all ist die 'All-Listings'-Diagnosesicht und behaelt wie bisher
+# auch delistete Titel (der echte Universe-Build entfernt sie via excl_delisted).
+df_raw_all = apply_universe_exclusions(
+    df_raw_all, max_price=max_closing_price, excl_hk_cny=exclude_hk_cny,
+    excl_cor_na=exclude_country_risk_na, excl_naics=exclude_naics_funds,
+    excl_euro=exclude_euro_mtf, excl_etf=exclude_etf_sicav, excl_delisted=False)
 df_raw_all = df_raw_all[df_raw_all["Classification"].notna()].copy()
 
 df_dm_full = df_raw_all[df_raw_all["Classification"] == "DM"].copy()
@@ -1410,9 +1402,7 @@ with tab_overview:
         _exc_reason[_m] = "Listing Status = 1 (Inactive / Delisted)"
 
     # 10. Kein Classification-Mapping
-    _exc_df["_MappingCountry"] = _exc_df.apply(
-        lambda r: r["Country of Incorp"] if r.get("Exchange Country Name","") == r.get("Country of Incorp","")
-                  else r.get("Country of Risk",""), axis=1)
+    _exc_df["_MappingCountry"] = derive_mapping_country(_exc_df)
     _exc_df["_Classification"] = _exc_df["_MappingCountry"].map(country_cls)
     _m = (_exc_df["_Classification"].isna()) & (_exc_reason == "")
     _exc_reason[_m] = "Kein DM/EM Mapping"
@@ -1537,7 +1527,7 @@ with tab_overview:
                         src = f"Thailand {thailand_sec_type} (NVDR)"
                         _thai_caveat = True
                     else:
-                        _if = min(1.0, fol_v / ff_ratio) if ff_ratio > 0 else 1.0
+                        _if = fif_inclusion_factor(fol_v, ff_ratio)
                         if src.startswith("pre_investable"):
                             _if = 0.0
 

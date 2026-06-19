@@ -398,6 +398,77 @@ EUROPE_COUNTRIES = {
     "CZECH REPUBLIC", # aktuell EM
 }
 
+# Tax-Havens / Offshore-/Briefkasten-Domizile: in der Mapping-Fallback-Regel werden diese
+# Laender als nicht-aussagekraeftig behandelt (Risk-First ueberspringt sie). Malta & Hongkong
+# bewusst NICHT enthalten (echte Volkswirtschaften). Schreibvarianten (MACAU/MACAO,
+# ST. LUCIA/SAINT LUCIA) bewusst doppelt. Identisch zur FactSet-Screener-Standardformel.
+HAVENS = {
+    "CAYMAN ISLANDS", "BERMUDA", "BAHAMAS", "JERSEY", "GUERNSEY", "BRITISH VIRGIN ISLANDS",
+    "ISLE OF MAN", "GIBRALTAR", "LUXEMBOURG", "MARSHALL ISLANDS", "PANAMA", "MACAU", "MACAO",
+    "CYPRUS", "MAURITIUS", "MONACO", "LIECHTENSTEIN", "CURACAO", "NETHERLANDS ANTILLES",
+    "BARBADOS", "LIBERIA", "ANGUILLA", "TURKS AND CAICOS ISLANDS", "ST. LUCIA", "SAINT LUCIA",
+    "ANTIGUA AND BARBUDA", "SEYCHELLES", "BELIZE", "SAMOA", "VANUATU", "COOK ISLANDS", "ARUBA",
+    "SAN MARINO", "ANDORRA",
+}
+
+def derive_mapping_country(df):
+    """Mapping Country bestimmen — EINE Quelle der Wahrheit fuer Pipeline UND UI.
+    PRIMAER das Feld 'Mapping Country' (= 'Country Mapping' aus dem Master-File, falls befuellt).
+    Fallback fuer leere Zeilen: Risk-First (Country of Risk -> Country of Incorp -> Exchange;
+    Tax-Havens/leer werden uebersprungen) — identisch zur FactSet-Screener-Standardformel.
+    Gibt eine Series (Index wie df) zurueck; robust gegen fehlende Spalten."""
+    def _u(name):
+        s = df[name] if name in df.columns else pd.Series("", index=df.index)
+        return s.fillna("").astype(str).str.strip().str.upper()
+    _ecn, _coi, _cor = _u("Exchange Country Name"), _u("Country of Incorp"), _u("Country of Risk")
+    _risk_ok = (_cor != "") & (~_cor.isin(HAVENS))
+    _inc_ok  = (_coi != "") & (~_coi.isin(HAVENS))
+    _fallback = np.where(_risk_ok, _cor, np.where(_inc_ok, _coi, _ecn))
+    if "Mapping Country" in df.columns:
+        _mm = _u("Mapping Country")
+        return pd.Series(np.where(_mm != "", _mm, _fallback), index=df.index)
+    return pd.Series(_fallback, index=df.index)
+
+def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_cor_na=True,
+                              excl_naics=True, excl_euro=True, excl_etf=True, excl_delisted=True):
+    """Investability-Exclusions (Pipeline-Step 3) — EINE Quelle der Wahrheit fuer Engine UND
+    UI-Diagnostik. FF MCap > 0 immer; alles andere per Flag. Behaltungstreu extrahiert aus
+    build_new_universe. (Die UI ruft mit excl_delisted=False fuer ihr 'All-Listings'-df_raw_all.)"""
+    import re as _re
+    df = df.copy()
+    # Defensiv: die beiden numerisch verglichenen Spalten sicher zu Zahlen coercen
+    # (robust gegen String-/Arrow-Backends, unabhaengig vom Aufrufer).
+    df["Free Float MCap Y2025"] = pd.to_numeric(df["Free Float MCap Y2025"], errors="coerce").fillna(0)
+    if "Closing Price" in df.columns:
+        df["Closing Price"] = pd.to_numeric(df["Closing Price"], errors="coerce").fillna(0)
+    df = df[df["Free Float MCap Y2025"] > 0].copy()
+    if max_price:
+        df = df[df["Closing Price"].fillna(0) < max_price].copy()
+    if excl_hk_cny:
+        df = df[~(df["Exchange Ticker"].str.contains("HKG", na=False) & (df["Trading Currency"] == "CNY"))].copy()
+    if excl_cor_na:
+        df = df[df["Country of Risk"].fillna("") != "@NA"].copy()
+    if excl_naics:
+        df = df[~df["NAICS"].fillna("").str.contains("Open-End Investment Fund", case=False, na=False)].copy()
+    if excl_euro:
+        df = df[~df["Exchange Name"].fillna("").isin(["Euro MTF", "@NA"])].copy()
+    if excl_etf:
+        df = df[~df["Name"].fillna("").str.contains(_re.compile(r'\bETF\b|\bSICAV\b|%', _re.IGNORECASE))].copy()
+    if excl_delisted and "Listing Status" in df.columns:
+        _ls = pd.to_numeric(df["Listing Status"], errors="coerce").fillna(0)
+        df = df[_ls != 1].copy()
+    return df
+
+def fif_inclusion_factor(fol_value, ff_pct):
+    """FIF-Clamp: IF = min(1, FOL / Free-Float-%). Eine Formel-Definition fuer Engine + UI-Audit.
+    Gibt 1.0 zurueck wenn FF<=0 oder Eingaben unbrauchbar (pre_investable/Thailand werden vom
+    Aufrufer separat behandelt)."""
+    try:
+        f, ff = float(fol_value), float(ff_pct)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(1.0, f / ff) if ff > 0 else 1.0
+
 FOL_COUNTRY_CODE_MAP = {
     "INDIA":              "IN",
     "VIETNAM":            "VN",
@@ -1206,33 +1277,14 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     # (Secondary mit übernommenen Werten) bleiben drin.)
     # Kein Listing-Filter — alle Listings (Primary + Secondary) gehen weiter durch die Pipeline.
 
-    # Step 3: Exclusions
-    df = df[df["Free Float MCap Y2025"] > 0].copy()
-    if max_price:
-        df = df[df["Closing Price"].fillna(0) < max_price].copy()
-    if excl_hk_cny:
-        df = df[~(df["Exchange Ticker"].str.contains("HKG", na=False) & (df["Trading Currency"] == "CNY"))].copy()
-    if excl_cor_na:
-        df = df[df["Country of Risk"].fillna("") != "@NA"].copy()
-    if excl_naics:
-        df = df[~df["NAICS"].fillna("").str.contains("Open-End Investment Fund", case=False, na=False)].copy()
-    if excl_euro:
-        df = df[~df["Exchange Name"].fillna("").isin(["Euro MTF", "@NA"])].copy()
-    if excl_etf:
-        df = df[~df["Name"].fillna("").str.contains(_re.compile(r'\bETF\b|\bSICAV\b|%', _re.IGNORECASE))].copy()
-    if excl_delisted and "Listing Status" in df.columns:
-        # Robust gegen Float-Formatierung ("1.0") und Strings ("1"): numerisch vergleichen.
-        # NaN → 0 (aktiv/behalten), wie bisher. Status 1 = delisted → raus.
-        _ls = pd.to_numeric(df["Listing Status"], errors="coerce").fillna(0)
-        df = df[_ls != 1].copy()
+    # Step 3: Exclusions — zentral via apply_universe_exclusions (EINE Quelle; UI nutzt dieselbe).
+    df = apply_universe_exclusions(df, max_price=max_price, excl_hk_cny=excl_hk_cny,
+                                   excl_cor_na=excl_cor_na, excl_naics=excl_naics, excl_euro=excl_euro,
+                                   excl_etf=excl_etf, excl_delisted=excl_delisted)
 
-    # Step 4: Classification
-    # Mapping-Regel: wenn Exchange Country == Country of Incorp, dann Country of Incorp;
-    # ansonsten Country of Risk. Vektorisiert + NaN-sicher.
-    _ecn = df["Exchange Country Name"].fillna("")
-    _coi = df["Country of Incorp"].fillna("")
-    _cor = df["Country of Risk"].fillna("")
-    df["Mapping Country"] = np.where(_ecn == _coi, _coi, _cor)
+    # Step 4: Classification — Mapping Country via derive_mapping_country (primaer File-Feld
+    # 'Country Mapping', Fallback Risk-First). Zentrale Quelle der Wahrheit (auch UI nutzt sie).
+    df["Mapping Country"] = derive_mapping_country(df)
     df["Classification"] = df["Mapping Country"].map(country_cls)
     df = df[df["Classification"].notna()].copy()
 
