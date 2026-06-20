@@ -1222,7 +1222,6 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     """Build universe with Primary + Secondary listings, applying all investability
     filters (FF MCap > 0, exclusions, FOL/IF). EUMSS-Schwellen werden später im
     Pipeline-Schritt angewendet — auf Primary-only kalibriert, auf alle Listings appliziert."""
-    import re as _re
     df = df_raw_orig.copy()
     for col in ["Total MCap Y2025","Free Float MCap Y2025","Free Float Percent",
                 "1M ADTV Y2025","3M ADTV Y2025","6M ADTV Y2025","12M ADTV Y2025","Closing Price"]:
