@@ -935,7 +935,7 @@ with st.sidebar:
     st.caption("Entry-Schwellen | Rolle (Pre-/Post-Filter bzw. Mitgliedschafts-Gate) je nach Tab & Coverage-Reihenfolge-Toggle unten")
     _adtv_a, _adtv_b = st.columns([3,4])
     with _adtv_a: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>DM ADTV (USD)</div>", unsafe_allow_html=True)
-    with _adtv_b: _adtv_dm_raw = st.text_input("DM ADTV", value="2000000", key="adtv_dm_new", label_visibility="collapsed")
+    with _adtv_b: _adtv_dm_raw = st.text_input("DM ADTV", value="1000000", key="adtv_dm_new", label_visibility="collapsed")
     _adtv_c, _adtv_d = st.columns([3,4])
     with _adtv_c: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EM ADTV (USD)</div>", unsafe_allow_html=True)
     with _adtv_d: _adtv_em_raw = st.text_input("EM ADTV", value="1000000", key="adtv_em_new", label_visibility="collapsed")
@@ -947,9 +947,9 @@ with st.sidebar:
     with _atvr_d: _atvr_em_raw = st.text_input("EM ATVR", value="0", key="atvr_em_new", label_visibility="collapsed")
 
     try:    new_adtv_dm = float(_adtv_dm_raw.replace(",",""))
-    except (ValueError, TypeError): new_adtv_dm = 1_500_000.0
+    except (ValueError, TypeError): new_adtv_dm = 1_000_000.0
     try:    new_adtv_em = float(_adtv_em_raw.replace(",",""))
-    except (ValueError, TypeError): new_adtv_em = 750_000.0
+    except (ValueError, TypeError): new_adtv_em = 1_000_000.0
     try:    new_atvr_dm = float(_atvr_dm_raw) / 100
     except (ValueError, TypeError): new_atvr_dm = 0.0
     try:    new_atvr_em = float(_atvr_em_raw) / 100
@@ -1072,12 +1072,12 @@ with st.sidebar:
         # ADTV Maintenance DM
         _bda, _bdb = st.columns([3,4])
         with _bda: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV DM Maint.</div>", unsafe_allow_html=True)
-        with _bdb: _bf_adtv_dm_raw = st.text_input("ADTV DM Maint.", value="1000000", key="buffer_adtv_dm", label_visibility="collapsed")
+        with _bdb: _bf_adtv_dm_raw = st.text_input("ADTV DM Maint.", value="750000", key="buffer_adtv_dm", label_visibility="collapsed")
 
         # ADTV Maintenance EM
         _bea, _beb = st.columns([3,4])
         with _bea: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV EM Maint.</div>", unsafe_allow_html=True)
-        with _beb: _bf_adtv_em_raw = st.text_input("ADTV EM Maint.", value="500000", key="buffer_adtv_em", label_visibility="collapsed")
+        with _beb: _bf_adtv_em_raw = st.text_input("ADTV EM Maint.", value="750000", key="buffer_adtv_em", label_visibility="collapsed")
 
         # ATVR Maintenance DM / EM — Default 0 (identisch mit Entry; bei 0 ist ATVR-Filter deaktiviert)
         _bta, _btb = st.columns([3,4])
@@ -1094,9 +1094,9 @@ with st.sidebar:
         try:    buffer_coverage = int(_bf_cov_raw)
         except (ValueError, TypeError): buffer_coverage = 90
         try:    buffer_adtv_dm = float(_bf_adtv_dm_raw)
-        except (ValueError, TypeError): buffer_adtv_dm = 1_000_000
+        except (ValueError, TypeError): buffer_adtv_dm = 750_000
         try:    buffer_adtv_em = float(_bf_adtv_em_raw)
-        except (ValueError, TypeError): buffer_adtv_em = 500_000
+        except (ValueError, TypeError): buffer_adtv_em = 750_000
         try:    buffer_atvr_dm = float(_bf_atvr_dm_raw) / 100
         except (ValueError, TypeError): buffer_atvr_dm = 0.0
         try:    buffer_atvr_em = float(_bf_atvr_em_raw) / 100
