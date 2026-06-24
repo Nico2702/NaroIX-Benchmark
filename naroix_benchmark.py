@@ -2081,7 +2081,7 @@ HELVETICA_STATIC = [
     {"sleeve": "Government Bonds", "ticker": "CSBGC0-SWX",   "name": "iShares Swiss Domestic Government Bond 7-15 ETF", "weight": 5.0},
     {"sleeve": "Corporate Bonds",  "ticker": "CHCORP-SWX",   "name": "iShares Core CHF Corporate Bond ETF",            "weight": 15.0},
     {"sleeve": "Gold",             "ticker": "PPFB-XEX",     "name": "iShares Physical Gold ETC",                      "weight": 7.5},
-    {"sleeve": "Gold",             "ticker": "SGLD.EUR-SWX", "name": "Invesco Physical Gold ETC",                      "weight": 7.5},
+    {"sleeve": "Gold",             "ticker": "XAD5-XEX",     "name": "Xtrackers Physical Gold ETC",                    "weight": 7.5},
 ]  # = 45%
 HELVETICA_EQUITY_SLEEVES = {"Large Cap": 10.0, "Mid Cap": 15.0, "Small Cap": 15.0}  # 40% Equity; top-10 each, equal-weighted (Large 1%/title, Mid & Small 1.5%/title)
 HELVETICA_RE_WEIGHT = 15.0   # all qualifying Real Estate (incl. Micro), equal-weighted
@@ -2149,8 +2149,10 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     helv_eq = helv_eq.assign(_isin_k=_norm_isin(helv_eq["ISIN"]))
 
     rows = []
+    _static_type = {"Cash": "Cash", "Government Bonds": "Bond - ETF",
+                    "Corporate Bonds": "Bond - ETF", "Gold": "Gold - ETC"}
     for st_ in HELVETICA_STATIC:
-        rows.append({"Sleeve": st_["sleeve"], "Type": "Static (ETF/Cash)", "Exchange Ticker": st_["ticker"],
+        rows.append({"Sleeve": st_["sleeve"], "Type": _static_type.get(st_["sleeve"], "Static (ETF/Cash)"), "Exchange Ticker": st_["ticker"],
                      "Name": st_["name"], "ISIN": "", "Mapping Country": "", "FactSet Industry": "",
                      "Adj_FF_MCap": float("nan"), "Index_Weight": st_["weight"],
                      "True_Segment": "", "Status": ""})
@@ -2330,7 +2332,7 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
                  width="stretch", hide_index=True)
     st.caption(
         f"Gesamtgewicht **{_total_w:.2f} %** (Soll 100 %). Statisch (45 %): Cash 5 · Govt Bonds 10 "
-        f"(CSBGC7/CSBGC0) · Corp Bonds 15 (CHCORP) · Gold 15 (PPFB/SGLD). Selektiert (55 %): Equity 40 % "
+        f"(CSBGC7/CSBGC0) · Corp Bonds 15 (CHCORP) · Gold 15 (PPFB/XAD5). Selektiert (55 %): Equity 40 % "
         f"(Large 10 % = 1 %/Titel · Mid 15 % = 1,5 %/Titel · Small 15 % = 1,5 %/Titel, je Top-{HELVETICA_TOPN}), "
         f"Real Estate 15 % (alle qualifizierten gleichgewichtet)."
     )
