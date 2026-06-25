@@ -2652,6 +2652,30 @@ with tab_helvetica_mp:
                     file_name=f"Helvetica_MultiPeriod_{_keys[0]}_to_{_keys[-1]}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="helv_mp_dl")
 
+                # --- Zusatz-Export fuer Backtesting-Tool: Termin (Zeilen) x Exchange-Ticker (Spalten),
+                #     Gewichte als Fraktion (Summe 1.0) im Prozentformat; Date als DD.MM.YYYY. ---
+                _bt = _long.pivot_table(index="Termin", columns="Exchange Ticker",
+                                        values="Index_Weight", aggfunc="sum").fillna(0.0)
+                _bt = _bt[_bt.sum().sort_values(ascending=False).index]   # groesste Positionen zuerst
+                _bt = _bt / 100.0                                         # Prozent -> Fraktion
+                _bt.index = [pd.Timestamp(d).strftime("%d.%m.%Y") for d in _bt.index]
+                _bt.index.name = "Date"
+                def _helv_bt_xlsx(_df):
+                    _buf = BytesIO()
+                    with pd.ExcelWriter(_buf, engine="openpyxl") as _xl:
+                        _df.to_excel(_xl, sheet_name="Weights", index=True)
+                        _ws = _xl.sheets["Weights"]
+                        for _r in range(2, _ws.max_row + 1):
+                            for _c in range(2, _ws.max_column + 1):
+                                _ws.cell(row=_r, column=_c).number_format = "0.00%"
+                        _ws.freeze_panes = "B2"; _ws.column_dimensions["A"].width = 12
+                    return _buf.getvalue()
+                st.download_button(
+                    "⬇️ Backtest-Export (Gewichtsmatrix: Termin × Ticker, %)",
+                    data=_helv_bt_xlsx(_bt),
+                    file_name=f"Helvetica_Backtest_Weights_{_keys[0]}_to_{_keys[-1]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="helv_mp_dl_bt")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: Multi-Period Run
