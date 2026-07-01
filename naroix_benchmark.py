@@ -8,7 +8,7 @@ from io import BytesIO
 
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
-from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select, _norm_isin, _match_key  # internal helpers used by UI
+from pipeline_core import _resolve_fol_row, _rank_band_select, _norm_isin, _match_key  # internal helpers used by UI
 from pipeline_core import derive_mapping_country  # zentrale Mapping-Country-Regel (File-Feld + Risk-First-Fallback)
 from pipeline_core import apply_universe_exclusions, fif_inclusion_factor  # zentrale Exclusions + FIF-Formel
 from pipeline_core import (

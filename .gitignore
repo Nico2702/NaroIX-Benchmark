@@ -15,3 +15,10 @@ venv/
 # Scratch / temp commit message files
 .commitmsg.tmp
 _*.txt
+
+# Analyse-Outputs / Scratch (nicht versionieren — Konvention: Outputs nach Claude_Excel_Files/)
+Claude_Excel_Files/
+*_holdings.csv
+Incorrect_Hitstorical_Prices_and_Total_MCap.xlsx
+NX-EU-LM_fehlend_aggregiert.xlsx
+NaroIX_ACWI_Selection_no-Float.xlsx
