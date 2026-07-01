@@ -1,11 +1,9 @@
 """pipeline_core.py — Streamlit-free NaroIX selection engine.
 Pure logic extracted from naroix_benchmark.py (behaviour-preserving). Importable
 headless (backtesting, tests). The Streamlit UI lives in naroix_benchmark.py."""
-import re
 import numpy as np
 import pandas as pd
 from io import BytesIO
-from datetime import date as _date
 
 def format_bn(val):
     if val >= 1e12: return f"{val/1e12:.2f}T"
@@ -1064,8 +1062,6 @@ def load_ineligible_list():
     Returns:
         DataFrame mit normalisierten From/To als pd.Timestamp, oder leerer DataFrame falls File fehlt.
     """
-    from datetime import date as _date
-
     candidates = ["In-Eligible.xlsx", "In_Eligible.xlsx", "In Eligible.xlsx", "Ineligible.xlsx"]
     ie_df = None
     for name in candidates:

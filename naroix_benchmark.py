@@ -162,7 +162,7 @@ def load_excel(file):
             f"Total MCap {year_suffix}":      "Total MCap Y2025",
             f"Share MCap {year_suffix}":      "Share MCap Y2025",   # informativ (Export), falls vorhanden
             f"Free Float MCap {year_suffix}": "Free Float MCap Y2025",
-            f"Free Float Percent":            "Free Float Percent",
+            "Free Float Percent":             "Free Float Percent",
             f"1M ADTV {year_suffix}":         "1M ADTV Y2025",
             f"3M ADTV {year_suffix}":         "3M ADTV Y2025",
             f"6M ADTV {year_suffix}":         "6M ADTV Y2025",
@@ -354,7 +354,6 @@ def render_new_tab(tab_name, df_included, large_pct, mid_pct,
     # ── Top metrics (ACWI = Large+Mid only) ─────────────────────────────────
     _acwi_dm = df_dm[df_dm["Segment_New"].isin(["Large Cap","Mid Cap"])]
     _acwi_em = df_em[df_em["Segment_New"].isin(["Large Cap","Mid Cap"])]
-    total_adj = df_included["Adj_FF_MCap"].sum()
     _acwi_adj = _acwi_dm["Adj_FF_MCap"].sum() + _acwi_em["Adj_FF_MCap"].sum()
     em_adj    = _acwi_em["Adj_FF_MCap"].sum()
     em_w      = em_adj / _acwi_adj * 100 if _acwi_adj > 0 else 0
@@ -562,7 +561,6 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
 
     _acwi_dm_std = df_dm[df_dm["Segment_New"].isin(["Large Cap","Mid Cap"])]
     _acwi_em_std = df_em[df_em["Segment_New"].isin(["Large Cap","Mid Cap"])]
-    _acwi_std_adj = _acwi_dm_std["Adj_FF_MCap"].sum() + _acwi_em_std["Adj_FF_MCap"].sum()
 
     def country_table(df_cls, cls_adj):
         ct = df_cls.groupby("Mapping Country").agg(
@@ -1727,7 +1725,7 @@ with tab_gimi:
             prebuilt_universe=_gm_u_global,
         )
         _gm_complete_tm = _res_tm.get("gm_complete")
-    except Exception as _e_tm:
+    except Exception:
         _gm_complete_tm = None
     if _res["eumss_full"] > 0 and len(_res["gm_complete"]) > 0:
         _gm_complete   = _res["gm_complete"]
@@ -1944,7 +1942,7 @@ def render_single_country_tab(gm_complete_df, country_iso, country_display, flag
 
     # ── Filter anwenden ───────────────────────────────────────────────────
     if "Exchange Country Name" not in gm_complete_df.columns:
-        st.error(f"❌ Spalte 'Exchange Country Name' fehlt im Pipeline-Output.")
+        st.error("❌ Spalte 'Exchange Country Name' fehlt im Pipeline-Output.")
         return
 
     _has_mapping = gm_complete_df["Mapping Country"] == country_iso
