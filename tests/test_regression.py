@@ -51,7 +51,7 @@ def skip(name, detail=""):
 
 def test_index_series_integrity():
     codes = [ix["code"] for ix in C.INDEX_SERIES]
-    check("index_series: 22 products", len(C.INDEX_SERIES) == 22, f"got {len(C.INDEX_SERIES)}")
+    check("index_series: 23 products", len(C.INDEX_SERIES) == 23, f"got {len(C.INDEX_SERIES)}")
     check("index_series: codes unique", len(set(codes)) == len(codes), "duplicate code")
     check("index_series: BY_CODE consistent", set(C.INDEX_BY_CODE) == set(codes))
     valid = {"Large Cap", "Mid Cap", "Small Cap"}

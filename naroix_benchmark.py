@@ -8,7 +8,7 @@ from io import BytesIO
 
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
-from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select, _norm_isin  # internal helpers used by UI
+from pipeline_core import _resolve_fol_row, _size_segment, _rank_band_select, _norm_isin, _match_key  # internal helpers used by UI
 from pipeline_core import derive_mapping_country  # zentrale Mapping-Country-Regel (File-Feld + Risk-First-Fallback)
 from pipeline_core import apply_universe_exclusions, fif_inclusion_factor  # zentrale Exclusions + FIF-Formel
 from pipeline_core import (
@@ -336,7 +336,7 @@ def render_new_tab(tab_name, df_included, large_pct, mid_pct,
                    diag_rows=None, diag_caption=None,
                    adtv_dm=0, adtv_em=0, atvr_dm=0, atvr_em=0,
                    small_pct=99, min_ff=0.15, if_mode="Selektion",
-                   df_universe=None, buffer_breakdown=None):
+                   df_universe=None, buffer_breakdown=None, df_included_tm=None):
     """Render standard visuals for a new index tab.
 
     buffer_breakdown: optional dict with keys n_total_final, n_incumbents_total, n_kept_total,
@@ -465,7 +465,9 @@ Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else 
                "DM/EM = Aufteilung (Global = DM+EM) · MCap = Summe über die Konstituenten. Frontier Markets (FM) ausgeschlossen.")
     _series_rows = []
     for _ix in INDEX_SERIES:
-        _ci = build_index(df_included, _ix["region"], _ix["segments"],
+        # Total-Markets-Produkte (eumss_off) aus dem EUMSS-losen Universum schneiden, falls vorhanden.
+        _src = df_included_tm if (_ix.get("eumss_off") and df_included_tm is not None) else df_included
+        _ci = build_index(_src, _ix["region"], _ix["segments"],
                           industries=_ix.get("industries"), top_n=_ix.get("top_n"))
         _series_rows.append({
             "Code": _ix["code"],
@@ -885,6 +887,9 @@ with st.sidebar:
 
     with st.expander("Exclusions", expanded=False):
         exclude_hk_cny         = st.checkbox("HK (CNY)", value=True, key="excl_hk")
+        exclude_lon_usd_sec    = st.checkbox("LON (USD) Secondary", value=True, key="excl_lon",
+            help="Sekundärnotierungen (Listing=Secondary) mit 'LON' im Exchange Ticker und Trading Currency=USD "
+                 "— i.d.R. ADR/GDR-Linien parallel zur Heimatnotiz. Entfernt Doppelzählung mit der Primary-Notiz.")
         exclude_country_risk_na = st.checkbox("Country of Risk = @NA", value=True, key="excl_cor")
         exclude_naics_funds     = st.checkbox("NAICS Investment Funds", value=True, key="excl_naics")
         exclude_euro_mtf        = st.checkbox("Exchange Euro MTF / @NA", value=True, key="excl_euro")
@@ -1064,10 +1069,16 @@ with st.sidebar:
         with _bfa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min FF% Maint. (%)</div>", unsafe_allow_html=True)
         with _bfb: _bf_ff_raw = st.text_input("Min FF Maint.", value="7.5", key="buffer_min_ff", label_visibility="collapsed")
 
-        # Coverage Maintenance
+        # Coverage Maintenance — nur im Legacy-Pfad relevant (Size Buffer AUS & MSCI Logic AUS).
+        # Bei aktivem Size Buffer kommt der 85→90%-Standard-Halt aus mid_thr + size_buffer_pp,
+        # bei MSCI Logic aus dem Migrations-Buffer → hier ausgrauen, damit klar ist: keine Wirkung.
+        _cov_maint_inaktiv = st.session_state.get("apply_size_buffer", True) or st.session_state.get("msci_logic", False)
         _bca, _bcb = st.columns([3,4])
         with _bca: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Coverage Maint. (%)</div>", unsafe_allow_html=True)
-        with _bcb: _bf_cov_raw = st.text_input("Coverage Maint.", value="90", key="buffer_coverage", label_visibility="collapsed")
+        with _bcb: _bf_cov_raw = st.text_input("Coverage Maint.", value="90", key="buffer_coverage",
+                                               label_visibility="collapsed", disabled=_cov_maint_inaktiv)
+        if _cov_maint_inaktiv:
+            st.caption("→ Ohne Wirkung bei aktivem Size Buffer / MSCI Logic (Standard-Halt via Buffer-Breite bzw. Migrations-Buffer).")
 
         # ADTV Maintenance DM
         _bda, _bdb = st.columns([3,4])
@@ -1117,11 +1128,13 @@ with st.sidebar:
         "Size Buffer aktivieren",
         value=True,
         key="apply_size_buffer",
+        disabled=st.session_state.get("msci_logic", False),
         help="Hysterese an den Segment-Grenzen Large↔Mid (70%) und Mid↔Small (85%): "
              "Bestandstitel wechseln das Size-Segment erst beim Durchschreiten der "
              "Pufferkante, statt bei jeder kleinen Coverage-Schwankung hin- und "
              "herzuspringen. Greift nur im Multi-Period-Lauf (braucht das Segment "
-             "der Vorperiode) ab Periode 2. Untergrenze (Small↔Micro) bleibt über EUMSS."
+             "der Vorperiode) ab Periode 2. Untergrenze (Small↔Micro) bleibt über EUMSS. "
+             "(Deaktiviert, solange MSCI Logic aktiv ist.)"
     )
     if apply_size_buffer:
         _sba, _sbb = st.columns([3, 4])
@@ -1136,6 +1149,30 @@ with st.sidebar:
     else:
         size_buffer_pp = 5.0
         st.caption("→ Size Buffer inaktiv — Segmente werden bei jedem Rebalancing neu am Cut-off bestimmt.")
+
+    # Solactive-Style Small↔Micro-Coverage-Cut (per-Land-99%, Buffer 99,5% für Incumbents)
+    apply_small_buffer = st.checkbox(
+        "Small-Cap Coverage-Cut (Solactive-Style 99/99,5)",
+        value=True,
+        key="apply_small_buffer",
+        disabled=st.session_state.get("msci_logic", False),
+        help="Kappt Small bei 99% per-Land-Coverage (statt bis zum EUMSS-Floor durchlaufen zu lassen): "
+             "ein als Small gelabelter Titel jenseits 99% → Micro. Incumbent (war im IMI) wird bis "
+             "99,5% gehalten (Bottom-Buffer wie Solactive), Newcomer am glatten 99% geschnitten. "
+             "Betrifft NUR Small/All-Cap — Standard (L+M) bleibt unverändert. Macht das Small-/All-Cap-"
+             "Universum Solactive-konform enger (~−12–16%). Greift nicht in MSCI-Logic."
+    )
+    if apply_small_buffer:
+        _sb2a, _sb2b = st.columns([3, 4])
+        with _sb2a:
+            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Small-Buffer (pp)</div>", unsafe_allow_html=True)
+        with _sb2b:
+            _smb_pp_raw = st.text_input("Small Buffer pp", value="0.5", key="small_buffer_pp_raw", label_visibility="collapsed")
+        try:    small_buffer_pp = float(_smb_pp_raw.replace(",", "."))
+        except (ValueError, TypeError): small_buffer_pp = 0.5
+        st.caption(f"→ Small endet bei 99 % (Newcomer) bzw. {99+small_buffer_pp:g} % (Incumbent) per-Land-Coverage; darüber Micro.")
+    else:
+        small_buffer_pp = 0.5
 
     # Incumbents-Upload (optional, für Single-Snapshot-Modus)
     incumbents_isin_set = set()
@@ -1160,6 +1197,43 @@ with st.sidebar:
                         st.error("Spalte 'ISIN' fehlt in der Datei")
                 except Exception as e:
                     st.error(f"Fehler: {e}")
+
+    # ── Alternative Methodik-Varianten ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Alternative Methodik-Varianten**")
+    st.caption("Abweichende Size-Segmentierungs-Logiken. MSCI Logic ersetzt die Standard-Buffer "
+               "komplett (und graut sie oben aus). Der Asymmetrische Size-Buffer ist eine Variante "
+               "des Size Buffers — wirksam nur, wenn der Size Buffer oben aktiv ist (Multi-Period).")
+    msci_logic = st.checkbox(
+        "MSCI Logic (GIMI)",
+        value=False,
+        key="msci_logic",
+        help="Rechnet die Size-Segmente exakt nach MSCI GIMI — in Single-Snapshot UND "
+             "Multi-Period. Hebel A: Global Minimum Size Range auf dem DM-Universum "
+             "(EM = ½ DM, Band 0,5×–1,15×) + Coverage-Target-Range; der Cutoff ist ein "
+             "Full-MCap-Wert, die Coverage wird free-float-adjustiert gemessen. Hebel B: "
+             "Migrations-Buffer −33%/+50% auf den Full-MCap-Cutoff (nur Incumbents, nur "
+             "Multi-Period). Überschreibt die Size-Buffer oben (diese werden ausgegraut). "
+             "70/85/99-Schwellen, EUMSS und Screening bleiben aktiv."
+    )
+    if msci_logic:
+        st.caption("→ MSCI-Modus aktiv: Zuordnung per Full-MCap ≥ Cutoff (GMSR-geklammert). "
+                   "Migrations-Buffer −33/+50 greift im Multi-Period. Die Size-Buffer oben "
+                   "sind deaktiviert.")
+    asym_buffer = st.checkbox(
+        "Asymmetrischer Size-Buffer",
+        value=False,
+        key="asym_buffer",
+        disabled=msci_logic,
+        help="Asymmetrischer Buffer an der Mid/Small-Grenze (85%): Mid-Bestandstitel werden "
+             "nach oben bis 90% gehalten (Abstieg Mid→Small gepuffert), ein Small-Titel wird "
+             "aber NICHT nach unten gehalten — sinkt seine Coverage unter 85%, steigt er sofort "
+             "nach Mid (Aufstieg ungepuffert). So landen Grenzfälle wie CBOE im Standard. "
+             "Variante des Size Buffers — wirksam nur mit aktivem Size Buffer (oben), Multi-Period."
+    )
+    if asym_buffer:
+        st.caption("→ Mid klebt nach oben (bis 90%), Small klebt nicht nach unten (<85% → Mid). "
+                   "Small bleibt als Residual 85–99%; All-Cap = Large+Mid+Small.")
 
     st.markdown("---")
     st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
@@ -1233,6 +1307,7 @@ else:  # SHARE → NVDR: keep SHAREs for all-listings, NVDRs handled in build_ne
 # auch delistete Titel (der echte Universe-Build entfernt sie via excl_delisted).
 df_raw_all = apply_universe_exclusions(
     df_raw_all, max_price=max_closing_price, excl_hk_cny=exclude_hk_cny,
+    excl_lon_usd_sec=exclude_lon_usd_sec,
     excl_cor_na=exclude_country_risk_na, excl_naics=exclude_naics_funds,
     excl_euro=exclude_euro_mtf, excl_etf=exclude_etf_sicav, excl_delisted=False)
 df_raw_all = df_raw_all[df_raw_all["Classification"].notna()].copy()
@@ -1248,7 +1323,7 @@ _gm_u_global = build_new_universe(
     df_raw_original, country_cls, thailand_sec_type, max_closing_price,
     exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
     china_inclusion_factor,
-    atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
+    atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted, excl_lon_usd_sec=exclude_lon_usd_sec,
     fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
     fol_enabled=apply_fol,
 )
@@ -1375,6 +1450,13 @@ with tab_overview:
         _m = (_exc_df["Exchange Ticker"].str.contains("HKG", na=False) &
               (_exc_df["Trading Currency"] == "CNY")) & (_exc_reason == "")
         _exc_reason[_m] = "HK CNY (HKG + CNY)"
+
+    # 4b. LON USD Secondary (ADR/GDR-Doppelnotierung)
+    if exclude_lon_usd_sec:
+        _m = ((_exc_df["Listing"].fillna("").astype(str).str.strip().str.lower() == "secondary") &
+              _exc_df["Exchange Ticker"].str.contains("LON", na=False) &
+              (_exc_df["Trading Currency"] == "USD")) & (_exc_reason == "")
+        _exc_reason[_m] = "LON USD Secondary (ADR/GDR)"
 
     # 5. Country of Risk = @NA
     if exclude_country_risk_na:
@@ -1585,6 +1667,14 @@ with tab_gimi:
                   else "EUMSS, Liquidität, Coverage")
     st.caption(f"Primary + Secondary konsistent durch {_order_txt} | EUMSS-Kalibrierung auf DM Primary-only | Coverage per Land auf Adj_FF_MCap")
 
+    # Incumbents-Upload liefert ISINs → auf den Match-Key (Perm ID, ISIN-Fallback) abbilden,
+    # konsistent mit dem internen Matching der Pipeline. Ohne Perm-ID-Spalte = ISIN-Identität.
+    if incumbents_isin_set:
+        _km = dict(zip(_norm_isin(df_raw_original["ISIN"]), _match_key(df_raw_original)))
+        incumbents_keys = {_km.get(_i, _i) for _i in incumbents_isin_set}
+    else:
+        incumbents_keys = incumbents_isin_set
+
     # Selektion über die zentrale Engine (identisch zum Multi-Period-Tab, keine Dublette).
     # GIMI = aktiver Einzel-Snapshot → kein Size Buffer (keine Vorperiode).
     _res = run_selection_pipeline(
@@ -1595,17 +1685,50 @@ with tab_gimi:
         new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
         fol_matrix, fol_sector_fb, apply_fol,
         if_cum_col, atvr_mcap_col,
-        incumbents_isin=incumbents_isin_set, apply_buffer=apply_buffer,
+        incumbents_isin=incumbents_keys, apply_buffer=apply_buffer,
         buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
         buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
         buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
         apply_size_buffer=False,
-        excl_delisted=exclude_delisted,
+        asym_buffer=asym_buffer,
+        msci_logic=msci_logic,
+        apply_small_buffer=apply_small_buffer, small_buffer_pp=small_buffer_pp,
+        excl_delisted=exclude_delisted, exclude_lon_usd_sec=exclude_lon_usd_sec,
         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
         selection_date=_active_selection_date,
         label_before_liquidity=label_before_liquidity,
         prebuilt_universe=_gm_u_global,  # identische Universe-Params → Rebuild sparen (~1s/Rerun)
     )
+    # Zweiter Lauf für „Total Markets" (eumss_off-Produkte): identische Settings, aber EUMSS-Floor
+    # AUS — liquides Universum ohne Mindestgröße. Universe via prebuilt wiederverwendet (billig).
+    _gm_complete_tm = None
+    try:
+        _res_tm = run_selection_pipeline(
+            df_raw_original, country_cls, china_inclusion_factor, _active_selection_date.year,
+            thailand_sec_type, max_closing_price,
+            exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+            large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
+            new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+            fol_matrix, fol_sector_fb, apply_fol,
+            if_cum_col, atvr_mcap_col,
+            incumbents_isin=incumbents_keys, apply_buffer=apply_buffer,
+            buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
+            buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
+            buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
+            apply_size_buffer=False,
+            asym_buffer=asym_buffer,
+            msci_logic=msci_logic,
+            apply_small_buffer=False,  # TM läuft IMMER bis 100% — kein 99/99,5-Cut, auch wenn Toggle global an
+            eumss_enabled=False,
+            excl_delisted=exclude_delisted, exclude_lon_usd_sec=exclude_lon_usd_sec,
+            ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
+            selection_date=_active_selection_date,
+            label_before_liquidity=label_before_liquidity,
+            prebuilt_universe=_gm_u_global,
+        )
+        _gm_complete_tm = _res_tm.get("gm_complete")
+    except Exception as _e_tm:
+        _gm_complete_tm = None
     if _res["eumss_full"] > 0 and len(_res["gm_complete"]) > 0:
         _gm_complete   = _res["gm_complete"]
         _gm_index_only = _res["gm_index_only"]
@@ -1679,7 +1802,8 @@ with tab_gimi:
             diag_caption=_gm_diag_caption,
             adtv_dm=new_adtv_dm, adtv_em=new_adtv_em, atvr_dm=new_atvr_dm, atvr_em=new_atvr_em,
             small_pct=small_thr, min_ff=min_ff_pct, if_mode=if_selection_mode,
-            df_universe=df_raw_all, buffer_breakdown=_buffer_breakdown)
+            df_universe=df_raw_all, buffer_breakdown=_buffer_breakdown,
+            df_included_tm=_gm_complete_tm)
     else:
         st.error("Keine DM Stocks gefunden.")
 
@@ -2523,6 +2647,7 @@ with tab_helvetica_mp:
                         _snap.copy(), _cc, thailand_sec_type, max_closing_price,
                         exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
                         _cif, atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
+                        excl_lon_usd_sec=exclude_lon_usd_sec,
                         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_sdd.year, fol_enabled=apply_fol)
                     _seed = (len(_prev) == 0)
                     _inc = (_prev if (_mp_buffer and not _seed) else None)
@@ -2744,6 +2869,8 @@ with tab_multi:
                 prev_seg = {}                                       # globaler {ISIN: Segment} für Size Buffer
                 prev_prod_isin = {code: set() for code in indices_to_run}   # je Produkt (Turnover-Stats)
                 prev_prod_ckey = {code: set() for code in indices_to_run}   # je Produkt: Vorperioden-Company-Keys (Rang-Band-Buffer)
+                _has_tm = any(INDEX_BY_CODE[c].get("eumss_off") for c in indices_to_run)  # Total-Markets-Produkt gewählt?
+                prev_isin_tm = set(); prev_seg_tm = {}   # eigener Incumbent-State für den EUMSS-losen TM-Lauf
                 _eumss_by_period = {}
                 summary_rows = []
 
@@ -2775,6 +2902,10 @@ with tab_multi:
                         buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
                         apply_size_buffer=apply_size_buffer and not is_seed,
                         incumbent_segments=prev_seg, size_buffer_pp=size_buffer_pp,
+                        asym_buffer=asym_buffer,
+                        msci_logic=msci_logic,
+                        apply_small_buffer=apply_small_buffer, small_buffer_pp=small_buffer_pp,
+                        exclude_lon_usd_sec=exclude_lon_usd_sec,
                         ineligible_df=ineligible_df,
                         apply_ineligible=apply_ineligible,
                         selection_date=sd_dt,
@@ -2784,13 +2915,46 @@ with tab_multi:
                     _eumss_by_period[sd_iso] = (float(result.get("eumss_full") or 0.0),
                                                 float(result.get("eumss_ff") or 0.0))
 
+                    # Total-Markets-Lauf (EUMSS-Floor AUS) — nur wenn ein eumss_off-Produkt gewählt ist.
+                    # Eigener Incumbent-State (prev_isin_tm/prev_seg_tm); sonst identische Settings.
+                    _gmc_tm = None
+                    if _has_tm:
+                        _res_tm_mp = run_selection_pipeline(
+                            df_snapshot.copy(), _country_cls, _china_if_period, sd_dt.year,
+                            thailand_sec_type, max_closing_price,
+                            exclude_hk_cny, exclude_country_risk_na,
+                            exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                            large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
+                            new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+                            fol_matrix, fol_sector_fb, apply_fol,
+                            if_cum_col, atvr_mcap_col,
+                            incumbents_isin=prev_isin_tm,
+                            apply_buffer=apply_buffer and not is_seed,
+                            buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
+                            buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
+                            buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
+                            apply_size_buffer=apply_size_buffer and not is_seed,
+                            incumbent_segments=prev_seg_tm, size_buffer_pp=size_buffer_pp,
+                            asym_buffer=asym_buffer,
+                            msci_logic=msci_logic,
+                            apply_small_buffer=False,  # TM läuft IMMER bis 100% — kein 99/99,5-Cut, auch wenn Toggle global an
+                            eumss_enabled=False,
+                            exclude_lon_usd_sec=exclude_lon_usd_sec,
+                            ineligible_df=ineligible_df,
+                            apply_ineligible=apply_ineligible,
+                            selection_date=sd_dt,
+                            label_before_liquidity=label_before_liquidity,
+                        )
+                        _gmc_tm = _res_tm_mp["gm_complete"]
+
                     # Produkte = konsistente Slices desselben Laufs (build_index)
                     for code in indices_to_run:
                         _ix = INDEX_BY_CODE[code]
                         # Rang-Band-Buffer für Fixed-Count-Produkte: nur wenn Buffer aktiv,
                         # nicht in der Seed-Periode, und das Produkt buffer_hard definiert.
                         _use_rank_buf = bool(apply_buffer and not is_seed and _ix.get("buffer_hard"))
-                        cons = build_index(_gmc, _ix["region"], _ix["segments"],
+                        _src_gmc = _gmc_tm if (_ix.get("eumss_off") and _gmc_tm is not None) else _gmc
+                        cons = build_index(_src_gmc, _ix["region"], _ix["segments"],
                                            industries=_ix.get("industries"), top_n=_ix.get("top_n"),
                                            incumbents_isin=(prev_prod_ckey[code] if _use_rank_buf else None),
                                            buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"))
@@ -2824,11 +2988,18 @@ with tab_multi:
                         })
                         prev_prod_isin[code] = cur
 
-                    # Globalen Incumbent-State weiterreichen: investierbares Universe (L+M+S)
+                    # Globalen Incumbent-State weiterreichen: investierbares Universe (L+M+S).
+                    # Matching über Perm ID (Security) mit ISIN-Fallback (überlebt ISIN-/Ticker-Wechsel).
                     _inv = _gmc[_gmc["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])]
-                    _inv_isin = _norm_isin(_inv["ISIN"])
-                    prev_isin = set(_inv_isin)
-                    prev_seg = {i: s for i, s in zip(_inv_isin.values, _inv["Segment_New"].values) if i}
+                    _inv_key = _match_key(_inv)
+                    prev_isin = set(_inv_key)
+                    prev_seg = {i: s for i, s in zip(_inv_key.values, _inv["Segment_New"].values) if i}
+                    # Total-Markets-Incumbent-State separat fortschreiben
+                    if _has_tm and _gmc_tm is not None:
+                        _inv_tm = _gmc_tm[_gmc_tm["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])]
+                        _ii_tm = _match_key(_inv_tm)
+                        prev_isin_tm = set(_ii_tm)
+                        prev_seg_tm = {i: s for i, s in zip(_ii_tm.values, _inv_tm["Segment_New"].values) if i}
 
                 progress.progress(1.0, text=f"✅ Fertig: {_total} Perioden × {len(indices_to_run)} Produkte.")
 

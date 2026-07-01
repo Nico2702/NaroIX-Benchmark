@@ -135,6 +135,7 @@ INDEX_SERIES = [
     {"code": "NX-GM-M",  "name": "NaroIX Global Markets Mid Cap Index",       "region": "GM", "segments": ["Mid Cap"],     "coverage": "70–85%", "vs": "MSCI ACWI Mid Cap"},
     {"code": "NX-GM-S",  "name": "NaroIX Global Markets Small Cap Index",     "region": "GM", "segments": ["Small Cap"],   "coverage": "85–99%", "vs": "MSCI ACWI Small Cap"},
     {"code": "NX-GM-AC", "name": "NaroIX Global Markets All Cap Index",       "region": "GM", "segments": _SEG_AC,         "coverage": "0–99%",  "vs": "MSCI ACWI IMI"},
+    {"code": "NX-GM-TM", "name": "NaroIX Global Total Markets Index",         "region": "GM", "segments": _SEG_AC, "eumss_off": True, "coverage": "0–100% (kein Größen-Floor)", "vs": "FTSE Global All Cap"},
     # Thematische / Fixed-Count-Produkte (Top-N nach Total MCap, cap-gewichtet nach Adj_FF).
     # buffer_hard/buffer_exit = Rang-Band-Buffer (Solactive-Stil): hart drin ≤ buffer_hard,
     # Bestandstitel bis Rang buffer_exit füllen auf top_n auf (nur Multi-Period mit Vorperiode).
@@ -236,6 +237,18 @@ def _norm_isin(s):
     return s.fillna("").astype(str).str.strip().str.upper()
 
 
+def _match_key(df):
+    """Perioden-übergreifender Incumbent-Matching-Key: 'Perm ID' (permanenter Security-
+    Identifier, überlebt ISIN-/Ticker-Wechsel) mit ISIN-Fallback, wo Perm ID fehlt.
+    Gleiche Normalisierung wie _norm_isin (str, getrimmt, GROSS). Wenn die Perm-ID-Spalte
+    nicht vorhanden ist (ältere/alternative Datenquelle), fällt alles sauber auf ISIN zurück."""
+    isin = _norm_isin(df["ISIN"]) if "ISIN" in df.columns else pd.Series("", index=df.index)
+    if "Perm ID" not in df.columns:
+        return isin
+    perm = _norm_isin(df["Perm ID"])
+    return perm.where(perm != "", isin)
+
+
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
     """Map (prior segment, _c_before coverage %) → size segment with hysteresis.
 
@@ -266,6 +279,131 @@ def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
     if c_before < large_thr:  return "Large Cap"      # <70
     if c_before < mid_thr:    return "Mid Cap"        # <85
     return "Small Cap"
+
+def _size_segment_asym(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
+    """Einseitiger (asymmetrischer) Size-Buffer an der Mid/Small-Grenze (mid_thr):
+    Mid wird nach oben bis mid_thr+bw (z.B. 90%) gehalten — der Abstieg Mid→Small ist
+    also gepuffert. Ein Small-Inkumbent wird aber NICHT nach unten gehalten: sinkt seine
+    Coverage unter mid_thr (z.B. <85%), steigt er sofort nach Mid (Aufstieg Small→Mid
+    ungepuffert). Small bleibt als Segment erhalten (≥85%). Large/Mid-Grenze (70%) bleibt
+    symmetrisch wie in _size_segment — einziger Unterschied: die Small-Zeile ohne 80%-Halt."""
+    lo_lm, hi_lm = large_thr - bw, large_thr + bw   # 65 / 75
+    hi_ms = mid_thr + bw                            # 90
+    if prior == "Large Cap":
+        if c_before <= hi_lm: return "Large Cap"
+        if c_before <= hi_ms: return "Mid Cap"
+        return "Small Cap"
+    if prior == "Mid Cap":
+        if c_before < lo_lm:  return "Large Cap"
+        if c_before <= hi_ms: return "Mid Cap"       # bis 90 gehalten (Abstieg gepuffert)
+        return "Small Cap"
+    if prior == "Small Cap":
+        if c_before < lo_lm:   return "Large Cap"
+        if c_before < mid_thr: return "Mid Cap"      # <85 → Mid (KEIN 80%-Abwärts-Halt)
+        return "Small Cap"
+    # newcomer / unknown / Micro → plain cut-offs
+    if c_before < large_thr:  return "Large Cap"
+    if c_before < mid_thr:    return "Mid Cap"
+    return "Small Cap"
+
+# ── MSCI Logic (GIMI) ───────────────────────────────────────────────────────
+# Hebel A: Global Minimum Size Range (GMSR) + Coverage-Target-Range-Platzierung.
+# Hebel B: Migrations-Buffer −33%/+50% auf den Full-MCap-Cutoff (nur Multi-Period,
+# nur Incumbents). Beides nur aktiv, wenn der MSCI-Logic-Toggle gesetzt ist.
+#
+# Methodik (MSCI GIMI §2.3.1–§2.3.4, §3.1.5.1):
+#   • Coverage wird FREE-FLOAT-ADJUSTIERT gemessen (Adj_FF_MCap), kumuliert nach
+#     Full-MCap-Sortierung — exakt wie unser bestehender Waterfall.
+#   • Der CUTOFF ist aber ein FULL-MCAP-Wert: die Full-MCap der Grenzfirma am
+#     70/85/99%-FF-Coverage-Punkt (Large 70%, Standard 85%, IMI 99%).
+#   • Large- und Standard-Cutoff kommen REIN aus der Per-Market-Coverage (kein
+#     Aufwärts-Clamp), damit kleine Märkte keine legitimen Standard-Namen verlieren.
+#   • Die Global Minimum Size Range wirkt NUR als absoluter Mindest-Size-Floor auf
+#     der IMI/Micro-Grenze (Investability): IMI-Cutoff = max(Coverage-99%-Cutoff,
+#     GMSR-Floor). GMSR-Floor = 0,5× (Full-MCap am 99%-FF-Coverage des DM-Universums),
+#     EM = ½ DM (§2.3.2).
+#   • Zuordnung: Full-MCap ≥ Cutoff.
+_GMSR_LO = 0.5                       # Untergrenze der Global Minimum Size Range (= IMI-Floor-Faktor)
+_MIG_DOWN, _MIG_UP = 2.0 / 3.0, 1.5  # Migrations-Buffer: −33% (halten) / +50% (eintreten)
+
+
+def _coverage_cutoffs(pool_df, if_col, large_thr, mid_thr, small_thr):
+    """Full-MCap-Cutoffs an den FF-Coverage-Punkten large/mid/small_thr eines Pools.
+
+    Sortiert nach Full-MCap (Total MCap), kumuliert die free-float-adjustierte MCap
+    (if_col) und liefert die FULL-MCap der jeweiligen Grenzfirma als Cutoff.
+    Returns {'large':x, 'standard':y, 'imi':z} (Full-MCap) oder None bei leerem Pool.
+    """
+    if pool_df is None or len(pool_df) == 0:
+        return None
+    d = pool_df.sort_values(["Total MCap Y2025", if_col], ascending=[False, False])
+    ff = pd.to_numeric(d[if_col], errors="coerce").fillna(0.0)
+    tot = float(ff.sum())
+    if tot <= 0:
+        return None
+    cum = ff.cumsum().values / tot * 100.0
+    mcap = pd.to_numeric(d["Total MCap Y2025"], errors="coerce").fillna(0.0).values
+
+    def _cut(thr):
+        pos = np.where(cum >= thr)[0]
+        return float(mcap[pos[0]]) if len(pos) else 0.0
+
+    return {"large": _cut(large_thr), "standard": _cut(mid_thr), "imi": _cut(small_thr)}
+
+
+def _imi_floor(gmsr_dm, classification):
+    """Absoluter Mindest-Size-Floor (Full-MCap) für die IMI/Micro-Grenze.
+    = 0,5× (Full-MCap am 99%-FF-Coverage des DM-Universums), EM = ½ DM. 0.0 ohne DM-Basis."""
+    if not gmsr_dm or gmsr_dm.get("imi", 0) <= 0:
+        return 0.0
+    f = 0.5 if classification == "EM" else 1.0
+    return _GMSR_LO * f * gmsr_dm["imi"]
+
+
+def _msci_segments_for_market(grp, if_col, imi_floor, large_thr, mid_thr, small_thr,
+                              incumbent_segments=None, apply_migration_buffer=False):
+    """Weise einem Markt-Grp (eine Mapping Country) die Size-Segmente nach MSCI zu.
+
+    1) per-Markt Full-MCap-Cutoffs an den FF-Coverage-Punkten (large/mid/small_thr),
+    2) Large/Standard rein per Coverage; IMI-Cutoff = max(Coverage-99%, GMSR-IMI-Floor),
+    3) Zuordnung per Full-MCap ≥ Cutoff (Large ⊃ Standard ⊃ IMI),
+    4) optional Migrations-Buffer −33%/+50% (nur Incumbents, nur MP).
+    Returns eine Liste der Segment-Labels in grp-Reihenfolge.
+    """
+    cand = _coverage_cutoffs(grp, if_col, large_thr, mid_thr, small_thr)
+    if cand is None:
+        return ["Micro Cap"] * len(grp)
+    cut_large = cand["large"]
+    cut_std = cand["standard"]
+    # GMSR nur als absoluter Mindest-Size-Floor auf der IMI/Micro-Grenze (Investability).
+    cut_imi = max(cand["imi"], imi_floor)
+
+    mcap = pd.to_numeric(grp["Total MCap Y2025"], errors="coerce").fillna(0.0).values
+    _STD = {"Large Cap", "Mid Cap"}
+    _IMI = {"Large Cap", "Mid Cap", "Small Cap"}
+    isin = _match_key(grp).values if apply_migration_buffer else None
+
+    out = []
+    for i in range(len(grp)):
+        m = mcap[i]
+        if apply_migration_buffer and incumbent_segments:
+            prior = incumbent_segments.get(isin[i])
+            # Incumbents im Segment: −33%-Halteschwelle; Nicht-Mitglieder: +50%-Eintritt.
+            le = _MIG_DOWN * cut_large if prior == "Large Cap" else _MIG_UP * cut_large
+            se = _MIG_DOWN * cut_std if prior in _STD else _MIG_UP * cut_std
+            ie = _MIG_DOWN * cut_imi if prior in _IMI else _MIG_UP * cut_imi
+        else:
+            le, se, ie = cut_large, cut_std, cut_imi
+        if m >= le:
+            out.append("Large Cap")
+        elif m >= se:
+            out.append("Mid Cap")
+        elif m >= ie:
+            out.append("Small Cap")
+        else:
+            out.append("Micro Cap")
+    return out
+
 
 def build_wide_matrix(period_dict):
     """Baue die Gewichtsmatrix (Aktie × Periode) für eine Index-Serie — vektorisiert.
@@ -429,8 +567,9 @@ def derive_mapping_country(df):
         return pd.Series(np.where(_mm != "", _mm, _fallback), index=df.index)
     return pd.Series(_fallback, index=df.index)
 
-def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_cor_na=True,
-                              excl_naics=True, excl_euro=True, excl_etf=True, excl_delisted=True):
+def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_lon_usd_sec=True,
+                              excl_cor_na=True, excl_naics=True, excl_euro=True, excl_etf=True,
+                              excl_delisted=True):
     """Investability-Exclusions (Pipeline-Step 3) — EINE Quelle der Wahrheit fuer Engine UND
     UI-Diagnostik. FF MCap > 0 immer; alles andere per Flag. Behaltungstreu extrahiert aus
     build_new_universe. (Die UI ruft mit excl_delisted=False fuer ihr 'All-Listings'-df_raw_all.)"""
@@ -446,6 +585,14 @@ def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_cor_na=
         df = df[df["Closing Price"].fillna(0) < max_price].copy()
     if excl_hk_cny:
         df = df[~(df["Exchange Ticker"].str.contains("HKG", na=False) & (df["Trading Currency"] == "CNY"))].copy()
+    if excl_lon_usd_sec:
+        # London-gelistete USD-Sekundaernotierungen (Listing=Secondary + 'LON' im Ticker + USD)
+        # — i.d.R. ADR/GDR-Linien parallel zur Heimatnotiz. Entfernt Doppelzaehlung.
+        df = df[~(
+            (df["Listing"].fillna("").astype(str).str.strip().str.lower() == "secondary")
+            & df["Exchange Ticker"].str.contains("LON", na=False)
+            & (df["Trading Currency"] == "USD")
+        )].copy()
     if excl_cor_na:
         df = df[df["Country of Risk"].fillna("") != "@NA"].copy()
     if excl_naics:
@@ -599,17 +746,49 @@ def load_master_excel(file, valid_selection_dates_iso):
     warnings_list = []
 
     try:
-        # Read the entire sheet ONCE, then detect the header row in-memory.
-        # The old approach called pd.read_excel up to 11× (10 header probes +
-        # the real read), and each call re-parses the WHOLE workbook — brutal for
-        # a 165 MB file. We also prefer the calamine engine (Rust), which is
-        # ~5-20× faster than the default openpyxl, and fall back if unavailable.
+        # Read the target sheet ONCE, then detect the header row in-memory.
+        # We prefer the calamine engine (Rust), ~5-20× faster than openpyxl, and
+        # fall back if unavailable.
+        #
+        # WICHTIG: NICHT stur Sheet-Index 0 lesen. FactSet-"FESTWERTE"-Exporte
+        # stellen ein veryHidden '__FDSCACHE__'-Sheet VOR das eigentliche
+        # 'Master'-Sheet — Index 0 wäre dann der XML-Cache (ohne 'Symbol').
+        # Strategie: (1) ein 'Master'-Sheet bevorzugen; (2) sonst das erste
+        # Nicht-Helfer-Sheet ('__'-Prefixe überspringen) mit 'Symbol'; (3)
+        # Fallback = erstes Sheet (altes Verhalten).
         try:
-            raw_df = pd.read_excel(file, header=None, dtype=str, engine="calamine")
+            xls = pd.ExcelFile(file, engine="calamine")
         except Exception:
             if hasattr(file, "seek"):
                 file.seek(0)
-            raw_df = pd.read_excel(file, header=None, dtype=str)
+            xls = pd.ExcelFile(file)
+
+        def _read_sheet(name):
+            return pd.read_excel(xls, sheet_name=name, header=None, dtype=str)
+
+        def _has_symbol(frame):
+            return any(
+                (frame.iloc[i].astype(str).str.strip() == "Symbol").any()
+                for i in range(min(10, len(frame)))
+            )
+
+        _names = list(xls.sheet_names)
+        raw_df = None
+        _master = next((n for n in _names if str(n).strip().lower() == "master"), None)
+        if _master is not None:
+            _cand = _read_sheet(_master)
+            if _has_symbol(_cand):
+                raw_df = _cand
+        if raw_df is None:
+            for n in _names:
+                if str(n).strip().startswith("__"):
+                    continue
+                _cand = _read_sheet(n)
+                if _has_symbol(_cand):
+                    raw_df = _cand
+                    break
+        if raw_df is None:
+            raw_df = _read_sheet(_names[0])
 
         header_row = 0
         for i in range(min(10, len(raw_df))):
@@ -1217,7 +1396,7 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
                        excl_hk_cny, excl_cor_na, excl_naics, excl_euro, excl_etf,
                        china_if,
                        atvr_mcap_col="Free Float MCap Y2025",
-                       excl_delisted=True,
+                       excl_delisted=True, excl_lon_usd_sec=True,
                        fol_matrix=None, fol_sector_fb=None, fol_year=None, fol_enabled=True):
     """Build universe with Primary + Secondary listings, applying all investability
     filters (FF MCap > 0, exclusions, FOL/IF). EUMSS-Schwellen werden später im
@@ -1278,6 +1457,7 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
 
     # Step 3: Exclusions — zentral via apply_universe_exclusions (EINE Quelle; UI nutzt dieselbe).
     df = apply_universe_exclusions(df, max_price=max_price, excl_hk_cny=excl_hk_cny,
+                                   excl_lon_usd_sec=excl_lon_usd_sec,
                                    excl_cor_na=excl_cor_na, excl_naics=excl_naics, excl_euro=excl_euro,
                                    excl_etf=excl_etf, excl_delisted=excl_delisted)
 
@@ -1356,8 +1536,21 @@ def run_selection_pipeline(
     buffer_atvr_dm=None, buffer_atvr_em=None,
     # Size Buffer (segment hysteresis — Multi-Period only)
     apply_size_buffer=False, incumbent_segments=None, size_buffer_pp=5.0,
+    # Einseitiger Size-Buffer: Mid hält bis 90 ↑, kein Small-Halt ↓ (Small bleibt erhalten)
+    asym_buffer=False,
+    # TEST: Solactive-Style Coverage-Buffer an der Small↔Micro-Grenze (per-Land-99%-Cut).
+    # Incumbent bleibt Small bis small_thr+pp (z.B. 99,5%), Newcomer Cut am glatten small_thr (99%);
+    # darüber → Micro. Default aus → keine Verhaltensänderung. Greift nicht in MSCI-Logic.
+    apply_small_buffer=False, small_buffer_pp=0.5,
+    # EUMSS-Größen-Floor an/aus. False = kein absoluter Mindestgrößen-Floor (eumss_full/ff=0),
+    # FF%-Gate + Liquidität bleiben. Für den „Total Markets"-Index (liquides Universum ohne Floor).
+    eumss_enabled=True,
+    # MSCI Logic (GIMI): Global Minimum Size Range (EM=½ DM) + Coverage-Target-Range +
+    # Migrations-Buffer −33%/+50% (Full-MCap, nur MP). Überschreibt apply_size_buffer/asym_buffer.
+    msci_logic=False,
     # Universe
     excl_delisted=True,
+    exclude_lon_usd_sec=True,
     # Ineligible
     ineligible_df=None, apply_ineligible=False, selection_date=None,
     # Reihenfolge-Toggle: Labeling vor Liquidität (Markt-Coverage) statt danach
@@ -1389,6 +1582,14 @@ def run_selection_pipeline(
     if incumbents_isin is None:
         incumbents_isin = set()
 
+    # MSCI Logic hat Vorrang: der Coverage-basierte Size-Buffer (symmetrisch/asym)
+    # wird vollständig deaktiviert. Die 70/85/99-Schwellen, EUMSS und alle
+    # Universe-/Screening-Settings bleiben aktiv. Der Migrations-Buffer (−33/+50)
+    # ist Teil der MSCI-Logik und greift nur im Multi-Period (Incumbents vorhanden).
+    if msci_logic:
+        apply_size_buffer = False
+        asym_buffer = False
+
     # Buffer fallback: Maintenance = Entry if not set
     if buffer_min_ff is None:    buffer_min_ff = min_ff_pct
     if buffer_adtv_dm is None:   buffer_adtv_dm = adtv_dm
@@ -1410,6 +1611,7 @@ def run_selection_pipeline(
             china_if,
             atvr_mcap_col=atvr_mcap_col,
             excl_delisted=excl_delisted,
+            excl_lon_usd_sec=exclude_lon_usd_sec,
             fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
             fol_year=fol_year, fol_enabled=fol_enabled,
         )
@@ -1439,8 +1641,13 @@ def run_selection_pipeline(
         eumss_full = 0
     eumss_ff = eumss_full * eumss_ff_ratio
 
+    # Total-Markets-Modus: absoluten Größen-Floor abschalten (FF%-Gate + Liquidität bleiben).
+    if not eumss_enabled:
+        eumss_full = 0.0
+        eumss_ff = 0.0
+
     # 3) EUMSS filter — buffer-aware Min FF%
-    gm_isin = _norm_isin(gm_u["ISIN"])
+    gm_isin = _match_key(gm_u)
     gm_is_inc = gm_isin.isin(incumbents_isin) if apply_buffer else pd.Series(False, index=gm_u.index)
     gm_min_ff_thr = np.where(gm_is_inc, buffer_min_ff, min_ff_pct)
     eumss_mask = ((gm_u["Total MCap Y2025"] >= eumss_full) &
@@ -1477,6 +1684,19 @@ def run_selection_pipeline(
     gm_liq_cov = _seg_pool[_adj_seg > 0].copy()
 
     use_size_buffer = bool(apply_size_buffer and incumbent_segments)
+
+    # MSCI Logic: Global Minimum Size Range auf dem DM-Teil des gescreenten Pools
+    # (EM=½ DM, §2.3.2). Einmal pro Periode bestimmt, liefert den IMI-Mindest-Size-Floor
+    # für alle Märkte. Fehlt DM (z.B. reiner EM-Lauf), bleibt gmsr_dm None → _imi_floor
+    # gibt dann 0.0 (kein Floor). Migrations-Buffer (−33/+50) nur, wenn Incumbents
+    # vorliegen (= Multi-Period ab Periode 2).
+    gmsr_dm = None
+    msci_mig_buffer = False
+    if msci_logic:
+        _dm_pool = gm_liq_cov[gm_liq_cov["Classification"] == "DM"]
+        gmsr_dm = _coverage_cutoffs(_dm_pool, if_cum_col, large_thr, mid_thr, small_thr)
+        msci_mig_buffer = bool(incumbent_segments)
+
     gm_results = []
     for ctry, grp in gm_liq_cov.groupby("Mapping Country"):
         # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
@@ -1485,18 +1705,30 @@ def run_selection_pipeline(
         if tot == 0: continue
         grp["_c_before"] = grp[if_cum_col].cumsum().shift(1).fillna(0) / tot * 100
 
-        if use_size_buffer:
+        _seg_fn = _size_segment_asym if asym_buffer else _size_segment
+        if msci_logic:
+            # MSCI GIMI: Full-MCap-Cutoffs (Large/Standard rein per-Markt-Coverage,
+            # IMI mit GMSR-Mindest-Size-Floor EM=½), Zuordnung per Full-MCap ≥ Cutoff,
+            # optional Migrations-Buffer (MP).
+            _region = grp["Classification"].iloc[0] if len(grp) else "DM"
+            _floor = _imi_floor(gmsr_dm, _region)
+            grp["Segment_New"] = _msci_segments_for_market(
+                grp, if_cum_col, _floor, large_thr, mid_thr, small_thr,
+                incumbent_segments=incumbent_segments,
+                apply_migration_buffer=msci_mig_buffer,
+            )
+        elif use_size_buffer:
             # Pro-Segment-Hysterese: Vorsegment je Titel → Übergangsfunktion (auf _c_before).
-            _isin = _norm_isin(grp["ISIN"])
+            _isin = _match_key(grp)
             grp["Segment_New"] = [
-                _size_segment(incumbent_segments.get(_i), _cb, large_thr, mid_thr, size_buffer_pp)
+                _seg_fn(incumbent_segments.get(_i), _cb, large_thr, mid_thr, size_buffer_pp)
                 for _i, _cb in zip(_isin.values, grp["_c_before"].values)
             ]
         else:
             # Legacy: harter Standard-Cut (buffer_coverage für Incumbents), 70%-Split Large/Mid.
             # Straddle-Stock bleibt im höheren Bucket (konsistent mit 85%-Cut).
             if apply_buffer and len(incumbents_isin) > 0:
-                _isin = _norm_isin(grp["ISIN"])
+                _isin = _match_key(grp)
                 grp_is_inc = _isin.isin(incumbents_isin)
                 thr_per_stock = np.where(grp_is_inc, buffer_coverage, mid_thr)
             else:
@@ -1507,6 +1739,26 @@ def run_selection_pipeline(
                 np.where(grp["_c_before"].values < large_thr, "Large Cap", "Mid Cap"),
                 "Small Cap",
             )
+
+        # TEST: Solactive-Style Small↔Micro-Coverage-Cut (per-Land). Standard (L+M) unberührt;
+        # ein als Small gelabelter Titel jenseits der 99%-Kante → Micro. Incumbent (war im IMI)
+        # wird bis small_thr+pp gehalten, Newcomer am glatten small_thr geschnitten.
+        if apply_small_buffer and not msci_logic:
+            _isin_s = _match_key(grp).values
+            _cb_s = grp["_c_before"].values
+            _seg_s = list(grp["Segment_New"])
+            _IMI = {"Large Cap", "Mid Cap", "Small Cap"}
+            _out = []
+            for _sg, _c, _ii in zip(_seg_s, _cb_s, _isin_s):
+                if _sg in ("Large Cap", "Mid Cap"):
+                    _out.append(_sg)
+                else:  # Small Cap → ggf. nach Micro kappen
+                    _pr = incumbent_segments.get(_ii) if incumbent_segments else None
+                    _held = isinstance(_pr, str) and _pr in _IMI
+                    _limit = small_thr + small_buffer_pp if _held else small_thr
+                    _out.append("Small Cap" if _c < _limit else "Micro Cap")
+            grp["Segment_New"] = _out
+
         gm_results.append(grp)
 
     gm_all_cov = (pd.concat(gm_results, ignore_index=True) if gm_results
@@ -1523,7 +1775,7 @@ def run_selection_pipeline(
     # Audit-Flag: Titel, deren Segment durch den Size Buffer abweichend vom reinen
     # Cut-off gehalten wurde (= Hysterese griff). Nur relevant bei aktivem Size Buffer.
     if use_size_buffer and len(gm_all_cov) > 0:
-        _isin_all = _norm_isin(gm_all_cov["ISIN"])
+        _isin_all = _match_key(gm_all_cov)
         _prior_all = _isin_all.map(incumbent_segments)
         _cb_all = gm_all_cov["_c_before"].values
         _plain = np.where(_cb_all < large_thr, "Large Cap",
@@ -1540,8 +1792,10 @@ def run_selection_pipeline(
     # (_c_before ≥ mid_thr) hätte sie zu Small (= raus aus Standard) gemacht.
     # Einheitlich über beide Modi: wenn kein Puffer aktiv, ist ein Titel mit _c_before
     # ≥ mid_thr ohnehin nicht im Standard → Flag bleibt automatisch False.
-    if len(gm_all_cov) > 0 and incumbents_isin:
-        _isin_k = _norm_isin(gm_all_cov["ISIN"])
+    # In MSCI Logic basiert die Zuordnung auf Full-MCap-Cutoffs, nicht auf _c_before →
+    # dieses Coverage-Puffer-Flag ist dort nicht aussagekräftig (immer False).
+    if len(gm_all_cov) > 0 and incumbents_isin and not msci_logic:
+        _isin_k = _match_key(gm_all_cov)
         gm_all_cov["Kept_In_Standard_By_Buffer"] = (
             _isin_k.isin(incumbents_isin)
             & (gm_all_cov["_c_before"] >= mid_thr)
@@ -1552,7 +1806,9 @@ def run_selection_pipeline(
 
     # Standard (Large+Mid) vs. coverage-basiertes Small (ersetzt das frühere gm_above85)
     gm_std     = gm_all_cov[gm_all_cov["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
-    gm_above85 = gm_all_cov[gm_all_cov["Segment_New"] == "Small Cap"].copy()
+    # Small = alle Nicht-L+M-Titel aus dem Waterfall (Coverage ≥85%, ≤99% via EUMSS).
+    # Über ~isin(L,M) gefangen (robust gegen künftige Zusatz-Label).
+    gm_above85 = gm_all_cov[~gm_all_cov["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
 
     # Variante A: Wer EUMSS besteht, aber die Liquidität reißt, erfüllt die
     # Investierbarkeits-Kriterien NICHT → komplett RAUS (nicht Small, nicht Micro,
