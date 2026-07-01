@@ -28,10 +28,15 @@ die **vor** der EUMSS-Kalibrierung der NaroIX-Hauptserie ansetzt und keine DM/EM
 | Cash | CASH-CHF | 5,0 % |
 | Government Bonds | CSBGC7-SWX (3-7J) 5 % + CSBGC0-SWX (7-15J) 5 % | 10,0 % |
 | Corporate Bonds | CHCORP-SWX | 15,0 % |
-| Gold | PPFB-XEX 7,5 % + SGLD.EUR-SWX 7,5 % | 15,0 % |
+| Gold | Amundi Physical Gold ETC (FR0013416716) 7,5 % + Xtrackers Physical Gold ETC (DE000A1E0HR8) 7,5 % | 15,0 % |
 | **Summe** | | **45,0 %** |
 
 Diese Sleeves sind feste Zielgewichte — keine Titelselektion, kein Buffer, keine Coverage-Cuts.
+
+> **Hinweis Gold:** Die maßgeblichen Live-Instrumente sind **Amundi (FR0013416716)** +
+> **Xtrackers (DE000A1E0HR8)** (je 7,5 %). Der Tool-Backtest (`HELVETICA_STATIC`) nutzt
+> bewusst **PPFB-XEX + XAD5-XEX** als Proxy (längere Historie) — reine Backtest-Entscheidung,
+> nicht das Live-Instrument.
 
 ---
 
