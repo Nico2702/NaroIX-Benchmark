@@ -3052,10 +3052,75 @@ with tab_multi:
                     _segmat_by_idx[_idx_name] = _seg
                     _sheets_seg[_idx_name[:31]] = _seg
 
+                # Backtest-Export (Termin x Ticker, %) je Index — analog Helvetica:
+                # Datum in Zeilen (DD.MM.YYYY), Exchange Ticker in Spalten, Gewicht als
+                # Fraktion (Summe 1.0) im Prozentformat, volle Praezision.
+                def _bt_matrix(_pdict):
+                    _rows = []
+                    for _sd in sorted(_pdict.keys()):
+                        _cons = _pdict[_sd]
+                        if ("Exchange Ticker" not in _cons.columns or "Index_Weight" not in _cons.columns
+                                or len(_cons) == 0):
+                            continue
+                        _d = _cons[["Exchange Ticker", "Index_Weight"]].copy()
+                        _d["Termin"] = _sd
+                        _rows.append(_d)
+                    if not _rows:
+                        return None
+                    _bt = (pd.concat(_rows, ignore_index=True)
+                             .pivot_table(index="Termin", columns="Exchange Ticker",
+                                          values="Index_Weight", aggfunc="sum").fillna(0.0))
+                    if _bt.empty:
+                        return None
+                    _bt = _bt[_bt.sum().sort_values(ascending=False).index]  # groesste Positionen zuerst
+                    _bt = _bt / 100.0                                        # Prozent -> Fraktion
+                    _bt.index = [pd.Timestamp(_dd).strftime("%d.%m.%Y") for _dd in _bt.index]
+                    _bt.index.name = "Date"
+                    return _bt
+
+                def _bt_xlsx(_by_idx):
+                    _buf = BytesIO()
+                    with pd.ExcelWriter(_buf, engine="openpyxl") as _xl:
+                        for _nm, _bt in _by_idx.items():
+                            _sn = str(_nm)[:31]
+                            _bt.to_excel(_xl, sheet_name=_sn, index=True)
+                            _ws = _xl.sheets[_sn]
+                            for _r in range(2, _ws.max_row + 1):
+                                for _c in range(2, _ws.max_column + 1):
+                                    _ws.cell(row=_r, column=_c).number_format = "0.000000%"
+                            _ws.freeze_panes = "B2"; _ws.column_dimensions["A"].width = 12
+                    return _buf.getvalue()
+
+                _bt_by_idx = {}
+                for _idx_name, _period_dict in results_per_index.items():
+                    _btm = _bt_matrix(_period_dict)
+                    if _btm is not None:
+                        _bt_by_idx[_idx_name] = _btm
+                st.session_state["multi_export_bt_bytes"] = _bt_xlsx(_bt_by_idx) if _bt_by_idx else None
+
                 st.session_state["multi_wide"] = _wide_by_idx
                 st.session_state["multi_segmatrix"] = _segmat_by_idx
                 st.session_state["multi_export_long_bytes"] = to_excel_multi(_sheets_long)
-                st.session_state["multi_export_wide_bytes"] = to_excel_multi(_sheets_wide)
+                def _fmt_wide_pct(_xlsx_bytes):
+                    # Gewichtsspalten (Header = YYYY-MM-DD) als echtes Excel-Prozent:
+                    # Prozent-Einheit -> Fraktion (/100) + Prozentformat, volle Praezision
+                    # (6 Nachkommastellen = native Matrix-Praezision). Static-/Summary-Spalten
+                    # bleiben unberuehrt (nur Datums-Header werden formatiert).
+                    from openpyxl import load_workbook
+                    import re as _re_w
+                    _dre = _re_w.compile(r"^\d{4}-\d{2}-\d{2}$")
+                    _wb = load_workbook(BytesIO(_xlsx_bytes))
+                    for _ws in _wb.worksheets:
+                        _dcols = [ci for ci, _c in enumerate(_ws[1], start=1)
+                                  if isinstance(_c.value, str) and _dre.match(_c.value.strip())]
+                        for _ci in _dcols:
+                            for _r in range(2, _ws.max_row + 1):
+                                _cell = _ws.cell(row=_r, column=_ci)
+                                if isinstance(_cell.value, (int, float)):
+                                    _cell.value = _cell.value / 100.0
+                                    _cell.number_format = "0.000000%"
+                    _out = BytesIO(); _wb.save(_out); return _out.getvalue()
+                st.session_state["multi_export_wide_bytes"] = _fmt_wide_pct(to_excel_multi(_sheets_wide))
                 st.session_state["multi_export_seg_bytes"] = to_excel_multi(_sheets_seg)
 
             # Display Results (if available)
@@ -3308,6 +3373,14 @@ with tab_multi:
                         data=st.session_state["multi_export_wide_bytes"],
                         file_name=f"NaroIX_WeightMatrix_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                if st.session_state.get("multi_export_bt_bytes"):
+                    st.download_button(
+                        "📥 Backtest-Export (Gewichtsmatrix: Termin × Ticker, %)",
+                        data=st.session_state["multi_export_bt_bytes"],
+                        file_name=f"NaroIX_Backtest_Weights_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="multi_dl_bt",
                     )
 
                 # ── Segment-Wanderung (Segment × Periode) ───────────────────────
