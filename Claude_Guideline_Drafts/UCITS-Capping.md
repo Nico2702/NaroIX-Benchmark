@@ -2,7 +2,7 @@
 
 **Status:** Diskussion 2026-07-15, umgesetzt 2026-07-30. Entscheidung: UCITS 5/10/40 auf
 Issuer-Level als **optionaler Overlay, per Default AUS**, verfügbar **nur für die sechs
-thematischen Tech-Indizes** (NX-US-T100, NX-US-T, NX-EU-T, NX-EU-T30, NX-GM-T500, NX-GM-T100),
+thematischen Tech-Indizes** (NX-US-T100, NX-US-T, NX-EU-T, NX-EU-T30, NX-GM-T, NX-GM-T100),
 **ohne** Rebalance-Puffer, **in-place** (kein separater gecappter Code). Die breiten
 Markt-Indizes (GM / DM / EM / EU × Size) bleiben ungecappt.
 
