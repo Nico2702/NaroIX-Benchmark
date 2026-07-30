@@ -143,7 +143,7 @@ INDEX_SERIES = [
     {"code": "NX-EU-T",    "name": "NaroIX Europe Tech Index", "region": "EU", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Tech (All Cap)", "vs": "—"},
     {"code": "NX-EU-T30",  "name": "NaroIX Europe Tech 30 Index", "region": "EU", "segments": _SEG_AC, "top_n": 30, "buffer_hard": 25, "buffer_exit": 36, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 30 Tech", "vs": "—"},
     {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "coverage": "Top 100",      "vs": "FTSE All-World 100"},
-    {"code": "NX-GM-T",    "name": "NaroIX Global Tech Index",     "region": "GM", "segments": _SEG_STD,              "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Tech (Large+Mid, Global)", "vs": "—"},
+    {"code": "NX-GM-TECH", "name": "NaroIX Global Tech Index",     "region": "GM", "segments": _SEG_STD,              "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Tech (Large+Mid, Global)", "vs": "—"},
     {"code": "NX-GM-T100", "name": "NaroIX Global Tech 100 Index", "region": "GM", "segments": _SEG_STD, "top_n": 100, "buffer_hard": 85,  "buffer_exit": 120, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 100 Tech (Global, L+M)", "vs": "—"},
 ]
 
