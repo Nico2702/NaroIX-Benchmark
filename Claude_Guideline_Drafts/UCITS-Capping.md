@@ -1,14 +1,25 @@
 # UCITS / Capping — Konzept-Notiz
 
 **Status:** Diskussion 2026-07-15, umgesetzt 2026-07-30. Entscheidung: UCITS 5/10/40 auf
-Issuer-Level, **nur für die sechs thematischen Tech-Indizes** (NX-US-T100, NX-US-T, NX-EU-T,
-NX-EU-T30, NX-GM-T500, NX-GM-T100), **ohne** Rebalance-Puffer, **in-place** (kein separater
-gecappter Code). Die breiten Markt-Indizes (GM / DM / EM / EU × Size) bleiben ungecappt.
+Issuer-Level als **optionaler Overlay, per Default AUS**, verfügbar **nur für die sechs
+thematischen Tech-Indizes** (NX-US-T100, NX-US-T, NX-EU-T, NX-EU-T30, NX-GM-T500, NX-GM-T100),
+**ohne** Rebalance-Puffer, **in-place** (kein separater gecappter Code). Die breiten
+Markt-Indizes (GM / DM / EM / EU × Size) bleiben ungecappt.
+
+**Warum Default aus (wichtig):** So wie der Standard-Nasdaq-100 wird der Index **ungecappt
+publiziert**. Reale UCITS-ETFs (iShares CNDX, Invesco EQQQ, Xtrackers XNAS) tracken den
+Standard-NDX per Vollreplikation; es gibt keine gecappte NDX-Variante am Markt. Die
+UCITS-Konformität entsteht auf **Fondsebene** über die Index-Replikations-Ausnahme (Art. 53
+UCITS: bis 20% je Emittent, 35% ausnahmsweise; in DE § 209 KAGB Wertpapierindex-OGAW), plus
+einmalige Index-Anerkennung durch die Aufsicht beim Fondsaufsatz. Passive Überschreitungen
+zwischen Rebalances fallen unter Art. 57(1). Das Index-Capping brauchen wir daher nur, wenn
+ein Kunde/Wrapper einen **selbst-konformen** Index verlangt (solche gecappten Varianten gibt
+es am Markt, z.B. Nasdaq-100 Capped, MSCI-Capped-Serien).
 
 Umsetzung: `apply_ucits_5_10_40` in `pipeline_core.py`, aufgerufen aus `build_index` je
 Index-Slice (Flag `"cap": "5/10/40"` in `INDEX_SERIES`). In der App per Sidebar-Toggle
-„Capping" (Default an) als Research-/What-if-Hebel steuerbar; der Toggle zeigt an, für welche
-Indizes das Capping gilt. Regressionstest: `test_ucits_cap`.
+„Capping" (Default **aus**) als Research-/What-if-Hebel steuerbar; der Toggle zeigt an, für
+welche Indizes das Capping gilt. Regressionstest: `test_ucits_cap`.
 
 Kontext: Weight-Capping für die NaroIX Global Index Series (Region×Size:
 GM / DM / EM / EU × L / M / S / LM / AC / TM) plus thematische Indizes. Rein
@@ -97,8 +108,9 @@ Issuer-Cap**, z. B. jeder Emittent ≤ 10% (nur Schritt 1, ohne 40%-Aggregat). M
    überlassen (einfacher, engere Grenzen).
 4. **Welche Indizes:** **nur die sechs Tech-Indizes**. Die breiten Markt-Indizes bleiben
    ungecappt.
-5. **Variante vs. In-Place:** **In-Place** mit Sidebar-Toggle (Default an). Kein separater
-   gecappter Code; der Toggle erlaubt den ungecappten Vergleich als What-if.
+5. **Variante vs. In-Place:** **In-Place** mit Sidebar-Toggle (**Default aus**). Kein separater
+   gecappter Code; der Index wird ungecappt publiziert (UCITS-Konformität auf Fondsebene via
+   Art. 53), der Toggle aktiviert das Capping nur als What-if bzw. für gecappte Varianten.
 6. **Noch offen:** förmlicher Guideline-Abschnitt **„Weighting Cap"** in der Kunden-Guideline.
    Die Methodik ist hier und in `INDEX_SERIES.md` dokumentiert; die Aufnahme in die
    veröffentlichte Guideline steht noch aus.
