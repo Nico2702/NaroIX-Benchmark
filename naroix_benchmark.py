@@ -467,7 +467,8 @@ Inclusion Factor: {_if_line}{("<br><br>" + _eumss_line[4:]) if _eumss_line else 
         # Total-Markets-Produkte (eumss_off) aus dem EUMSS-losen Universum schneiden, falls vorhanden.
         _src = df_included_tm if (_ix.get("eumss_off") and df_included_tm is not None) else df_included
         _ci = build_index(_src, _ix["region"], _ix["segments"],
-                          industries=_ix.get("industries"), top_n=_ix.get("top_n"))
+                          industries=_ix.get("industries"), top_n=_ix.get("top_n"),
+                          cap=_ix.get("cap"), apply_cap=st.session_state.get("apply_cap", True))
         _series_rows.append({
             "Code": _ix["code"],
             "Index": _ix["name"],
@@ -1171,6 +1172,19 @@ with st.sidebar:
         st.caption(f"→ Small endet bei 99 % (Newcomer) bzw. {99+small_buffer_pp:g} % (Incumbent) per-Land-Coverage; darüber Micro.")
     else:
         small_buffer_pp = 0.5
+
+    # Weight-Cap (UCITS 5/10/40): nur für die Indizes mit "cap"-Flag (aktuell die Tech-Indizes)
+    _capped_codes = [ix["code"] for ix in INDEX_SERIES if ix.get("cap")]
+    apply_cap = st.checkbox(
+        "Capping (Tech-Indizes, UCITS 5/10/40)",
+        value=True,
+        key="apply_cap",
+        help="Wendet die UCITS-5/10/40-Diversifikationsgrenze auf Emittenten-Ebene an: kein Emittent > 10%, "
+             "Summe der Positionen > 5% ≤ 40%. Mehrfach-Linien einer Firma (z.B. Alphabet A+C) werden "
+             "zusammengefasst und einmal gedeckelt. Gilt nur für die unten genannten Indizes; alle übrigen "
+             "bleiben ungecappt.")
+    if apply_cap and _capped_codes:
+        st.caption("Gilt für: " + ", ".join(_capped_codes))
 
     # Incumbents-Upload (optional, für Single-Snapshot-Modus)
     incumbents_isin_set = set()
@@ -2955,7 +2969,8 @@ with tab_multi:
                         cons = build_index(_src_gmc, _ix["region"], _ix["segments"],
                                            industries=_ix.get("industries"), top_n=_ix.get("top_n"),
                                            incumbents_isin=(prev_prod_ckey[code] if _use_rank_buf else None),
-                                           buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"))
+                                           buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"),
+                                           cap=_ix.get("cap"), apply_cap=st.session_state.get("apply_cap", True))
                         results_per_index[code][sd_iso] = cons
                         # Company-Keys dieser Periode merken (für den Rang-Band-Buffer nächste Periode)
                         if _ix.get("buffer_hard"):

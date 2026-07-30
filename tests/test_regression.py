@@ -217,6 +217,54 @@ def test_build_index_company_count():
     check("company-count: weights sum 100", round(p["Index_Weight"].sum(), 6) == 100.0)
 
 
+def _issuer_weights(df):
+    # aggregate line weights to the issuer level (Entity ID, ISIN fallback) like the cap does
+    ck = df["Entity ID"].fillna("").astype(str).str.strip()
+    ck = ck.where(ck != "", df["ISIN"].astype(str))
+    return df.assign(_k=ck.to_numpy()).groupby("_k")["Index_Weight"].sum()
+
+
+def test_ucits_cap():
+    # top-heavy issuer set; one issuer (E_GOOG) has two share lines that must be
+    # aggregated before the cap, else it dodges the 10% ceiling across two listings.
+    SEG = ["Large Cap", "Mid Cap", "Small Cap"]
+    rows = [
+        ("E1",  "E1",     30.0),
+        ("E2",  "E2",     25.0),
+        ("E3",  "E3",     15.0),
+        ("E4",  "E4",     12.0),
+        ("E5",  "E5",      8.0),
+        ("G_A", "E_GOOG",  6.0),   # Alphabet line 1
+        ("G_C", "E_GOOG",  6.0),   # Alphabet line 2 (same Entity ID) -> issuer 12% pre-cap
+    ] + [(f"T{i}", f"E_T{i}", 1.0) for i in range(10)]   # sub-5% tail to absorb redistribution
+    gm = pd.DataFrame(
+        [(isin, "DM", "UNITED STATES", "UNITED STATES", "Large Cap", "Semiconductors",
+          ff * 10.0, ff, ent) for isin, ent, ff in rows],
+        columns=["ISIN", "Classification", "Exchange Country Name", "Mapping Country",
+                 "Segment_New", "FactSet Industry", "Total MCap Y2025", "Adj_FF_MCap", "Entity ID"],
+    )
+
+    # uncapped: at least one issuer breaches 10% (sanity that the fixture is top-heavy)
+    raw = C.build_index(gm, "US", SEG, cap="5/10/40", apply_cap=False)
+    check("ucits: uncapped breaches 10% (fixture is top-heavy)", _issuer_weights(raw).max() > 10.0 + 1e-6)
+
+    cap = C.build_index(gm, "US", SEG, cap="5/10/40", apply_cap=True)
+    iss = _issuer_weights(cap)
+    big = iss[iss > 5.0 + 1e-9]
+    check("ucits: weights sum 100", round(cap["Index_Weight"].sum(), 6) == 100.0)
+    check("ucits: no issuer > 10%", iss.max() <= 10.0 + 1e-6, f"max {iss.max():.4f}")
+    check("ucits: sum of >5% issuers <= 40%", big.sum() <= 40.0 + 1e-6, f"sum>5% {big.sum():.4f}")
+    check("ucits: dual-line issuer aggregated <= 10%", iss.get("E_GOOG", 0.0) <= 10.0 + 1e-6,
+          f"E_GOOG {iss.get('E_GOOG', 0.0):.4f}")
+    check("ucits: no line weight is negative", (cap["Index_Weight"] >= -1e-9).all())
+
+    # every catalogued tech index carries the 5/10/40 flag
+    capped = [ix["code"] for ix in C.INDEX_SERIES if ix.get("cap")]
+    check("ucits: 6 tech indices flagged", len(capped) == 6, str(capped))
+    check("ucits: all flags are 5/10/40",
+          all(C.INDEX_BY_CODE[c]["cap"] == "5/10/40" for c in capped))
+
+
 def test_validate_factset_data():
     n = 5
     clean = pd.DataFrame({
@@ -446,7 +494,7 @@ def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
             test_build_index, test_build_index_thematic, test_rank_band_buffer,
-            test_build_index_company_count, test_validate_factset_data, test_delisted_filter_numeric,
+            test_build_index_company_count, test_ucits_cap, test_validate_factset_data, test_delisted_filter_numeric,
             test_with_fol_breakdown, test_fol_matrix_consistency]
     for t in pure:
         try:

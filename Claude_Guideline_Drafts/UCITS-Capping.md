@@ -1,10 +1,18 @@
-# UCITS / Capping — Konzept-Notiz (geparkt)
+# UCITS / Capping — Konzept-Notiz
 
-**Status:** Diskussion 2026-07-15, geparkt, wir kommen später darauf zurück. Noch KEINE
-Entscheidung getroffen, noch NICHT im Code umgesetzt.
+**Status:** Diskussion 2026-07-15, umgesetzt 2026-07-30. Entscheidung: UCITS 5/10/40 auf
+Issuer-Level, **nur für die sechs thematischen Tech-Indizes** (NX-US-T100, NX-US-T, NX-EU-T,
+NX-EU-T30, NX-GM-T500, NX-GM-T100), **ohne** Rebalance-Puffer, **in-place** (kein separater
+gecappter Code). Die breiten Markt-Indizes (GM / DM / EM / EU × Size) bleiben ungecappt.
 
-Kontext: mögliches Weight-Capping für die NaroIX Global Index Series (Region×Size:
-GM / DM / EM / EU × L / M / S / LM / AC / TM). Rein Guideline-/Methodik-Ebene.
+Umsetzung: `apply_ucits_5_10_40` in `pipeline_core.py`, aufgerufen aus `build_index` je
+Index-Slice (Flag `"cap": "5/10/40"` in `INDEX_SERIES`). In der App per Sidebar-Toggle
+„Capping" (Default an) als Research-/What-if-Hebel steuerbar; der Toggle zeigt an, für welche
+Indizes das Capping gilt. Regressionstest: `test_ucits_cap`.
+
+Kontext: Weight-Capping für die NaroIX Global Index Series (Region×Size:
+GM / DM / EM / EU × L / M / S / LM / AC / TM) plus thematische Indizes. Rein
+Guideline-/Methodik-Ebene.
 
 ---
 
@@ -30,12 +38,15 @@ Weichenstellung hängt am **Treiber:**
 
 An jedem Selection Day, nach der Float-Gewichtung:
 
-1. **10%-Cap:** kein einzelner Emittent > 10%. Überschuss pro-rata auf die
-   nicht-gedeckelten Titel umverteilen.
+1. **10%-Cap:** kein einzelner Emittent > 10%. Überschuss pro-rata (gewichtsproportional) auf
+   die nicht-gedeckelten Titel umverteilen, iteriert bis kein Titel mehr > 10%.
 2. **40%-Aggregat:** die Summe aller Emittenten mit Gewicht > 5% darf 40% nicht
-   überschreiten. Wenn doch, die > 5%-Positionen (größte zuerst oder pro-rata) reduzieren,
-   bis die Summe ≤ 40%.
-3. **Iterieren**, bis beide Bedingungen gelten und die Gewichte auf 100% normiert sind.
+   überschreiten. Wenn doch, die **kleinsten** Über-5%-Emittenten zuerst auf genau 5% senken
+   (sie verlassen damit die > 5%-Gruppe), bis das Aggregat ≤ 40% ist. Die größten Namen
+   bleiben so an der 10%-Kappe (maximale Repräsentativität). Das freigewordene Gewicht fließt
+   proportional zum Spielraum in die Titel unter 5% (kein Titel überschreitet dabei 5%).
+3. Deterministisch in einem Durchlauf (Schritt 1 iteriert, Schritt 2 einmalig), Gewichte auf
+   100% normiert. Beide Bedingungen gelten danach garantiert.
 
 **Issuer-Level (wichtig):** da die Serie Mehrfach-Notierungen erlaubt (Variante B), alle
 Linien einer Firma (über Entity ID) VOR dem Cap zusammenfassen, sonst umgeht eine Firma den
@@ -77,13 +88,17 @@ Issuer-Cap**, z. B. jeder Emittent ≤ 10% (nur Schritt 1, ohne 40%-Aggregat). M
 
 ---
 
-## 5. Offene Entscheidungen (bei Wiederaufnahme klären)
+## 5. Entscheidungen (getroffen 2026-07-30)
 
-1. **Treiber:** konkretes UCITS-Produkt auf einem Index, oder allgemeines
-   Konzentrations-Management?
-2. **Cap-Typ + Level:** 5/10/40 vs. fixes Issuer-Cap (10% / 5% / 4,5%)?
-3. **Rebalance-Puffer** (z. B. 9/35) ja/nein?
-4. **Welche Indizes** genau (nur thematische, oder auch Europe / EM / Einzelland)?
-5. **Variante vs. In-Place:** eigener gecappter Index-Code neben dem ungecappten (empfohlen)
-   oder Cap direkt im bestehenden Index?
-6. Guideline-Abschnitt **„Weighting Cap"** + Appendix-A-Flag formulieren.
+1. **Treiber:** Konzentrations-Management der thematischen Tech-Indizes (top-heavy), mit Blick
+   auf die UCITS-Fähigkeit eines möglichen Produkts. Ergebnis: 5/10/40 gewählt.
+2. **Cap-Typ + Level:** UCITS **5/10/40** (nicht das einfache fixe Issuer-Cap).
+3. **Rebalance-Puffer:** **nein**, hart bei 10% / 40%. Intra-Quartals-Drift bleibt dem Fonds
+   überlassen (einfacher, engere Grenzen).
+4. **Welche Indizes:** **nur die sechs Tech-Indizes**. Die breiten Markt-Indizes bleiben
+   ungecappt.
+5. **Variante vs. In-Place:** **In-Place** mit Sidebar-Toggle (Default an). Kein separater
+   gecappter Code; der Toggle erlaubt den ungecappten Vergleich als What-if.
+6. **Noch offen:** förmlicher Guideline-Abschnitt **„Weighting Cap"** in der Kunden-Guideline.
+   Die Methodik ist hier und in `INDEX_SERIES.md` dokumentiert; die Aufnahme in die
+   veröffentlichte Guideline steht noch aus.

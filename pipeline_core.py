@@ -138,13 +138,13 @@ INDEX_SERIES = [
     # buffer_hard/buffer_exit = Rang-Band-Buffer (Solactive-Stil): hart drin ≤ buffer_hard,
     # Bestandstitel bis Rang buffer_exit füllen auf top_n auf (nur Multi-Period mit Vorperiode).
     {"code": "NX-US-500",  "name": "NaroIX US 500 Index",      "region": "US", "segments": _SEG_AC, "top_n": 500, "buffer_hard": 425, "buffer_exit": 600, "coverage": "Top 500",      "vs": "S&P 500"},
-    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "industries": TECH_INDUSTRIES, "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
-    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
-    {"code": "NX-EU-T",    "name": "NaroIX Europe Tech Index", "region": "EU", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "coverage": "Tech (All Cap)", "vs": "—"},
-    {"code": "NX-EU-T30",  "name": "NaroIX Europe Tech 30 Index", "region": "EU", "segments": _SEG_AC, "top_n": 30, "buffer_hard": 25, "buffer_exit": 36, "industries": TECH_INDUSTRIES, "coverage": "Top 30 Tech", "vs": "—"},
+    {"code": "NX-US-T100", "name": "NaroIX US Tech 100 Index", "region": "US", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 100 Tech", "vs": "Nasdaq-100"},
+    {"code": "NX-US-T",    "name": "NaroIX US Tech Index",     "region": "US", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Tech (All Cap)", "vs": "—"},
+    {"code": "NX-EU-T",    "name": "NaroIX Europe Tech Index", "region": "EU", "segments": _SEG_AC,               "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Tech (All Cap)", "vs": "—"},
+    {"code": "NX-EU-T30",  "name": "NaroIX Europe Tech 30 Index", "region": "EU", "segments": _SEG_AC, "top_n": 30, "buffer_hard": 25, "buffer_exit": 36, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 30 Tech", "vs": "—"},
     {"code": "NX-WL-100",  "name": "NaroIX World 100 Index",   "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85, "buffer_exit": 120, "coverage": "Top 100",      "vs": "FTSE All-World 100"},
-    {"code": "NX-GM-T500", "name": "NaroIX Global Tech 500 Index", "region": "GM", "segments": _SEG_AC, "top_n": 500, "buffer_hard": 425, "buffer_exit": 600, "industries": TECH_INDUSTRIES, "coverage": "Top 500 Tech (Global)", "vs": "—"},
-    {"code": "NX-GM-T100", "name": "NaroIX Global Tech 100 Index", "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85,  "buffer_exit": 120, "industries": TECH_INDUSTRIES, "coverage": "Top 100 Tech (Global)", "vs": "—"},
+    {"code": "NX-GM-T500", "name": "NaroIX Global Tech 500 Index", "region": "GM", "segments": _SEG_AC, "top_n": 500, "buffer_hard": 425, "buffer_exit": 600, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 500 Tech (Global)", "vs": "—"},
+    {"code": "NX-GM-T100", "name": "NaroIX Global Tech 100 Index", "region": "GM", "segments": _SEG_AC, "top_n": 100, "buffer_hard": 85,  "buffer_exit": 120, "industries": TECH_INDUSTRIES, "cap": "5/10/40", "coverage": "Top 100 Tech (Global)", "vs": "—"},
 ]
 
 INDEX_BY_CODE = {ix["code"]: ix for ix in INDEX_SERIES}
@@ -178,7 +178,7 @@ def _rank_band_select(df, top_n, incumbents, buffer_hard, buffer_exit, id_col="I
 
 def build_index(gm_complete, region, segments, industries=None, top_n=None,
                 rank_col="Total MCap Y2025", incumbents_isin=None,
-                buffer_hard=None, buffer_exit=None):
+                buffer_hard=None, buffer_exit=None, cap=None, apply_cap=True):
     """Scope a pipeline result to ONE index product and re-normalise weights to 100%.
 
     region: 'DM' | 'EM' | 'GM' (=DM+EM) | 'EU' (DM ∩ Europe countries) | 'US' (Exchange
@@ -229,7 +229,95 @@ def build_index(gm_complete, region, segments, industries=None, top_n=None,
         else:
             keys = set(comp["_ckey"].head(int(top_n)))   # plain top-N companies (seed / buffer off)
         df = df[df["_ckey"].isin(keys)].drop(columns=["_rank", "_tb", "_ckey"])
-    return normalize_index_weight(df)
+    out = normalize_index_weight(df)
+    if cap and apply_cap:
+        out = apply_ucits_5_10_40(out)
+    return out
+
+
+def apply_ucits_5_10_40(df, single=0.10, agg_lvl=0.05, agg_cap=0.40,
+                        weight_col="Index_Weight", id_col="Entity ID",
+                        max_iter=200, tol=1e-12):
+    """UCITS 5/10/40 diversification cap, applied at ISSUER level.
+
+    No single issuer above `single` (10%); the aggregate of issuers weighted above
+    `agg_lvl` (5%) must not exceed `agg_cap` (40%). Two deterministic steps:
+      (1) cap each issuer at 10% and redistribute the excess pro-rata (by weight) to
+          the uncapped issuers, iterated until no issuer exceeds 10%;
+      (2) if the >5% tier still exceeds 40%, reduce the SMALLEST >5% issuers down to
+          exactly 5% (removing them from the tier) until the tier is <= 40% - this
+          keeps the largest names at the 10% cap - then push the freed weight into the
+          sub-5% tail proportional to its room below 5% (so nothing re-crosses 5%).
+    Multiple listings of one company (Entity ID, e.g. Alphabet A+C) are aggregated to
+    the issuer, capped once, then split back to their lines proportional to their
+    original weight. Deterministic; weights returned as percent summing to 100 (same
+    convention as normalize_index_weight)."""
+    d = df.copy()
+    if weight_col not in d.columns or len(d) == 0:
+        return d
+    line_w = pd.to_numeric(d[weight_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    if line_w.sum() <= 0:
+        return d
+    # Issuer key: Entity ID (company), ISIN fallback (same key as the top-N company count).
+    if id_col in d.columns:
+        ck = d[id_col].fillna("").astype(str).str.strip()
+        ck = ck.where(ck != "", _norm_isin(d["ISIN"]))
+    else:
+        ck = _norm_isin(d["ISIN"])
+    d = d.assign(_ck=ck.to_numpy())
+    iss = d.groupby("_ck")[weight_col].sum()          # issuer weights (percent)
+    keys = iss.index.to_numpy()
+    w = iss.to_numpy(dtype=float)
+    w = w / w.sum()                                    # fractions, sum 1
+
+    def _fill_to_room(w, amount, ceiling):
+        # add `amount` to issuers below `ceiling`, proportional to their room (ceiling - w),
+        # so no issuer exceeds `ceiling`. Returns (w, leftover).
+        room = np.maximum(ceiling - w, 0.0)
+        tr = float(room.sum())
+        if amount > tol and tr > tol:
+            add = min(amount, tr)
+            w = w + add * (room / tr)
+            amount -= add
+        return w, amount
+
+    # (1) 10% single-issuer cap: weight-proportional redistribution, iterated to convergence.
+    for _ in range(max_iter):
+        over = w > single + tol
+        if not over.any():
+            break
+        excess = float((w[over] - single).sum())
+        w[over] = single
+        free = w < single - tol
+        pool = float(w[free].sum())
+        if pool > 0:
+            w[free] = w[free] + excess * (w[free] / pool)
+
+    # (2) 5/40 aggregate: reduce the SMALLEST issuers above 5% down to 5% (they leave the
+    #     >5% tier) until the tier aggregate <= 40%. The largest issuers keep their weight,
+    #     so the mega-caps stay at the 10% cap. Freed weight goes to the sub-5% tail.
+    if float(w[w > agg_lvl + tol].sum()) > agg_cap + tol:
+        tier = float(w[w > agg_lvl + tol].sum())
+        freed = 0.0
+        for i in np.argsort(w):                 # ascending -> smallest >5% issuers first
+            if tier <= agg_cap + tol:
+                break
+            if w[i] > agg_lvl + tol:
+                old = float(w[i])
+                w[i] = agg_lvl
+                tier -= old                      # this issuer leaves the >5% tier
+                freed += old - agg_lvl
+        w, leftover = _fill_to_room(w, freed, agg_lvl)     # freed weight to sub-5% issuers
+        if leftover > tol:                                 # rare: no room below 5% remaining
+            w, _ = _fill_to_room(w, leftover, single)
+    w = w / w.sum()                                     # guard fp drift
+    iss_frac = dict(zip(keys, w))
+    # Split the capped issuer weight back to its lines, proportional to original line weight.
+    orig_iss = d.groupby("_ck")[weight_col].transform("sum").to_numpy(dtype=float)
+    share = np.where(orig_iss > 0, line_w / orig_iss, 0.0)
+    new_iss = d["_ck"].map(iss_frac).to_numpy(dtype=float)
+    d[weight_col] = new_iss * share * 100.0
+    return d.drop(columns=["_ck"])
 
 def _norm_isin(s):
     """Normalisiere eine ISIN- (oder Key-)Series: NaN→'', str, getrimmt, GROSS.
