@@ -91,6 +91,90 @@ def to_excel_one(df, sheet_name="Sheet1"):
     download buttons in the Multi-Period tab (rebuilds only when the table changes)."""
     return to_excel_multi({sheet_name: df})
 
+
+# ── Multi-Period Excel-Export (LAZY: erst auf Klick "Downloads vorbereiten") ──────
+# Baut aus dem gespeicherten Lauf-Ergebnis die 4 Export-Dateien. Wird NICHT mehr
+# eager nach jedem Run erzeugt, sondern nur wenn der Nutzer sie anfordert — das
+# haelt den Multi-Period-Run schlank (der Run selbst zahlt die Excel-Kosten nicht).
+def _mp_bt_matrix(_pdict):
+    """Backtest-Matrix: Termin (Zeilen, DD.MM.YYYY) × Exchange Ticker (Spalten),
+    Gewicht als Fraktion (Summe 1.0), groesste Positionen zuerst."""
+    _rows = []
+    for _sd in sorted(_pdict.keys()):
+        _cons = _pdict[_sd]
+        if ("Exchange Ticker" not in _cons.columns or "Index_Weight" not in _cons.columns
+                or len(_cons) == 0):
+            continue
+        _d = _cons[["Exchange Ticker", "Index_Weight"]].copy()
+        _d["Termin"] = _sd
+        _rows.append(_d)
+    if not _rows:
+        return None
+    _bt = (pd.concat(_rows, ignore_index=True)
+             .pivot_table(index="Termin", columns="Exchange Ticker",
+                          values="Index_Weight", aggfunc="sum").fillna(0.0))
+    if _bt.empty:
+        return None
+    _bt = _bt[_bt.sum().sort_values(ascending=False).index]
+    _bt = _bt / 100.0
+    _bt.index = [pd.Timestamp(_dd).strftime("%d.%m.%Y") for _dd in _bt.index]
+    _bt.index.name = "Date"
+    return _bt
+
+
+def _mp_bt_xlsx(_by_idx):
+    """Backtest-Export als Excel — Prozentformat auf SPALTEN-Ebene (xlsxwriter
+    set_column, O(Spalten)), keine Zelle-fuer-Zelle-Schleife."""
+    _buf = BytesIO()
+    with pd.ExcelWriter(_buf, engine="xlsxwriter") as _xl:
+        _pct = _xl.book.add_format({"num_format": "0.000000%"})
+        for _nm, _bt in _by_idx.items():
+            _sn = str(_nm)[:31]
+            _bt.to_excel(_xl, sheet_name=_sn, index=True)
+            _ws = _xl.sheets[_sn]
+            _ws.set_column(0, 0, 12)
+            _ws.set_column(1, _bt.shape[1], None, _pct)
+            _ws.freeze_panes(1, 1)
+    return _buf.getvalue()
+
+
+def _mp_build_export_bytes():
+    """Erzeugt die 4 Multi-Period-Export-Dateien aus dem Session-State-Lauf und
+    legt sie im Session-State ab. Aufruf nur auf 'Downloads vorbereiten'-Klick."""
+    _res = st.session_state.get("multi_results", {})
+    _sum = st.session_state.get("multi_summary", pd.DataFrame())
+    _wide = st.session_state.get("multi_wide", {})
+    _seg = st.session_state.get("multi_segmatrix", {})
+    _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
+                  "Classification", "Mapping Country", "Exchange Country Name",
+                  "Segment_New", "Size_Buffer_Held", "Free Float Percent",
+                  "Total MCap Y2025", "Share MCap Y2025", "Free Float MCap Y2025",
+                  "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight"]
+    _sheets_long = {"Summary": _sum}
+    for _idx_name, _period_dict in _res.items():
+        _parts = []
+        for _sd, _df in _period_dict.items():
+            _p = _df.copy()
+            _p.insert(0, "Selection Date", _sd)
+            _parts.append(_p)
+        if not _parts:
+            continue
+        _stacked = pd.concat(_parts, ignore_index=True)
+        _cols = [c for c in _long_cols if c in _stacked.columns]
+        _sheets_long[_idx_name[:31]] = _stacked[_cols].sort_values(
+            ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
+    _sheets_wide = {"Summary": _sum, **{k[:31]: v for k, v in _wide.items()}}
+    _sheets_seg = {"Summary": _sum, **{k[:31]: v for k, v in _seg.items()}}
+    _bt_by_idx = {}
+    for _idx_name, _period_dict in _res.items():
+        _btm = _mp_bt_matrix(_period_dict)
+        if _btm is not None:
+            _bt_by_idx[_idx_name] = _btm
+    st.session_state["multi_export_long_bytes"] = to_excel_multi(_sheets_long)
+    st.session_state["multi_export_wide_bytes"] = to_excel_multi(_sheets_wide, pct_date_cols=True)
+    st.session_state["multi_export_seg_bytes"] = to_excel_multi(_sheets_seg)
+    st.session_state["multi_export_bt_bytes"] = _mp_bt_xlsx(_bt_by_idx) if _bt_by_idx else None
+
 # clean_export_cols / EXPORT_COL_RENAME are imported from pipeline_core (single
 # source of truth). to_excel_multi() applies clean_export_cols to every sheet, so
 # Excel exports are handled centrally; the explicit calls below are only for the
@@ -3031,104 +3115,27 @@ with tab_multi:
                 # (Widget-Key persistiert sonst eine alte Auswahl und ignoriert index=).
                 st.session_state["multi_detail_period"] = _periods_to_run[-1]
 
-                # ── Schwere Export-Artefakte EINMALIG bauen (nicht bei jedem Rerun) ──
-                # Long Format: EIN Sheet pro Produkt, alle Perioden gestapelt (Spalte
-                # "Selection Date") statt 1 Sheet je Produkt×Periode → keine Sheet-Explosion.
-                _sheets_long = {"Summary": _summary_df_run}
-                _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
-                              "Classification", "Mapping Country", "Exchange Country Name",
-                              "Segment_New", "Size_Buffer_Held", "Free Float Percent",
-                              "Total MCap Y2025", "Share MCap Y2025", "Free Float MCap Y2025",
-                              "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight"]
-                for _idx_name, _period_dict in results_per_index.items():
-                    _parts = []
-                    for _sd, _df in _period_dict.items():
-                        _p = _df.copy()
-                        _p.insert(0, "Selection Date", _sd)
-                        _parts.append(_p)
-                    if not _parts:
-                        continue
-                    _stacked = pd.concat(_parts, ignore_index=True)
-                    _cols = [c for c in _long_cols if c in _stacked.columns]
-                    _sheets_long[_idx_name[:31]] = _stacked[_cols].sort_values(
-                        ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
-
-                # Wide Format (vektorisiert): Gewichtsmatrix pro Index
+                # ── Nur die LEICHTEN Display-Matrizen bauen (fuer die On-Screen-Tabellen).
+                # Die SCHWEREN Excel-Exports (long/wide/seg/backtest) werden NICHT mehr
+                # eager erzeugt, sondern erst auf Klick "Downloads vorbereiten"
+                # (_mp_build_export_bytes) — das haelt den Multi-Period-Run schlank.
                 _wide_by_idx = {}
-                _sheets_wide = {"Summary": _summary_df_run}
                 for _idx_name, _period_dict in results_per_index.items():
                     _wide, _pp = build_wide_matrix(_period_dict)
-                    if _wide is None or _wide.empty:
-                        continue
-                    _wide_by_idx[_idx_name] = _wide
-                    _sheets_wide[_idx_name[:31]] = _wide
-
-                # Segment-Wanderung (vektorisiert): Segment×Periode-Matrix pro Index
+                    if _wide is not None and not _wide.empty:
+                        _wide_by_idx[_idx_name] = _wide
                 _segmat_by_idx = {}
-                _sheets_seg = {"Summary": _summary_df_run}
                 for _idx_name, _period_dict in results_per_index.items():
                     _seg, _spp = build_segment_matrix(_period_dict)
-                    if _seg is None or _seg.empty:
-                        continue
-                    _segmat_by_idx[_idx_name] = _seg
-                    _sheets_seg[_idx_name[:31]] = _seg
-
-                # Backtest-Export (Termin x Ticker, %) je Index — analog Helvetica:
-                # Datum in Zeilen (DD.MM.YYYY), Exchange Ticker in Spalten, Gewicht als
-                # Fraktion (Summe 1.0) im Prozentformat, volle Praezision.
-                def _bt_matrix(_pdict):
-                    _rows = []
-                    for _sd in sorted(_pdict.keys()):
-                        _cons = _pdict[_sd]
-                        if ("Exchange Ticker" not in _cons.columns or "Index_Weight" not in _cons.columns
-                                or len(_cons) == 0):
-                            continue
-                        _d = _cons[["Exchange Ticker", "Index_Weight"]].copy()
-                        _d["Termin"] = _sd
-                        _rows.append(_d)
-                    if not _rows:
-                        return None
-                    _bt = (pd.concat(_rows, ignore_index=True)
-                             .pivot_table(index="Termin", columns="Exchange Ticker",
-                                          values="Index_Weight", aggfunc="sum").fillna(0.0))
-                    if _bt.empty:
-                        return None
-                    _bt = _bt[_bt.sum().sort_values(ascending=False).index]  # groesste Positionen zuerst
-                    _bt = _bt / 100.0                                        # Prozent -> Fraktion
-                    _bt.index = [pd.Timestamp(_dd).strftime("%d.%m.%Y") for _dd in _bt.index]
-                    _bt.index.name = "Date"
-                    return _bt
-
-                def _bt_xlsx(_by_idx):
-                    # xlsxwriter: Prozentformat auf SPALTEN-Ebene (set_column, O(Spalten)),
-                    # keine Zelle-für-Zelle-Schleife. Datum-Index in Spalte A, alle
-                    # Gewichtsspalten als Prozent (volle Praezision).
-                    _buf = BytesIO()
-                    with pd.ExcelWriter(_buf, engine="xlsxwriter") as _xl:
-                        _pct = _xl.book.add_format({"num_format": "0.000000%"})
-                        for _nm, _bt in _by_idx.items():
-                            _sn = str(_nm)[:31]
-                            _bt.to_excel(_xl, sheet_name=_sn, index=True)
-                            _ws = _xl.sheets[_sn]
-                            _ws.set_column(0, 0, 12)                     # Datum-Index-Spalte
-                            _ws.set_column(1, _bt.shape[1], None, _pct)  # alle Gewichtsspalten
-                            _ws.freeze_panes(1, 1)                       # = "B2"
-                    return _buf.getvalue()
-
-                _bt_by_idx = {}
-                for _idx_name, _period_dict in results_per_index.items():
-                    _btm = _bt_matrix(_period_dict)
-                    if _btm is not None:
-                        _bt_by_idx[_idx_name] = _btm
-                st.session_state["multi_export_bt_bytes"] = _bt_xlsx(_bt_by_idx) if _bt_by_idx else None
-
+                    if _seg is not None and not _seg.empty:
+                        _segmat_by_idx[_idx_name] = _seg
                 st.session_state["multi_wide"] = _wide_by_idx
                 st.session_state["multi_segmatrix"] = _segmat_by_idx
-                st.session_state["multi_export_long_bytes"] = to_excel_multi(_sheets_long)
-                # Wide-Matrix: Datums-Gewichtsspalten als echtes Excel-Prozent, jetzt direkt
-                # beim Schreiben via set_column (O(Spalten)) statt Reload + Zelle-fuer-Zelle.
-                st.session_state["multi_export_wide_bytes"] = to_excel_multi(_sheets_wide, pct_date_cols=True)
-                st.session_state["multi_export_seg_bytes"] = to_excel_multi(_sheets_seg)
+                # Stale Export-Bytes eines frueheren Laufs verwerfen — muessen fuer den
+                # neuen Lauf neu vorbereitet werden.
+                for _k in ("multi_export_long_bytes", "multi_export_wide_bytes",
+                           "multi_export_seg_bytes", "multi_export_bt_bytes"):
+                    st.session_state.pop(_k, None)
 
             # Display Results (if available)
             if "multi_results" in st.session_state:
@@ -3310,11 +3317,19 @@ with tab_multi:
                     _ic_rows.append(_row)
                 st.dataframe(pd.DataFrame(_ic_rows), width='stretch', hide_index=True)
 
-                # Excel-Export — Artefakte wurden EINMALIG nach dem Lauf gebaut
-                # (s. run_btn-Block) und liegen im Session-State. Hier nur noch
-                # ausliefern → kein Neuaufbau bei jedem Widget-Klick/Rerun.
+                # Excel-Export — LAZY: die schweren Export-Dateien werden erst auf Klick
+                # erzeugt (nicht mehr eager nach jedem Lauf), damit der Run schlank bleibt.
+                # Danach liegen die Bytes im Session-State und werden hier nur ausgeliefert.
                 st.markdown("---")
                 st.markdown("### 💾 Multi-Period Export")
+
+                if "multi_export_long_bytes" not in st.session_state:
+                    st.caption("Die Download-Dateien werden erst auf Klick erzeugt "
+                               "(hält den Multi-Period-Run schlank).")
+                    if st.button("📦 Downloads vorbereiten", key="multi_prep_dl", type="primary"):
+                        with st.spinner("Baue Export-Dateien…"):
+                            _mp_build_export_bytes()
+                        st.rerun()
 
                 if "multi_export_long_bytes" in st.session_state:
                     st.download_button(
