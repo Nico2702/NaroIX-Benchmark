@@ -179,6 +179,31 @@ def test_build_index_thematic():
     check("build_index thematic: weights sum 100", round(techtop["Index_Weight"].sum(), 6) == 100.0)
 
 
+def test_atvr_dual_horizon():
+    # apply_liquidity_new screens ATVR MSCI-style on BOTH horizons: a name must clear the
+    # threshold on the 3M AND the 12M ATVR, not just one. ADTV set well above the $1M gate
+    # so only the ATVR condition binds.
+    big = 10_000_000.0
+    rows = [
+        # ISIN, Class, 3M ADTV, 6M ADTV, ATVR_3M, ATVR_12M
+        ("L1", "DM", big, big, 0.50, 0.50),   # both clear -> in
+        ("L2", "DM", big, big, 0.05, 0.50),   # 3M fails    -> out
+        ("L3", "DM", big, big, 0.50, 0.05),   # 12M fails   -> out
+        ("L4", "DM", big, big, 0.05, 0.05),   # both fail   -> out
+        ("E1", "EM", big, big, 0.50, 0.50),   # EM both clear -> in
+    ]
+    df = pd.DataFrame(rows, columns=["ISIN", "Classification", "3M ADTV Y2025",
+                                     "6M ADTV Y2025", "ATVR_3M", "ATVR_12M"])
+    keep = set(C.apply_liquidity_new(df, 1_000_000.0, 1_000_000.0, 0.20, 0.20)["ISIN"])
+    check("atvr dual: both horizons clear -> kept", {"L1", "E1"} <= keep, str(keep))
+    check("atvr dual: 3M-only fail -> excluded", "L2" not in keep, str(keep))
+    check("atvr dual: 12M-only fail -> excluded", "L3" not in keep, str(keep))
+    check("atvr dual: both fail -> excluded", "L4" not in keep, str(keep))
+    # threshold 0 keeps everyone (default screen is a no-op -> default selection unchanged)
+    keep0 = C.apply_liquidity_new(df, 1_000_000.0, 1_000_000.0, 0.0, 0.0)
+    check("atvr dual: threshold 0 keeps all", len(keep0) == len(df), f"{len(keep0)}/{len(df)}")
+
+
 def test_rank_band_buffer():
     # df pre-sorted best-first (rank = row position); A..J = ranks 1..10. N=5, hard=3, exit=7.
     df = pd.DataFrame({"ISIN": list("ABCDEFGHIJ")})
@@ -445,7 +470,7 @@ def integration_tests():
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
-            test_build_index, test_build_index_thematic, test_rank_band_buffer,
+            test_build_index, test_build_index_thematic, test_atvr_dual_horizon, test_rank_band_buffer,
             test_build_index_company_count, test_validate_factset_data, test_delisted_filter_numeric,
             test_with_fol_breakdown, test_fol_matrix_consistency]
     for t in pure:

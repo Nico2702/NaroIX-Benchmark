@@ -80,6 +80,7 @@ Keep a stock only if **all** hold:
 
 ADTV / ATVR, DM/EM differentiated:
 - DM: 3M ADTV ≥ $2M; EM: ≥ $1M (+ optional ATVR minimum). Incumbents get relaxed maintenance thresholds.
+- **ATVR** = annualized traded value ratio = `ADTV × 252 / MCap` (1.0 = 100% of the float turns over per year). Denominator is Free Float MCap (MSCI-conform, default) or Total MCap (conservative), a sidebar toggle. Screened **MSCI-style on two horizons**: a name must clear the threshold on **both** the 3M **and** the 12M ATVR (each falls back to the next-shorter ADTV window on a data gap). Default threshold 0 (screen off). Note: this is a mean-based approximation of MSCI's median-based ATVR, since the master file carries pre-aggregated ADTV windows, not daily traded values.
 
 **Variante A (HANDOVER §2.11): stocks that pass EUMSS but FAIL liquidity are excluded entirely** — not Small, not Micro, not in IMI. The liquidity bar applies to all tiers; failing it means the stock is not investable, so it is out. They are returned as `gm_liq_excluded` (audit only). **Output:** `gm_liq` (the only stocks that proceed to the coverage waterfall).
 
