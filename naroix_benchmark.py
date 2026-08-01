@@ -3100,16 +3100,19 @@ with tab_multi:
                     return _bt
 
                 def _bt_xlsx(_by_idx):
+                    # xlsxwriter: Prozentformat auf SPALTEN-Ebene (set_column, O(Spalten)),
+                    # keine Zelle-für-Zelle-Schleife. Datum-Index in Spalte A, alle
+                    # Gewichtsspalten als Prozent (volle Praezision).
                     _buf = BytesIO()
-                    with pd.ExcelWriter(_buf, engine="openpyxl") as _xl:
+                    with pd.ExcelWriter(_buf, engine="xlsxwriter") as _xl:
+                        _pct = _xl.book.add_format({"num_format": "0.000000%"})
                         for _nm, _bt in _by_idx.items():
                             _sn = str(_nm)[:31]
                             _bt.to_excel(_xl, sheet_name=_sn, index=True)
                             _ws = _xl.sheets[_sn]
-                            for _r in range(2, _ws.max_row + 1):
-                                for _c in range(2, _ws.max_column + 1):
-                                    _ws.cell(row=_r, column=_c).number_format = "0.000000%"
-                            _ws.freeze_panes = "B2"; _ws.column_dimensions["A"].width = 12
+                            _ws.set_column(0, 0, 12)                     # Datum-Index-Spalte
+                            _ws.set_column(1, _bt.shape[1], None, _pct)  # alle Gewichtsspalten
+                            _ws.freeze_panes(1, 1)                       # = "B2"
                     return _buf.getvalue()
 
                 _bt_by_idx = {}
@@ -3122,26 +3125,9 @@ with tab_multi:
                 st.session_state["multi_wide"] = _wide_by_idx
                 st.session_state["multi_segmatrix"] = _segmat_by_idx
                 st.session_state["multi_export_long_bytes"] = to_excel_multi(_sheets_long)
-                def _fmt_wide_pct(_xlsx_bytes):
-                    # Gewichtsspalten (Header = YYYY-MM-DD) als echtes Excel-Prozent:
-                    # Prozent-Einheit -> Fraktion (/100) + Prozentformat, volle Praezision
-                    # (6 Nachkommastellen = native Matrix-Praezision). Static-/Summary-Spalten
-                    # bleiben unberuehrt (nur Datums-Header werden formatiert).
-                    from openpyxl import load_workbook
-                    import re as _re_w
-                    _dre = _re_w.compile(r"^\d{4}-\d{2}-\d{2}$")
-                    _wb = load_workbook(BytesIO(_xlsx_bytes))
-                    for _ws in _wb.worksheets:
-                        _dcols = [ci for ci, _c in enumerate(_ws[1], start=1)
-                                  if isinstance(_c.value, str) and _dre.match(_c.value.strip())]
-                        for _ci in _dcols:
-                            for _r in range(2, _ws.max_row + 1):
-                                _cell = _ws.cell(row=_r, column=_ci)
-                                if isinstance(_cell.value, (int, float)):
-                                    _cell.value = _cell.value / 100.0
-                                    _cell.number_format = "0.000000%"
-                    _out = BytesIO(); _wb.save(_out); return _out.getvalue()
-                st.session_state["multi_export_wide_bytes"] = _fmt_wide_pct(to_excel_multi(_sheets_wide))
+                # Wide-Matrix: Datums-Gewichtsspalten als echtes Excel-Prozent, jetzt direkt
+                # beim Schreiben via set_column (O(Spalten)) statt Reload + Zelle-fuer-Zelle.
+                st.session_state["multi_export_wide_bytes"] = to_excel_multi(_sheets_wide, pct_date_cols=True)
                 st.session_state["multi_export_seg_bytes"] = to_excel_multi(_sheets_seg)
 
             # Display Results (if available)

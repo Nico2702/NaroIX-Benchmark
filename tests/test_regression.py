@@ -83,6 +83,30 @@ def test_excel_no_y2025_leak():
         check(f"export: no Y2025 header ({label})", not leak)
 
 
+def test_to_excel_pct_date_cols():
+    # pct_date_cols=True: date-headed columns (YYYY-MM-DD) written as real Excel percent
+    # (value/100 + '%' number format at column level); other columns untouched.
+    import io, openpyxl
+    df = pd.DataFrame({"ISIN": ["A", "B"], "Name": ["x", "y"],
+                       "2026-05-20": [1.5, 40.0], "Total MCap Y2025": [100.0, 200.0]})
+    wb = openpyxl.load_workbook(io.BytesIO(C.to_excel_multi({"S": df}, pct_date_cols=True)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    dci = hdr.index("2026-05-20") + 1                        # 1-based date column
+    tci = next(i for i, h in enumerate(hdr, start=1) if h and "Total MCap" in str(h))
+    check("pct_date: value divided by 100", abs(ws.cell(row=2, column=dci).value - 0.015) < 1e-9,
+          str(ws.cell(row=2, column=dci).value))
+    check("pct_date: percent number format", "%" in ws.cell(row=2, column=dci).number_format,
+          ws.cell(row=2, column=dci).number_format)
+    check("pct_date: non-date value untouched", abs(ws.cell(row=2, column=tci).value - 100.0) < 1e-9)
+    check("pct_date: non-date no percent format", "%" not in ws.cell(row=2, column=tci).number_format)
+    # default (flag off): date column stays as-is (no /100, no percent)
+    wb0 = openpyxl.load_workbook(io.BytesIO(C.to_excel_multi({"S": df})))
+    ws0 = wb0.active
+    dci0 = [c.value for c in ws0[1]].index("2026-05-20") + 1
+    check("pct_date default off: value unchanged", abs(ws0.cell(row=2, column=dci0).value - 1.5) < 1e-9)
+
+
 def test_norm_fol_key():
     a = C._norm_fol_key("Consumer Services", "Hotels/Resorts/Cruise lines")
     b = C._norm_fol_key("Consumer Services", "Hotels/Resorts/Cruiselines")
@@ -517,6 +541,7 @@ def integration_tests():
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
+            test_to_excel_pct_date_cols,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
             test_build_index, test_build_index_thematic, test_atvr_dual_horizon, test_rank_band_buffer,
             test_build_index_company_count, test_ucits_cap, test_validate_factset_data, test_delisted_filter_numeric,
