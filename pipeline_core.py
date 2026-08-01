@@ -58,13 +58,20 @@ def with_fol_breakdown(df):
     pos = cols.index("Adj_FF_MCap")
     return out[cols[:pos] + block + cols[pos:]]
 
-def to_excel_multi(sheets: dict):
+def to_excel_multi(sheets: dict, pct_date_cols=False):
     """Export multiple DataFrames as sheets. sheets = {sheet_name: df}.
     Uses xlsxwriter (markedly faster than openpyxl when writing many sheets);
     falls back to openpyxl if xlsxwriter is unavailable.
     Per sheet: FOL/IF are surfaced before Adj_FF_MCap (with_fol_breakdown), the
     internal 'Y2025' suffix is stripped (clean_export_cols), and Share MCap is placed
-    between Total MCap and Free Float MCap (_place_share_mcap)."""
+    between Total MCap and Free Float MCap (_place_share_mcap).
+
+    pct_date_cols: when True, columns whose header is a date (YYYY-MM-DD, e.g. the
+    weight-matrix period columns) are written as real Excel percent — value / 100 plus
+    a '0.000000%' number format applied at COLUMN level (xlsxwriter set_column, O(cols)),
+    not cell-by-cell. Non-date columns are untouched."""
+    import re as _re
+    _date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
     try:
         import xlsxwriter  # noqa: F401
         _engine = "xlsxwriter"
@@ -73,8 +80,27 @@ def to_excel_multi(sheets: dict):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine=_engine) as writer:
         for sheet_name, df in sheets.items():
-            _place_share_mcap(clean_export_cols(with_fol_breakdown(df))).to_excel(
-                writer, sheet_name=sheet_name[:31], index=False)
+            out = _place_share_mcap(clean_export_cols(with_fol_breakdown(df)))
+            _dcols = ([c for c in out.columns if isinstance(c, str) and _date_re.match(c.strip())]
+                      if pct_date_cols else [])
+            if _dcols:
+                out = out.copy()
+                for _c in _dcols:
+                    out[_c] = pd.to_numeric(out[_c], errors="coerce") / 100.0
+            _sn = sheet_name[:31]
+            out.to_excel(writer, sheet_name=_sn, index=False)
+            if _dcols:
+                ws = writer.sheets[_sn]
+                if _engine == "xlsxwriter":
+                    _fmt = writer.book.add_format({"num_format": "0.000000%"})
+                    for _c in _dcols:
+                        _ci = int(out.columns.get_loc(_c))
+                        ws.set_column(_ci, _ci, None, _fmt)
+                else:  # openpyxl fallback (rare): format only the date columns
+                    for _c in _dcols:
+                        _ci = int(out.columns.get_loc(_c)) + 1
+                        for _r in range(2, ws.max_row + 1):
+                            ws.cell(row=_r, column=_ci).number_format = "0.000000%"
     return buf.getvalue()
 
 def normalize_index_weight(df, adj_col="Adj_FF_MCap"):
