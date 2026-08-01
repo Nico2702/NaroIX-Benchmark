@@ -709,7 +709,7 @@ Small Cap und Micro Cap werden relativ zum jeweiligen Standard Index ausgewiesen
     st.markdown("---")
     # IF + FOL_Value bleiben im Export (zeigen, wie Adj_FF_MCap zustande kommt;
     # to_excel_multi positioniert sie via with_fol_breakdown vor Adj_FF_MCap).
-    _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best"]
+    _drop = ["_cum_pct","_c","_cp2","_cp2_before","ATVR_3M","ATVR_12M"]
     _drop_universe = _drop + ["Index_Weight"]
 
     def _prep(df, adj_col="Adj_FF_MCap"):
@@ -949,6 +949,8 @@ with st.sidebar:
     _atvr_c, _atvr_d = st.columns([3,4])
     with _atvr_c: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EM ATVR Min. (%)</div>", unsafe_allow_html=True)
     with _atvr_d: _atvr_em_raw = st.text_input("EM ATVR", value="0", key="atvr_em_new", label_visibility="collapsed")
+    st.caption("ATVR = annualisierter Handelsumsatz / MCap (1.0 = 100% Umschlag). Screen MSCI-Stil "
+               "auf 3M UND 12M: beide Horizonte müssen die Schwelle erreichen. 0 = aus.")
 
     try:    new_adtv_dm = float(_adtv_dm_raw.replace(",",""))
     except (ValueError, TypeError): new_adtv_dm = 1_000_000.0
@@ -1895,7 +1897,7 @@ with tab_europe:
             # Internal working columns dropped from the export (Index_Weight is
             # recomputed by normalize_index_weight, so it can stay in the slice).
             # IF/FOL bleiben drin (with_fol_breakdown positioniert sie vor Adj_FF_MCap).
-            _eu_cols = [c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best"]]
+            _eu_cols = [c for c in _eu_dm.columns if c not in ["_cum_pct","_c","_cp2","_cp2_before","ATVR_3M","ATVR_12M"]]
             _eu_dl       = normalize_index_weight(_eu_dm[_eu_cols].copy())
             _eu_large_dl = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Large Cap"][_eu_cols].copy())
             _eu_mid_dl   = normalize_index_weight(_eu_dm[_eu_dm["Segment_New"]=="Mid Cap"][_eu_cols].copy())
@@ -2054,7 +2056,7 @@ def render_single_country_tab(gm_complete_df, country_iso, country_display, flag
             st.caption(f"Anzeige: Top {_show_n} von {len(_df)} Stocks. Vollständige Liste im Excel-Download.")
 
         # Download
-        _drop = ["_cum_pct","_c","_cp2","_cp2_before","ADTV_Best","Section_Weight"]  # IF/FOL bleiben für den Export
+        _drop = ["_cum_pct","_c","_cp2","_cp2_before","ATVR_3M","ATVR_12M","Section_Weight"]  # IF/FOL bleiben für den Export
         _dl_df = _df[[c for c in _df.columns if c not in _drop]].copy()
         _dl_df = normalize_index_weight(_dl_df)
         _params = {

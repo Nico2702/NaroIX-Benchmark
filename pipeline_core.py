@@ -1557,13 +1557,22 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     df = apply_fol_matrix(df, fol_matrix, fol_sector_fb, fol_year, thailand_mode,
                           fol_enabled=fol_enabled, china_if=china_if)
 
-    # ADTV best for ATVR
-    df["ADTV_Best"] = df["12M ADTV Y2025"].where(df["12M ADTV Y2025"]>0,
-                      df["6M ADTV Y2025"].where(df["6M ADTV Y2025"]>0,
-                      df["3M ADTV Y2025"].where(df["3M ADTV Y2025"]>0,
-                      df["1M ADTV Y2025"])))
-    df["ATVR"] = np.where(df[atvr_mcap_col]>0,
-                          df["ADTV_Best"]*252/df[atvr_mcap_col], 0)
+    # ATVR (annualized traded value ratio) = ADTV * 252 / MCap, MSCI-style on two
+    # horizons: 3M (recent liquidity) and 12M (sustained liquidity). Both are screened
+    # separately in apply_liquidity_new. Each horizon falls back to the next-best shorter
+    # window when its own ADTV is missing/<=0, so a genuinely liquid name with a data gap
+    # (e.g. <12M history) is not zeroed out.
+    _mc   = pd.to_numeric(df[atvr_mcap_col], errors="coerce")
+    _a1   = df["1M ADTV Y2025"]
+    _a3   = df["3M ADTV Y2025"]
+    _a6   = df["6M ADTV Y2025"]
+    _a12  = df["12M ADTV Y2025"]
+    _adtv3  = _a3.where(_a3 > 0, _a1)                                   # 3M, fallback 1M
+    _adtv12 = _a12.where(_a12 > 0, _a6.where(_a6 > 0, _adtv3))          # 12M, fallback 6M -> 3M -> 1M
+    df["ATVR_3M"]  = np.where(_mc > 0, _adtv3  * 252 / _mc, 0.0)
+    df["ATVR_12M"] = np.where(_mc > 0, _adtv12 * 252 / _mc, 0.0)
+    # Combined value kept for display / back-compat = the stricter (min) of the two horizons.
+    df["ATVR"] = np.minimum(df["ATVR_3M"], df["ATVR_12M"])
     return df
 
 def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
@@ -1597,10 +1606,16 @@ def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
     _cls = df["Classification"].fillna("")
     _a3m = df["3M ADTV Y2025"]
     _a6m = df["6M ADTV Y2025"]
-    _atvr = df["ATVR"]
+    _atvr3  = df["ATVR_3M"]
+    _atvr12 = df["ATVR_12M"]
 
-    mask_dm = (_cls=="DM") & (_a3m >= _adtv_dm_thr) & (_a6m >= _adtv_dm_thr) & (_atvr >= _atvr_dm_thr)
-    mask_em = (_cls=="EM") & (_a3m >= _adtv_em_thr) & (_a6m >= _adtv_em_thr) & (_atvr >= _atvr_em_thr)
+    # ATVR screen (MSCI-style dual horizon): a name must clear the threshold on BOTH the
+    # 3M and the 12M horizon. With the default threshold 0 both conditions pass trivially,
+    # so the default selection is unchanged; the dual screen only bites when a threshold >0.
+    mask_dm = ((_cls=="DM") & (_a3m >= _adtv_dm_thr) & (_a6m >= _adtv_dm_thr)
+               & (_atvr3 >= _atvr_dm_thr) & (_atvr12 >= _atvr_dm_thr))
+    mask_em = ((_cls=="EM") & (_a3m >= _adtv_em_thr) & (_a6m >= _adtv_em_thr)
+               & (_atvr3 >= _atvr_em_thr) & (_atvr12 >= _atvr_em_thr))
 
     return df[mask_dm | mask_em].copy()
 
