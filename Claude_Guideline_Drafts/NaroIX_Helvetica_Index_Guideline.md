@@ -85,15 +85,33 @@ Maintenance-Schwelle gilt, wenn der Titel in den Vorperioden-Konstituenten ist (
 der globale Buffer-Modus aktiv ist.
 
 ### Schritt 3 — Liquidität
-- **3M ADTV ≥ Schwelle**, fester Wert (kein Buffer).
-- Standard: **$1,0 Mio.**; umschaltbar auf $0,5 Mio. / $0,25 Mio. (inklusiver, mehr Kleintitel/RE).
+Pro Titel, abhängig vom Status (gleiche Inkumbenten-Definition wie Schritt 2):
+
+| | Entry (Neukandidat) | Maintenance (Bestand/Inkumbent) |
+|---|---|---|
+| 3M ADTV | ≥ Schwelle | ≥ 75 % der Schwelle |
+
+- Entry-Schwelle: **CHF 1,00 Mio.**, Maintenance **CHF 0,75 Mio.** Die Helvetica-Daten kommen in
+  CHF (eigenes File), es wird nichts umgerechnet.
+- **Wo die Werte herkommen:** solange die Guideline nicht final ist (der ETF ist noch nicht live),
+  werden die Selektionsschwellen aus der Sidebar gelesen — Coverage-Cuts, Min FF %, ADTV und die
+  Buffer-Bandbreiten. So lassen sich Anpassungen ohne Code-Änderung durchrechnen. Nachvollziehbar
+  bleibt jeder Lauf über den Settings-Stempel, der als Blatt **„Settings"** in jedem
+  Helvetica-Export liegt. Die hier dokumentierten Werte sind die Defaults und stimmen mit den
+  Guideline-Größen überein; die Konstante `HELVETICA_RULES` im Code hält sie als Fallback für
+  Tests und Headless-Läufe. Mit dem Live-Gang sollte diese Kopplung wieder gelöst werden.
+- Das Verhältnis 75 % entspricht der NaroIX-Serie (Entry $1,0 Mio., Maintenance $750k).
+- Der Buffer wirkt **pro Linie**: die Schwestergattung eines Bestandstitels ist selbst kein
+  Indexmitglied und läuft weiter gegen die Entry-Schwelle.
 
 ### Schritt 3b — Company-Level-Dedup (vor dem Coverage-Cut)
 - Pro Unternehmen (**Entity ID**) bleibt nur die **liquideste Linie** (höchstes 3M-ADTV).
 - Verhindert Doppelzählung von Mehrfach-Listings (Variante B) in der Coverage-Kumulation —
   jedes Unternehmen zählt **genau einmal**, mit derselben Linie, die später im Sleeve landet.
-- Für echte Paare = die Primary-Linie (Roche ROP, Swatch UHR, Schindler SCHP); hält aber z. B.
-  Lindt korrekt über LISP, falls die Primary (LISN) per Preis-Filter rausfällt.
+- Für echte Paare = die Primary-Linie (Roche ROP, Swatch UHR, Schindler SCHP). Bei Lindt gewinnt
+  LISP, weil es rund doppelt so liquide ist wie LISN — in 47 von 48 Perioden; nur am 2016-08-17
+  lag LISN mit Faktor 1,010 vorn. Der Dedup kennt keinen Bestandsschutz: ein Linienwechsel zählt
+  im Rang-Band-Buffer als Abgang plus Zugang.
 
 ### Schritt 4 — Coverage-Cut → Segmentierung (Large / Mid / Small / Micro)
 - Sortierung: **Total MCap absteigend** (Tiebreaker: Adj_FF_MCap absteigend).
@@ -120,9 +138,11 @@ zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schrit
   Gewicht = Sleeve-Gewicht / n). Die gewählten Titel werden danach **aus dem Restbestand entfernt**,
   bevor das nächstkleinere Segment an der Reihe ist.
   - **Kaskaden-Auffüllen:** Hat ein Segment **weniger als 10** eigene Titel im Restbestand, zieht es
-    die **besten** Titel (nach Adj_FF_MCap) des **nächstkleineren** Segments nach
-    (Large ← Mid, Mid ← Small, Small ← Micro). Solche Titel werden als **„Aufrücker"** markiert; ihre
-    echte Coverage-Klasse (`True_Segment`) bleibt im Reporting erhalten.
+    die **besten** Titel (nach Adj_FF_MCap) aus **allen kleineren** Segmenten nach
+    (Large ← Mid/Small/Micro, Mid ← Small/Micro, Small ← Micro). In der Praxis ist das immer das
+    nächstkleinere, weil nach Float sortiert wird und dieses nie erschöpft ist. Solche Titel werden
+    als **„Aufrücker"** markiert; ihre echte Coverage-Klasse (`True_Segment`) bleibt im Reporting
+    erhalten. **Micro Cap ist dabei ausschliesslich Quelle, nie eigenes Sleeve.**
   - **„≥ 10" gilt auf dem Restbestand:** Weil die nachgezogenen Titel entfernt sind, prüft das nächste
     Segment seine 10er-Schwelle auf dem **reduzierten** Bestand. Drückt ein knappes Large das
     Mid-Segment unter 10, zieht **Mid** seinerseits aus Small nach (usw.) — die Kaskade pflanzt sich
@@ -144,7 +164,8 @@ zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schrit
 Der Equity-Teil ist konzeptionell ein **Zwei-Schichten-Modell**:
 
 **Schicht 1 — drei eigenständige Swiss Size Sub-Indizes** (Large / Mid / Small Cap):
-- gleiches CH-Universe wie oben (Exchange Country = CH, FF % ≥ 10 %, 3M-ADTV ≥ Schwelle, Preis < 20k);
+- gleiches CH-Universe wie oben (Exchange Country = CH, FF % ≥ 10 %, 3M-ADTV ≥ Schwelle,
+  Hochpreis-Regel nach §6 — jeweils mit Maintenance-Schwelle für Bestandstitel);
 - **Variante B:** *alle* Share Lines dürfen vertreten sein (z. B. Roche ROP **und** RO);
 - Segment = firmen-interner Coverage-Cut (Schritt 4, inkl. ±5/±0,5-Hysterese); jede Linie erbt das
   Segment **ihrer Firma**;
@@ -188,10 +209,19 @@ IF          = min(1, FOL / Free-Float-%)
 
 Bereits **vor** der Helvetica-Pipeline angewendet:
 
-- **Closing Price < 20.000** (USD). Default an. → filtert z. B. Lindt-Namen (~121k) heraus,
-  Lindt-PS (~12k) bleibt.
-- **Ausschlüsse:** HK (CNY), Country of Risk = @NA, NAICS Investment Funds, Exchange Euro MTF/@NA,
-  Name enthält ETF/SICAV.
+- **Hochpreis-Regel (Closing Price ≥ 20.000 USD).** Identisch zur NaroIX-Serie und aus derselben
+  Sidebar-Einstellung. Zwei Modi:
+  - *ATVR-Bedingung (Default):* der Titel bleibt, wenn **min(ATVR 3M, ATVR 6M)** die Schwelle
+    erreicht — **10 %** für Neukandidaten, **5 %** für Bestandstitel. Geprüft auf der
+    Liquiditätsstufe, weil die ATVR vorher nicht berechnet ist.
+  - *Ausschluss (altes Verhalten):* harter Cut in `build_new_universe`.
+  Ein nominell hoher Kurs sagt nichts über die Handelbarkeit. In der Schweiz betrifft die Regel
+  über alle 48 Perioden **ausschliesslich die Lindt-Namenaktie** (LISN, ~117k), deren ATVR bei
+  17 bis 56 % liegt und die Bedingung damit immer besteht.
+- **Ausschlüsse:** HK (CNY), Country of Risk = @NA, Exchange Euro MTF/@NA,
+  Name enthält ETF/SICAV. (Der NAICS-Ausschluss "Investment Funds" ist am 2026-08-23 entfallen,
+  weil das FactSet-Feld operative Asset Manager als Fonds markierte. Im Master 05/2026 traf er
+  keinen Schweizer Titel.)
 - **Delisting:** Listing Status = inaktiv (1) ausgeschlossen.
 - **FOL/IF** angewendet (siehe §5).
 
@@ -206,11 +236,46 @@ Inkumbenten-Buffer gedämpft:
 |---------|--------------|
 | **Equity (je Sleeve)** | **Rang-Band-Buffer**: neuer Titel muss in die **Top 8** (hart); ein Bestandstitel bleibt in den Top 10, solange sein Rang **≤ 13** ist. |
 | **Real Estate** | **FF-Inkumbenten-Buffer**: Bestands-RE-Titel bleiben mit **FF % ≥ 7,5 %** drin. |
+| **Liquidität (alle Sleeves)** | **ADTV-Inkumbenten-Buffer**: Bestandstitel laufen gegen **75 % der Entry-Schwelle** (Schritt 3). |
+| **Spin-off-Kinder** | Ein aus einem Helvetica-Konstituenten abgespaltener Titel wird beim Ereignis als **Bestandstitel** aufgenommen und erbt das Segment der Mutter. |
 | **Coverage-Cuts (Segment)** | **±5/±0,5-Hysterese pro Firma**: eine Bestands-Firma bleibt in ihrem Segment (Large < 75 %, Mid 65–90 %, Small 84,5–99,5 %); neue Firmen werden hart geschnitten (70/85/99 %). |
 
 - Inkumbenten = die selektierten Konstituenten (55 %) der **Vorperiode**.
-- Rebalancing-Termine sind frei wählbar (Quartalsweise / Halbjährlich / Jährlich / eigene Monate),
-  abhängig von den im Master vorhandenen Stichtagen.
+- Die vier Mechanismen hängen an zwei Schaltern: *Buffer Rules* steuert die
+  Maintenance-Schwellen (FF, ADTV) und das Rang-Band, *Size Buffer* die Coverage-Hysterese.
+  Beide sind im Regelbetrieb an; abgeschaltet ist der Lauf nicht guideline-konform.
+
+### Spin-off-Aufnahme
+- Quelle ist die kuratierte Liste `Spin-Off Data.xlsx` (dieselbe wie in der NaroIX-Serie).
+- Ein Kind wird nur geseedet, wenn die **Mutter in der Vorperiode selektierter Helvetica-Konstituent**
+  war. Abspaltungen ausländischer Mütter (z. B. Italgas aus Snam, Magnum aus Unilever) werden
+  protokolliert und verworfen.
+- Das Kind erbt das **Segment der Mutter**, wird danach aber normal behandelt: die
+  ±5/±0,5-Hysterese hält es nur, solange seine Coverage im Band liegt. Ein zu kleiner
+  Abspaltungs-Stumpf fällt deshalb von selbst in die passende Größenklasse. Beispiel Sandoz
+  (aus Novartis, 2023-11-15): erbt *Large Cap*, landet über die Coverage aber in *Small Cap*.
+- **Liquiditäts-Ausnahme:** ein 3M-Fenster, das seit dem Ex-Date rechnerisch nicht voll sein kann,
+  wird nicht geprüft, solange der Wert **fehlt oder 0** ist. Ein vorhandener Wert unter der
+  Schwelle schließt weiterhin aus.
+- Matching läuft über die **Entity ID**, weil dort die Segmente der Vorperiode liegen; die
+  geseedeten Firmen werden für die Schwellen- und Rang-Band-Prüfung auf ISIN zurückgespiegelt.
+
+### In-Eligible-Liste
+- `In-Eligible.xlsx` wird **nach der Segmentierung** angewendet, an derselben Stelle wie in der
+  NaroIX-Serie: der Titel bleibt Teil des Marktes, der die Größengrenzen definiert, darf aber
+  nicht selektiert werden.
+- Wirkung je Sleeve: die Equity-Sleeves **rücken auf 10 Titel nach**; Real Estate verliert den
+  Titel und verteilt die 15 % gleichmäßig auf die verbleibenden.
+- Die Swiss-Size-Sub-Indizes filtern identisch, damit dort kein Titel erscheint, den der Index
+  nicht halten darf.
+- **Sanktionsscreen (EU/CFSP, OFAC, OFSI, sektoral):** die Guideline fordert ihn, umgesetzt wird er
+  über genau diese In-Eligible-Tabelle. Die Sanktionslisten der Datenanbieter werden also nicht
+  direkt eingelesen, sondern in `In-Eligible.xlsx` gepflegt. Bis das befüllt ist, bleibt der Screen
+  faktisch offen. Für die Schweiz ohne Folgen: keiner der 285 CH-gelisteten Titel im Master steht
+  auf einer der geprüften Listen.
+- Rebalancing erfolgt **quartalsweise**. Das Tool bietet dafür keine Auswahl mehr: es rechnet
+  über alle Selection Dates des geladenen Files. Ein kürzerer Lauf entsteht über ein kürzeres File,
+  nicht über eine Einstellung.
 
 ---
 

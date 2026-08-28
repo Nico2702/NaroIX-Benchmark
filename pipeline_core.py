@@ -25,6 +25,13 @@ EXPORT_COL_RENAME = {
     "3M ADTV Y2025":         "3M ADTV",
     "6M ADTV Y2025":         "6M ADTV",
     "12M ADTV Y2025":        "12M ADTV",
+    # Coverage-Treppe je Segmentierungsmarkt (Land, bei Europe-Pooling der Pool).
+    # _c_before ist der Wert, den die Segmentregel testet (Coverage VOR dem Titel),
+    # _c_after derselbe Stand inkl. der eigenen Zeile. Zwischen den beiden Zeilen, wo
+    # _c_after eine Schwelle reisst, liegt der Cut.
+    "_c_before":             "Coverage_before_%",
+    "_cum_cov":              "Cum_FF_MCap",
+    "_c_after":              "Coverage_after_%",
 }
 
 def _place_share_mcap(df):
@@ -420,6 +427,45 @@ def _size_segment_asym(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
     if c_before < mid_thr:    return "Mid Cap"
     return "Small Cap"
 
+def _size_segment_entry(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0, bw_ms=None):
+    """Aufnahme und Aufstieg am Cut-off, Verbleib im Band (FTSE-Prinzip).
+
+    Unterschied zu _size_segment / _size_segment_asym: die Bandbreite wirkt
+    AUSSCHLIESSLICH auf der Halteseite. Ein Titel steigt an derselben Schwelle auf wie
+    ein Neuzugang (large_thr / mid_thr) und verbleibt bis large_thr+bw bzw. mid_thr+bw_ms
+    in seinem Segment. Damit wird kein Bestandstitel schlechter behandelt als ein frischer
+    an derselben Coverage-Position — im symmetrischen Buffer ist genau das der Fall
+    (dort steigt ein Small-Incumbent erst unter mid_thr-bw auf, ein Neuzugang schon
+    unter mid_thr, gemessen 166,7 blockierte Titel je Periode).
+
+    bw_ms=None → gleiche Bandbreite an beiden Kanten. Getrennt setzbar, weil die Kanten
+    verschiedene Funktionen haben: Mid/Small entscheidet ueber die Index-Zugehoerigkeit,
+    Large/Mid nur ueber die Zuordnung zu den Size-Sub-Indizes.
+
+    Vorbild FTSE GEIS v14.2 §7.6.1/§7.6.4: Inclusion 68/86, Exclusion 72/92, also Baender
+    von 4 und 6 pp, und Aufstieg von Mid bzw. Small exakt an der Inclusion-Schwelle.
+    Der Doppelsprung Small→Large ist dort ausdruecklich vorgesehen ("Small cap constituents
+    will move to the large cap if they fall within the top 68%").
+    """
+    hi_lm = large_thr + bw
+    hi_ms = mid_thr + (bw if bw_ms is None else bw_ms)
+    if prior == "Large Cap":
+        if c_before <= hi_lm: return "Large Cap"      # Verbleib im Band (z.B. ≤75)
+        if c_before <= hi_ms: return "Mid Cap"        # abgestiegen, dort Verbleib (≤90)
+        return "Small Cap"
+    if prior == "Mid Cap":
+        if c_before < large_thr: return "Large Cap"   # Aufstieg am Cut-off (<70)
+        if c_before <= hi_ms:    return "Mid Cap"     # Verbleib im Band (≤90)
+        return "Small Cap"
+    if prior == "Small Cap":
+        if c_before < large_thr: return "Large Cap"   # Aufstieg am Cut-off (<70)
+        if c_before < mid_thr:   return "Mid Cap"     # Aufstieg am Cut-off (<85)
+        return "Small Cap"
+    # Neuzugang / unbekannt / War Micro: glatte Cut-offs — identisch zu den Aufstiegsschwellen
+    if c_before < large_thr:  return "Large Cap"
+    if c_before < mid_thr:    return "Mid Cap"
+    return "Small Cap"
+
 # ── MSCI Logic (GIMI) ───────────────────────────────────────────────────────
 # Hebel A: Global Minimum Size Range (GMSR) + Coverage-Target-Range-Platzierung.
 # Hebel B: Migrations-Buffer −33%/+50% auf den Full-MCap-Cutoff (nur Multi-Period,
@@ -439,6 +485,9 @@ def _size_segment_asym(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
 #   • Zuordnung: Full-MCap ≥ Cutoff.
 _GMSR_LO = 0.5                       # Untergrenze der Global Minimum Size Range (= IMI-Floor-Faktor)
 _MIG_DOWN, _MIG_UP = 2.0 / 3.0, 1.5  # Migrations-Buffer: −33% (halten) / +50% (eintreten)
+# EM-Größenschwellen = ½ DM (GIMI §2.3.2). EINE Quelle für beide Stellen, die das brauchen:
+# den GMSR-IMI-Floor (MSCI Logic) und die Size-Integrity-Auffüllung.
+_EM_SIZE_FACTOR = 0.5
 
 
 def _coverage_cutoffs(pool_df, if_col, large_thr, mid_thr, small_thr):
@@ -470,7 +519,7 @@ def _imi_floor(gmsr_dm, classification):
     = 0,5× (Full-MCap am 99%-FF-Coverage des DM-Universums), EM = ½ DM. 0.0 ohne DM-Basis."""
     if not gmsr_dm or gmsr_dm.get("imi", 0) <= 0:
         return 0.0
-    f = 0.5 if classification == "EM" else 1.0
+    f = _EM_SIZE_FACTOR if classification == "EM" else 1.0
     return _GMSR_LO * f * gmsr_dm["imi"]
 
 
@@ -648,7 +697,18 @@ EUROPE_COUNTRIES = {
     "GREECE",         # aktuell EM
     "HUNGARY",        # aktuell EM
     "CZECH REPUBLIC", # aktuell EM
+    "TURKEY",         # aktuell EM (EM in allen Perioden der Historie)
 }
+# Die Liste ist rein GEOGRAFISCH und deckungsgleich mit der Spalte "Europe" in
+# Country_Classification.xlsx. Die DM/EM-Trennung passiert getrennt: jede Verwendung
+# schneidet mit Classification == "DM" (build_index region="EU", Europe-Pooling,
+# Pool-Cutoff, Country-Floor). Ein EM-Land in dieser Liste landet deshalb in keinem
+# Europa-Produkt, solange es EM ist.
+
+# Gruppen-Schluessel fuer das Europe-Pooling (Research-Variante, siehe run_selection_pipeline
+# Parameter europe_pool): Developed-Europe wird als EIN Markt segmentiert statt je Land.
+# Bewusst ein Name, der in keiner Mapping-Country-Spalte vorkommen kann.
+EUROPE_POOL_KEY = "__EUROPE_DM_POOL__"
 
 # Tax-Havens / Offshore-/Briefkasten-Domizile: in der Mapping-Fallback-Regel werden diese
 # Laender als nicht-aussagekraeftig behandelt (Risk-First ueberspringt sie). Malta & Hongkong
@@ -682,7 +742,7 @@ def derive_mapping_country(df):
     return pd.Series(_fallback, index=df.index)
 
 def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_lon_usd_sec=True,
-                              excl_cor_na=True, excl_naics=True, excl_euro=True, excl_etf=True,
+                              excl_cor_na=True, excl_euro=True, excl_etf=True,
                               excl_delisted=True):
     """Investability-Exclusions (Pipeline-Step 3) — EINE Quelle der Wahrheit fuer Engine UND
     UI-Diagnostik. FF MCap > 0 immer; alles andere per Flag. Behaltungstreu extrahiert aus
@@ -709,8 +769,9 @@ def apply_universe_exclusions(df, max_price=None, excl_hk_cny=True, excl_lon_usd
         )].copy()
     if excl_cor_na:
         df = df[df["Country of Risk"].fillna("") != "@NA"].copy()
-    if excl_naics:
-        df = df[~df["NAICS"].fillna("").str.contains("Open-End Investment Fund", case=False, na=False)].copy()
+    # NAICS-Fondsausschluss ('Open-End Investment Funds') per 08/2026 entfernt: das Feld traf
+    # ueberwiegend operative Asset Manager (WisdomTree, Jupiter Fund Mgmt, IntegraFin, Groww) und
+    # war als Fondsvehikel-Kriterium untauglich. Echte Vehikel ggf. via In-Eligible.xlsx.
     if excl_euro:
         df = df[~df["Exchange Name"].fillna("").isin(["Euro MTF", "@NA"])].copy()
     if excl_etf:
@@ -1209,6 +1270,283 @@ def load_ineligible_list():
 
     return ie_df[["ISIN","Company Name","Country Mapping","From","To","Reason"]].reset_index(drop=True)
 
+SPINOFF_COLS = ["Selection Date", "Event Type", "Aktiv", "Parent ISIN", "Parent Ticker",
+                "Parent Name", "Child ISIN", "Child Ticker", "Child Name",
+                "Segment Override", "Quelle", "Ex-Date", "Erfasst am", "Kommentar"]
+
+_SPINOFF_TRUE = ("ja", "yes", "j", "y", "true", "1", "x")
+
+
+def load_spinoff_list(valid_selection_dates_iso=None):
+    """Load 'Spin-Off Data.xlsx' - abgespaltene Titel, die beim Ereignis als BESTANDSTITEL
+    in den Index kommen statt durch die Entry-Schwellen zu muessen.
+
+    Hintergrund: die Pipeline rekonstruiert jede Periode punkt-in-Zeit und erkennt eine
+    neue ISIN nicht als Fortsetzung eines Indexmitglieds. Ein Spin-off waere damit ein
+    Neuzugang und muesste die Entry-Schwellen erfuellen (FF 15 %, ADTV 1 Mio, glatter
+    Coverage-Cut ohne Hysterese). MSCI nimmt ihn dagegen beim Ereignis in die Indizes der
+    Mutter auf; die normalen Kriterien greifen erst beim naechsten Review. Diese Liste
+    stellt das her: ein EINMALIGER Seed in den Incumbent-State, danach ganz normaler
+    Bestandstitel (Maintenance-Schwellen + Size-Hysterese).
+
+    Schema siehe SPINOFF_COLS. Pflicht: Selection Date, Child ISIN, Parent ISIN, Ex-Date.
+    'Segment Override' leer = Segment der Mutter erben. 'Aktiv' != ja -> Zeile ignoriert.
+
+    Args:
+        valid_selection_dates_iso: optionales Set 'YYYY-MM-DD'. Ist es gesetzt, werden
+            Zeilen mit unbekanntem Selection Date verworfen.
+
+    Returns:
+        (df, problems): df enthaelt nur die VERWENDBAREN Zeilen (normalisiert, Aktiv=ja),
+        mit Hilfsspalten _Aktiv und _SD. problems ist eine Liste (Excel-Zeile, Kind,
+        Meldung) fuer die UI. Fehlt das File, kommt ein leerer DataFrame mit korrekten
+        Spalten zurueck, also ein exakter No-op.
+    """
+    candidates = ["Spin-Off Data.xlsx", "Spin_Off_Data.xlsx", "Spin-Off_Data.xlsx",
+                  "Spinoff.xlsx", "Spin-Offs.xlsx"]
+    df = None
+    for name in candidates:
+        try:
+            df = pd.read_excel(name, sheet_name="Spin-Off", dtype=str)
+            break
+        except FileNotFoundError:
+            continue
+        except ValueError:
+            # File da, aber kein Sheet 'Spin-Off' -> erstes Sheet nehmen
+            try:
+                df = pd.read_excel(name, dtype=str)
+                break
+            except FileNotFoundError:
+                continue
+    if df is None or df.empty:
+        return pd.DataFrame(columns=SPINOFF_COLS), []
+
+    # Header normalisieren: die Vorlage enthaelt geschuetzte Leerzeichen
+    df.columns = [str(c).replace("\u00a0", " ").strip() for c in df.columns]
+    problems = []
+    _req = [c for c in ("Selection Date", "Child ISIN", "Parent ISIN") if c not in df.columns]
+    if _req:
+        return pd.DataFrame(columns=SPINOFF_COLS), [(0, "", "Pflichtspalten fehlen: %s" % _req)]
+    for c in SPINOFF_COLS:
+        if c not in df.columns:
+            df[c] = ""
+
+    for c in ("Parent ISIN", "Child ISIN"):
+        df[c] = df[c].fillna("").astype(str).str.strip().str.upper()
+    for c in ("Event Type", "Segment Override", "Quelle", "Kommentar",
+              "Parent Ticker", "Child Ticker", "Parent Name", "Child Name"):
+        df[c] = df[c].fillna("").astype(str).str.strip()
+    df["_Aktiv"] = df["Aktiv"].fillna("").astype(str).str.strip().str.lower().isin(_SPINOFF_TRUE)
+    df["Selection Date"] = pd.to_datetime(df["Selection Date"], errors="coerce")
+    df["Ex-Date"] = pd.to_datetime(df["Ex-Date"], errors="coerce")
+    df["_SD"] = df["Selection Date"].dt.strftime("%Y-%m-%d")
+
+    _valid = set(valid_selection_dates_iso) if valid_selection_dates_iso is not None else None
+    keep = []
+    for i, r in df.iterrows():
+        _ln = i + 2                     # +2 = Zeilennummer in Excel (Header + 0-basiert)
+        _ch = r["Child Ticker"] or r["Child ISIN"]
+        if not r["_Aktiv"]:
+            continue
+        if not r["Child ISIN"] or not r["Parent ISIN"]:
+            problems.append((_ln, _ch, "Child ISIN oder Parent ISIN leer"))
+            continue
+        if r["Child ISIN"] == r["Parent ISIN"]:
+            problems.append((_ln, _ch, "Child ISIN ist gleich Parent ISIN"))
+            continue
+        if pd.isna(r["Selection Date"]):
+            problems.append((_ln, _ch, "Selection Date fehlt oder unlesbar"))
+            continue
+        if _valid is not None and r["_SD"] not in _valid:
+            problems.append((_ln, _ch, "Selection Date %s ist kein bekannter Termin" % r["_SD"]))
+            continue
+        if pd.isna(r["Ex-Date"]):
+            problems.append((_ln, _ch, "Ex-Date fehlt. Ohne Ereignisdatum ist der Eintrag "
+                                       "nicht pruefbar (Look-ahead-Risiko)"))
+            continue
+        if r["Ex-Date"] > r["Selection Date"]:
+            problems.append((_ln, _ch, "Ex-Date %s liegt NACH dem Seed-Termin %s"
+                             % (r["Ex-Date"].date(), r["_SD"])))
+            continue
+        if not r["Quelle"]:
+            # kein Ausschlussgrund, aber der Audit-Trail fehlt
+            problems.append((_ln, _ch, "Quelle leer. Eintrag wird verwendet, ist aber nicht belegt"))
+        keep.append(i)
+
+    out = df.loc[keep].copy()
+    _dup = out.duplicated(subset=["Child ISIN", "_SD"], keep="first")
+    for i in out.index[_dup]:
+        problems.append((i + 2, out.at[i, "Child ISIN"], "Dublette Kind + Selection Date"))
+    out = out[~_dup]
+    return out.reset_index(drop=True), problems
+
+
+def seed_spinoff_incumbents(prev_keys, prev_segments, selection_date_iso, snapshot,
+                            spinoff_df, key_fn=None, mcap_col="Total MCap Y2025"):
+    """Traegt die Spin-off-Kinder dieses Termins in den Incumbent-State ein.
+
+    Bestandsschutz ist in dieser Pipeline nur ein Set plus ein Dict, die die Run-Schleife
+    uebergibt. Wer dort drinsteht, wird von run_selection_pipeline mit Maintenance-
+    Schwellen und Size-Hysterese behandelt, ohne dass die Engine wissen muss, ob der Titel
+    letzte Periode wirklich im Index war. Deshalb braucht diese Regel KEINE Aenderung an
+    run_selection_pipeline.
+
+    Geprueft wird je Eintrag:
+      * Kind ist im Snapshot dieses Termins MIT DATEN vorhanden (MCap > 0). Der Master ist
+        ein rechteckiges Panel: jede ISIN hat in JEDER Periode eine Zeile, die Werte sind
+        bis zum Listing leer. Auf Zeilen-Existenz zu pruefen wuerde also immer "ja" sagen.
+      * Kind ist nicht schon Bestandstitel, sonst ist der Eintrag wirkungslos.
+      * Mutter war in der Vorperiode im investierbaren Universum. Fehlt das, fehlt die
+        Begruendung fuer die Vererbung und der Eintrag wird verworfen (ausser es ist ein
+        Segment Override gesetzt).
+
+    Eine Mindestgroesse wird bewusst NICHT geprueft: der Seed laeuft in derselben Periode
+    gegen die Maintenance-Schwellen, ein zu kleiner Abspaltungs-Stumpf wird dort ohnehin
+    Small Cap und landet nicht im Standard-Index. Die Regel begrenzt sich selbst.
+
+    Args:
+        prev_keys: set der Incumbent-Keys der Vorperiode (wird nicht mutiert)
+        prev_segments: dict {key: Segment_New} der Vorperiode (wird nicht mutiert)
+        selection_date_iso: 'YYYY-MM-DD' des zu rechnenden Termins
+        snapshot: Snapshot dieses Termins, roh (vor den Screens)
+        spinoff_df: Ergebnis von load_spinoff_list()
+        key_fn: df -> Series mit dem Matching-Key. Default _match_key (Perm ID + ISIN).
+            Helvetica faehrt seinen Incumbent-State auf Entity ID und uebergibt hier eine
+            entsprechende Funktion.
+        mcap_col: Spalte fuer die Daten-Praesenzpruefung
+
+    Returns:
+        (keys, segments, log): erweiterte KOPIEN plus Protokoll-DataFrame mit einer Zeile
+        je Eintrag (Status 'geseedet' oder 'verworfen', dazu die Begruendung).
+    """
+    keys = set(prev_keys or ())
+    segs = dict(prev_segments or {})
+    cols = ["Selection Date", "Child Ticker", "Child Name", "Child ISIN", "Parent Ticker",
+            "Parent ISIN", "Event Type", "Segment", "Status", "Begruendung"]
+    if spinoff_df is None or len(spinoff_df) == 0 or snapshot is None or len(snapshot) == 0:
+        return keys, segs, pd.DataFrame(columns=cols)
+    if "_SD" not in spinoff_df.columns:
+        return keys, segs, pd.DataFrame(columns=cols)
+    rows = spinoff_df[spinoff_df["_SD"] == str(selection_date_iso)]
+    if len(rows) == 0:
+        return keys, segs, pd.DataFrame(columns=cols)
+
+    _kf = key_fn if key_fn is not None else _match_key
+    snap_isin = (_norm_isin(snapshot["ISIN"]) if "ISIN" in snapshot.columns
+                 else pd.Series("", index=snapshot.index))
+    snap_key = _kf(snapshot)
+    _mc = (pd.to_numeric(snapshot[mcap_col], errors="coerce") if mcap_col in snapshot.columns
+           else pd.Series(np.nan, index=snapshot.index))
+    _has_data = _mc.fillna(0) > 0
+
+    log = []
+    for _, r in rows.iterrows():
+        rec = {"Selection Date": selection_date_iso, "Child Ticker": r["Child Ticker"],
+               "Child Name": r["Child Name"], "Child ISIN": r["Child ISIN"],
+               "Parent Ticker": r["Parent Ticker"], "Parent ISIN": r["Parent ISIN"],
+               "Event Type": r["Event Type"], "Segment": "", "Status": "verworfen"}
+        _cm = snap_isin == r["Child ISIN"]
+        if not _cm.any():
+            rec["Begruendung"] = "Kind nicht im Master-Snapshot"
+            log.append(rec)
+            continue
+        if not (_cm & _has_data).any():
+            rec["Begruendung"] = ("Kind ohne %s an diesem Termin (noch nicht gelistet)" % mcap_col)
+            log.append(rec)
+            continue
+        _ckeys = {k for k in snap_key[_cm & _has_data] if k}
+        if not _ckeys:
+            rec["Begruendung"] = "Kind ohne Matching-Key (Perm ID und ISIN leer)"
+            log.append(rec)
+            continue
+        if _ckeys & keys:
+            rec["Begruendung"] = "Kind ist bereits Bestandstitel, Eintrag wirkungslos"
+            log.append(rec)
+            continue
+        _ovr = str(r["Segment Override"] or "").strip()
+        _pm = snap_isin == r["Parent ISIN"]
+        _pkeys = {k for k in snap_key[_pm] if k} & keys
+        if not _pkeys and not _ovr:
+            rec["Begruendung"] = ("Mutter war in der Vorperiode nicht im investierbaren "
+                                 "Universum, und kein Segment Override gesetzt")
+            log.append(rec)
+            continue
+        _seg = _ovr or next((segs[k] for k in sorted(_pkeys) if k in segs), "")
+        if not _seg:
+            rec["Begruendung"] = "Segment der Mutter nicht ermittelbar"
+            log.append(rec)
+            continue
+        for k in _ckeys:
+            keys.add(k)
+            segs[k] = _seg
+        rec["Segment"] = _seg
+        rec["Status"] = "geseedet"
+        rec["Begruendung"] = ("Segment Override '%s'" % _ovr if _ovr
+                             else "Segment von %s geerbt" % (r["Parent Ticker"] or r["Parent ISIN"]))
+        log.append(rec)
+    return keys, segs, pd.DataFrame(log)
+
+
+SPINOFF_HORIZON_MONTHS = {"3M": 3, "6M": 6, "12M": 12}
+
+
+def spinoff_liquidity_exemptions(spinoff_df, selection_date_iso, snapshot,
+                                 incumbent_keys=None, seeded_keys=None, key_fn=None):
+    """Welche Liquiditaets-Horizonte sind fuer welches Spin-off-Kind noch nicht erreichbar?
+
+    Ein Titel, der seit dem Ex-Date erst zwei Monate handelt, KANN kein 3-Monats-ADTV
+    haben. Die Ausnahme haengt deshalb am Horizont und am Ereignisdatum, nicht am
+    Seed-Zeitpunkt: ein Horizont wird uebersprungen, solange
+    `selection_date < ex_date + N Monate` gilt und der Wert leer oder 0 ist.
+
+    Bei Quartals-Rhythmus heisst das in der Praxis: das 3M-Bein ist meist nur am
+    Seed-Termin offen, das 6M-Bein am Seed-Termin UND am Folgetermin. Genau dieser
+    Folgetermin war der Grund fuer diese Funktion — eine Ausnahme, die nur am Seed-Datum
+    gilt, laesst das Kind eine Periode spaeter an der 6M-Huerde scheitern, womit es aus
+    gm_complete faellt, seinen geerbten Bestandsschutz verliert und dauerhaft ausgesperrt
+    ist.
+
+    Berechtigt ist nur ein Kind, das GERADE geseedet wird oder SCHON Bestandstitel ist.
+    Damit bekommt ein verworfener Seed (z. B. Mutter war kein Indexmitglied) keine
+    Liquiditaets-Erleichterung durch die Hintertuer.
+
+    Returns:
+        dict {"3M": set, "6M": set, "12M": set} mit Matching-Keys. Leere Sets, wenn die
+        Liste leer ist — dann verhaelt sich apply_liquidity_new exakt wie ohne Ausnahme.
+    """
+    out = {h: set() for h in SPINOFF_HORIZON_MONTHS}
+    if spinoff_df is None or len(spinoff_df) == 0 or snapshot is None or len(snapshot) == 0:
+        return out
+    if "_SD" not in spinoff_df.columns or "Ex-Date" not in spinoff_df.columns:
+        return out
+    _sd = pd.Timestamp(selection_date_iso)
+    # Nur Zeilen, deren Seed-Termin erreicht ist
+    rows = spinoff_df[spinoff_df["_SD"] <= str(selection_date_iso)]
+    if len(rows) == 0:
+        return out
+
+    _kf = key_fn if key_fn is not None else _match_key
+    snap_isin = (_norm_isin(snapshot["ISIN"]) if "ISIN" in snapshot.columns
+                 else pd.Series("", index=snapshot.index))
+    snap_key = _kf(snapshot)
+    _inc = set(incumbent_keys or ())
+    _seed = set(seeded_keys or ())
+
+    for _, r in rows.iterrows():
+        if pd.isna(r["Ex-Date"]):
+            continue
+        _ckeys = {k for k in snap_key[snap_isin == r["Child ISIN"]] if k}
+        if not _ckeys:
+            continue
+        # Berechtigung: wird gerade geseedet ODER ist schon Bestandstitel
+        if not (_ckeys & _seed or _ckeys & _inc):
+            continue
+        for _h, _m in SPINOFF_HORIZON_MONTHS.items():
+            if _sd < r["Ex-Date"] + pd.DateOffset(months=_m):
+                out[_h] |= _ckeys
+    return out
+
+
 def apply_ineligible_filter(df_complete, ie_df, selection_date):
     """Entferne Stocks aus df_complete deren ISIN zum Selection Date auf der Ineligible-Liste steht.
 
@@ -1505,7 +1843,7 @@ def apply_fol_matrix(df, fol_matrix, sector_fallback, year, thailand_mode,
     return df
 
 def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
-                       excl_hk_cny, excl_cor_na, excl_naics, excl_euro, excl_etf,
+                       excl_hk_cny, excl_cor_na, excl_euro, excl_etf,
                        china_if,
                        atvr_mcap_col="Free Float MCap Y2025",
                        excl_delisted=True, excl_lon_usd_sec=True,
@@ -1570,7 +1908,7 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     # Step 3: Exclusions — zentral via apply_universe_exclusions (EINE Quelle; UI nutzt dieselbe).
     df = apply_universe_exclusions(df, max_price=max_price, excl_hk_cny=excl_hk_cny,
                                    excl_lon_usd_sec=excl_lon_usd_sec,
-                                   excl_cor_na=excl_cor_na, excl_naics=excl_naics, excl_euro=excl_euro,
+                                   excl_cor_na=excl_cor_na, excl_euro=excl_euro,
                                    excl_etf=excl_etf, excl_delisted=excl_delisted)
 
     # Step 4: Classification — Mapping Country via derive_mapping_country (primaer File-Feld
@@ -1594,8 +1932,12 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     _a6   = df["6M ADTV Y2025"]
     _a12  = df["12M ADTV Y2025"]
     _adtv3  = _a3.where(_a3 > 0, _a1)                                   # 3M, fallback 1M
+    _adtv6  = _a6.where(_a6 > 0, _adtv3)                                # 6M, fallback 3M -> 1M
     _adtv12 = _a12.where(_a12 > 0, _a6.where(_a6 > 0, _adtv3))          # 12M, fallback 6M -> 3M -> 1M
     df["ATVR_3M"]  = np.where(_mc > 0, _adtv3  * 252 / _mc, 0.0)
+    # ATVR_6M wird vom regulaeren Liquiditaets-Screen NICHT geprueft (der laeuft auf 3M
+    # und 12M). Es existiert fuer die Hochpreis-Regel, die auf 3M und 6M abstellt.
+    df["ATVR_6M"]  = np.where(_mc > 0, _adtv6  * 252 / _mc, 0.0)
     df["ATVR_12M"] = np.where(_mc > 0, _adtv12 * 252 / _mc, 0.0)
     # Combined value kept for display / back-compat = the stricter (min) of the two horizons.
     df["ATVR"] = np.minimum(df["ATVR_3M"], df["ATVR_12M"])
@@ -1603,13 +1945,59 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
 
 def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
                          incumbents_isin=None,
-                         m_adtv_dm=None, m_adtv_em=None, m_atvr_dm=None, m_atvr_em=None):
+                         m_adtv_dm=None, m_adtv_em=None, m_atvr_dm=None, m_atvr_em=None,
+                         exempt_missing_keys=None,
+                         max_price=None, max_price_atvr=None, m_max_price_atvr=None):
     """Apply ADTV + ATVR filter with optional Buffer-Rules.
 
     Entry-Schwellen (adtv_dm/em, atvr_dm/em) gelten für neue Kandidaten.
-    Wenn incumbents_isin non-empty → Stocks mit ISIN in dieser Menge bekommen
-    die weicheren Maintenance-Schwellen (m_adtv_dm/em, m_atvr_dm/em).
+    Wenn incumbents_isin non-empty → Stocks mit Matching-Key in dieser Menge bekommen
+    die weicheren Maintenance-Schwellen (m_adtv_dm/em, m_atvr_dm/em). Der Key ist
+    _match_key (Perm ID mit ISIN-Fallback), identisch zu allen anderen Buffer-Screens.
     Wenn m_* None, fallen Maintenance-Schwellen auf Entry zurück (kein Buffer-Effekt).
+
+    exempt_missing_keys: Matching-Keys, bei denen ein FEHLENDER ADTV-/ATVR-Wert als
+    bestanden gilt. Gedacht fuer per Spin-off-Regel aufgenommene Kinder, solange ein
+    Horizont seit dem Ex-Date rechnerisch nicht voll sein kann. Ohne die Ausnahme
+    scheitert so ein Titel am Liquiditaets-Screen, landet nicht in gm_complete und
+    verliert damit in der Folgeperiode auch seinen geerbten Bestandsschutz — er kommt
+    dann als Neuzugang gegen den glatten Coverage-Schnitt und ist dauerhaft ausgesperrt
+    (nachgerechnet: Magnum landet so permanent in Small Cap).
+
+    Zwei Formen erlaubt:
+      * dict {"3M": keys, "6M": keys, "12M": keys} — pro Horizont, siehe
+        spinoff_liquidity_exemptions(). 3M ADTV und ATVR_3M haengen am Horizont "3M",
+        6M ADTV an "6M", ATVR_12M an "12M".
+      * flaches set — gilt fuer alle vier Beine gleichzeitig (Alt-Aufrufer, Tests).
+
+    max_price / max_price_atvr / m_max_price_atvr: Hochpreis-Regel. Ein Titel mit
+    Closing Price >= max_price wird NICHT ausgeschlossen, muss aber eine hoehere
+    min(ATVR_3M, ATVR_6M) erfuellen als ein normal bepreister: max_price_atvr fuer
+    Neuzugaenge, m_max_price_atvr fuer Bestandstitel (faellt auf max_price_atvr zurueck,
+    wenn nicht gesetzt). Damit ergibt sich die Vier-Zellen-Matrix
+
+                       Kurs < max_price        Kurs >= max_price
+        New            atvr_dm / atvr_em       max_price_atvr
+        Current        m_atvr_dm / m_atvr_em   m_max_price_atvr
+
+    Sind max_price und max_price_atvr None, passiert nichts.
+
+    Die Alternative waere der frueher genutzte harte Preis-Cut in
+    apply_universe_exclusions. Der schloss Titel rein wegen ihres nominellen Kurses aus,
+    unabhaengig von der Handelbarkeit: am 2026-08-19 traf er 5 Titel, darunter Berkshire
+    Hathaway A (ATVR 14,1 %) und die Lindt-Namenaktie (32,1 %), die beide hochliquide sind,
+    neben drei praktisch unhandelbaren Titeln mit ATVR 0,000 bis 0,055 %. Der Preis-Cut
+    gehoert deshalb an die Liquiditaetsstufe, nicht in die Universe-Exclusions: erst dort
+    existiert die ATVR.
+
+    "Fehlend" heisst hier **NaN oder <= 0**, nicht nur NaN: `build_new_universe` macht
+    `pd.to_numeric(...).fillna(0)` auf alle vier ADTV-Spalten, ein fehlender Wert ist im
+    Screen also nicht mehr von einer echten Null unterscheidbar. Eine Pruefung nur auf NaN
+    koennte hier nie greifen.
+
+    Ein VORHANDENER Wert oberhalb 0 aber unterhalb der Schwelle fuehrt weiter zum
+    Ausschluss. Die Ausnahme deckt damit auch den seltenen Fall eines Stumpfes mit echtem
+    Null-Umsatz ab; der laeuft in der Folgeperiode gegen die normale Maintenance-Schwelle.
     """
     # Fallback: Maintenance = Entry wenn nicht explizit gesetzt
     if m_adtv_dm is None: m_adtv_dm = adtv_dm
@@ -1621,7 +2009,14 @@ def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
     if incumbents_isin is None:
         incumbents_isin = set()
 
-    _isin = _norm_isin(df["ISIN"])
+    # Matching-Key MUSS _match_key sein (Perm ID mit ISIN-Fallback), nicht die reine
+    # ISIN: die Run-Schleifen fuellen incumbents_isin aus _match_key, und Perm ID ist im
+    # aktuellen Master in 100 % der Zeilen gefuellt. Mit _norm_isin traf deshalb KEINE
+    # einzige Zeile (gemessen 0 von 28.580 am 2026-08-19), womit der dokumentierte
+    # ADTV-/ATVR-Maintenance-Buffer wirkungslos war und jeder Bestandstitel jede Periode
+    # gegen die Entry-Schwelle lief. Alle anderen Screens in dieser Pipeline (EUMSS,
+    # Coverage, Kept_In_Standard_By_Buffer) nutzen _match_key.
+    _isin = _match_key(df)
     _is_incumbent = _isin.isin(incumbents_isin)
 
     _adtv_dm_thr = np.where(_is_incumbent, m_adtv_dm, adtv_dm)
@@ -1632,24 +2027,59 @@ def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
     _cls = df["Classification"].fillna("")
     _a3m = df["3M ADTV Y2025"]
     _a6m = df["6M ADTV Y2025"]
-    _atvr3  = df["ATVR_3M"]
-    _atvr12 = df["ATVR_12M"]
+    # Der ATVR-Screen laeuft auf 3M und 6M, konsistent mit den ADTV-Beinen. Frueher
+    # war das 3M und 12M; solange die ATVR-Schwellen auf 0 standen, war die Umstellung
+    # verhaltensneutral (0 >= 0 ist wahr). Mit Schwellen > 0 ist sie es NICHT mehr,
+    # deshalb steht sie hier explizit. ATVR_12M bleibt als Spalte im Export erhalten.
+    _atvr3 = df["ATVR_3M"]
+    _atvr6 = df["ATVR_6M"]
+
+    # Ausnahme fuer fehlende Werte (siehe Docstring). Sind alle Mengen leer, reduziert
+    # sich _ok(v, thr, h) exakt auf (v >= thr) — das Verhalten bleibt bit-identisch.
+    _none = pd.Series(False, index=df.index)
+    if not exempt_missing_keys:
+        _ex_by_h = {}
+    elif isinstance(exempt_missing_keys, dict):
+        _ex_by_h = {h: (_isin.isin(k) if k else _none)
+                    for h, k in exempt_missing_keys.items()}
+    else:
+        _flat = _isin.isin(exempt_missing_keys)
+        _ex_by_h = {h: _flat for h in SPINOFF_HORIZON_MONTHS}
+
+    def _ok(v, thr, h):
+        _e = _ex_by_h.get(h)
+        if _e is None:
+            return v >= thr
+        _v = pd.to_numeric(v, errors="coerce")
+        return (v >= thr) | ((_v.isna() | (_v <= 0)) & _e)
 
     # ATVR screen (MSCI-style dual horizon): a name must clear the threshold on BOTH the
     # 3M and the 12M horizon. With the default threshold 0 both conditions pass trivially,
     # so the default selection is unchanged; the dual screen only bites when a threshold >0.
-    mask_dm = ((_cls=="DM") & (_a3m >= _adtv_dm_thr) & (_a6m >= _adtv_dm_thr)
-               & (_atvr3 >= _atvr_dm_thr) & (_atvr12 >= _atvr_dm_thr))
-    mask_em = ((_cls=="EM") & (_a3m >= _adtv_em_thr) & (_a6m >= _adtv_em_thr)
-               & (_atvr3 >= _atvr_em_thr) & (_atvr12 >= _atvr_em_thr))
+    mask_dm = ((_cls=="DM") & _ok(_a3m, _adtv_dm_thr, "3M") & _ok(_a6m, _adtv_dm_thr, "6M")
+               & _ok(_atvr3, _atvr_dm_thr, "3M") & _ok(_atvr6, _atvr_dm_thr, "6M"))
+    mask_em = ((_cls=="EM") & _ok(_a3m, _adtv_em_thr, "3M") & _ok(_a6m, _adtv_em_thr, "6M")
+               & _ok(_atvr3, _atvr_em_thr, "3M") & _ok(_atvr6, _atvr_em_thr, "6M"))
 
-    return df[mask_dm | mask_em].copy()
+    mask = mask_dm | mask_em
+    if max_price and max_price_atvr is not None and "Closing Price" in df.columns:
+        _px = pd.to_numeric(df["Closing Price"], errors="coerce").fillna(0)
+        _atvr_hp = np.minimum(pd.to_numeric(df.get("ATVR_3M"), errors="coerce").fillna(0),
+                              pd.to_numeric(df.get("ATVR_6M"), errors="coerce").fillna(0))
+        _hp_thr = np.where(_is_incumbent,
+                           (max_price_atvr if m_max_price_atvr is None else m_max_price_atvr),
+                           max_price_atvr).astype(float)
+        mask &= (_px < float(max_price)) | (_atvr_hp >= _hp_thr)
+
+    return df[mask].copy()
 
 def run_selection_pipeline(
     df_raw_in, country_cls, china_if, fol_year,
     # Universe & Exclusions
     thailand_mode, max_price, exclude_hk_cny, exclude_country_risk_na,
-    exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+    # Hochpreis-Regel: ist max_price_atvr gesetzt, wird max_price NICHT mehr als harter
+    # Ausschluss angewandt, sondern als ATVR-Bedingung im Liquiditaets-Screen.
+    exclude_euro_mtf, exclude_etf_sicav,
     # Size & Liquidity
     large_thr, mid_thr, small_thr, min_ff_pct, eumss_ff_ratio,
     adtv_dm, adtv_em, atvr_dm, atvr_em,
@@ -1658,6 +2088,10 @@ def run_selection_pipeline(
     if_cum_col, atvr_mcap_col,
     # Buffer
     incumbents_isin=None, apply_buffer=False,
+    # Spin-off-Kinder am Seed-Datum: fehlendes ADTV/ATVR gilt als bestanden
+    liquidity_exempt_missing=None,
+    # Hochpreis-Regel (siehe apply_liquidity_new). None = alter harter Preis-Cut.
+    max_price_atvr=None, m_max_price_atvr=None,
     buffer_min_ff=None, buffer_coverage=90,
     buffer_adtv_dm=None, buffer_adtv_em=None,
     buffer_atvr_dm=None, buffer_atvr_em=None,
@@ -1665,10 +2099,25 @@ def run_selection_pipeline(
     apply_size_buffer=False, incumbent_segments=None, size_buffer_pp=5.0,
     # Einseitiger Size-Buffer: Mid hält bis 90 ↑, kein Small-Halt ↓ (Small bleibt erhalten)
     asym_buffer=False,
+    # Aufstieg am Cut-off (FTSE-Prinzip, §7.6.1/§7.6.4): Aufnahme UND Aufstieg an den
+    # glatten Schwellen (large_thr/mid_thr) für alle, die Bandbreite wirkt nur auf der
+    # Halteseite. Beseitigt die Benachteiligung von Bestandstiteln gegenüber Neuzügen im
+    # symmetrischen Buffer. Hat Vorrang vor asym_buffer. size_buffer_pp_ms setzt die
+    # Bandbreite der Mid/Small-Kante abweichend (None = wie size_buffer_pp).
+    entry_at_cutoff=False, size_buffer_pp_ms=None,
     # TEST: Solactive-Style Coverage-Buffer an der Small↔Micro-Grenze (per-Land-99%-Cut).
     # Incumbent bleibt Small bis small_thr+pp (z.B. 99,5%), Newcomer Cut am glatten small_thr (99%);
     # darüber → Micro. Default aus → keine Verhaltensänderung. Greift nicht in MSCI-Logic.
     apply_small_buffer=False, small_buffer_pp=0.5,
+    # Size-Integrity-Auffüllung: ein Titel, der als Small Cap aus der Länder-Coverage fällt,
+    # aber die global kalibrierte Mindestgröße T erreicht, wird auf Mid Cap gehoben.
+    # T = si_k × R85, R85 = Full MCap am mid_thr-Coverage-Punkt des DM-Pools; EM = ½ T.
+    # Korrigiert die Größen-Inversion zwischen Märkten (der implizite 85%-Cutoff liegt in den
+    # USA bei ~29 Mrd, in der Türkei bei ~0,6 Mrd). Wirkt als Post-Step auf Segment_New, also
+    # identisch in allen vier Segmentierungs-Ästen und unabhängig von europe_pool /
+    # label_before_liquidity. si_edge_pp begrenzt die Auffüllung auf _c_before < si_edge_pp
+    # (None = Größe hat Vorrang vor Marktabdeckung). Default aus → keine Verhaltensänderung.
+    apply_size_integrity=False, si_k=1.00, si_edge_pp=90.0,
     # EUMSS-Größen-Floor an/aus. False = kein absoluter Mindestgrößen-Floor (eumss_full/ff=0),
     # FF%-Gate + Liquidität bleiben. Für den „Total Markets"-Index (liquides Universum ohne Floor).
     eumss_enabled=True,
@@ -1682,6 +2131,17 @@ def run_selection_pipeline(
     ineligible_df=None, apply_ineligible=False, selection_date=None,
     # Reihenfolge-Toggle: Labeling vor Liquidität (Markt-Coverage) statt danach
     label_before_liquidity=False,
+    # Europe-Pooling (Research, MSCI §2.2): Developed-Europe als EIN Markt segmentieren
+    # statt je Land — ein gemeinsamer Coverage-Cutoff für alle DM-Europa-Titel. Alle
+    # übrigen Märkte bleiben unberührt je Land. Default aus → keine Verhaltensänderung.
+    # min_per_country: optionaler Backstop GEGEN die Ausdünnung kleiner Märkte durch den
+    # gemeinsamen Cutoff — fällt ein Europa-Land unter diese Zahl Standard-Titel, werden
+    # seine größten Small Caps zu Mid Cap hochgezogen. 0 = aus. Greift nur bei europe_pool.
+    # NB: das ist eine EIGENE Konstruktion, keine MSCI-Regel. MSCIs Index Continuity Rule
+    # (GIMI §2.4: min. 5 Konstituenten DM-Standard, 3 EM, 1 FM) gilt pro MARKT, und DM
+    # Europa ist bei MSCI laut Fussnote 1 EIN Markt — dort schuetzt sie also die einzelnen
+    # europaeischen Laender NICHT. Verifiziert gegen GIMI Nov-2019 und Mai-2026.
+    europe_pool=False, min_per_country=0,
     # Performance: vorgebautes Universe wiederverwenden (überspringt build_new_universe)
     prebuilt_universe=None,
 ):
@@ -1705,6 +2165,9 @@ def run_selection_pipeline(
         - 'eumss_full', 'eumss_ff': EUMSS thresholds
         - 'buffer_breakdown': dict with incumbent/newcomer counts (None if buffer inactive)
         - 'incumbents_isin_used': effective incumbents set used (for state propagation)
+        - 'si_r85', 'si_threshold', 'si_threshold_em', 'si_filled_n', 'si_blocked_n',
+          'si_max_coverage': Size-Integrity-Kennzahlen der Periode (0, wenn Regel inaktiv)
+        - 'gm_liq_cov': Waterfall-Pool vor der Segmentierung (= investierbares Universum)
     """
     if incumbents_isin is None:
         incumbents_isin = set()
@@ -1713,9 +2176,13 @@ def run_selection_pipeline(
     # wird vollständig deaktiviert. Die 70/85/99-Schwellen, EUMSS und alle
     # Universe-/Screening-Settings bleiben aktiv. Der Migrations-Buffer (−33/+50)
     # ist Teil der MSCI-Logik und greift nur im Multi-Period (Incumbents vorhanden).
+    # Auch die Size-Integrity-Auffüllung entfällt: GIMI segmentiert über Full-MCap-Cutoffs
+    # und hat mit dem GMSR-Floor bereits eine globale Größenschicht.
     if msci_logic:
         apply_size_buffer = False
         asym_buffer = False
+        entry_at_cutoff = False
+        apply_size_integrity = False
 
     # Buffer fallback: Maintenance = Entry if not set
     if buffer_min_ff is None:    buffer_min_ff = min_ff_pct
@@ -1732,8 +2199,9 @@ def run_selection_pipeline(
         gm_u = prebuilt_universe.copy()
     else:
         gm_u = build_new_universe(
-            df_raw_in, country_cls, thailand_mode, max_price,
-            exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds,
+            df_raw_in, country_cls, thailand_mode,
+            (None if max_price_atvr is not None else max_price),
+            exclude_hk_cny, exclude_country_risk_na,
             exclude_euro_mtf, exclude_etf_sicav,
             china_if,
             atvr_mcap_col=atvr_mcap_col,
@@ -1788,6 +2256,10 @@ def run_selection_pipeline(
         incumbents_isin=incumbents_isin if apply_buffer else None,
         m_adtv_dm=buffer_adtv_dm, m_adtv_em=buffer_adtv_em,
         m_atvr_dm=buffer_atvr_dm, m_atvr_em=buffer_atvr_em,
+        exempt_missing_keys=liquidity_exempt_missing,
+        max_price=(max_price if max_price_atvr is not None else None),
+        max_price_atvr=max_price_atvr,
+        m_max_price_atvr=(m_max_price_atvr if apply_buffer else None),
     )
 
     # 5) Coverage waterfall per country — buffer-aware
@@ -1824,15 +2296,57 @@ def run_selection_pipeline(
         gmsr_dm = _coverage_cutoffs(_dm_pool, if_cum_col, large_thr, mid_thr, small_thr)
         msci_mig_buffer = bool(incumbent_segments)
 
+    # Size-Integrity-Schwelle T = si_k × R85. R85 = Full MCap der Grenzfirma am
+    # mid_thr-Coverage-Punkt des DM-Pools, geliefert von _coverage_cutoffs()["standard"].
+    # Pool und Nenner wie im Waterfall (gm_liq_cov, if_cum_col), also inklusive Secondaries:
+    # die "Listing"-Spalte trennt eigenständige Aktiengattungen (Alphabet C, Roche Genussschein)
+    # nicht von echten Doppelnotierungen, und die verbliebenen Duplikate sind über
+    # exclude_hk_cny / exclude_lon_usd_sec bereits draußen. Bei label_before_liquidity wandert
+    # der Pool automatisch mit (wie der Waterfall selbst) — kein Sonderpfad.
+    # Ohne DM-Basis bliebe T = 0 und würde JEDEN Small Cap anheben → Regel dann still aus.
+    si_r85 = si_threshold = 0.0
+    if apply_size_integrity:
+        _si_cut = _coverage_cutoffs(gm_liq_cov[gm_liq_cov["Classification"] == "DM"],
+                                    if_cum_col, large_thr, mid_thr, small_thr)
+        si_r85 = float(_si_cut["standard"]) if _si_cut else 0.0
+        si_threshold = si_k * si_r85
+        if si_threshold <= 0:
+            apply_size_integrity = False
+
+    # Segmentierungs-Markt = normalerweise die Mapping Country. Bei aktivem Europe-Pooling
+    # laufen alle DM-Europa-Titel unter EINEM Schluessel durch den Waterfall, teilen sich
+    # also einen Coverage-Nenner und einen Cutoff (MSCI §2.2). Nicht-Europa bleibt je Land.
+    if europe_pool and len(gm_liq_cov) > 0:
+        _eu_pool_mask = (
+            (gm_liq_cov["Classification"] == "DM")
+            & gm_liq_cov["Mapping Country"].fillna("").astype(str).str.upper().isin(EUROPE_COUNTRIES)
+        )
+        gm_liq_cov["_SegMarket"] = np.where(
+            _eu_pool_mask, EUROPE_POOL_KEY, gm_liq_cov["Mapping Country"].astype(object))
+    else:
+        gm_liq_cov["_SegMarket"] = gm_liq_cov["Mapping Country"]
+
     gm_results = []
-    for ctry, grp in gm_liq_cov.groupby("Mapping Country"):
+    for ctry, grp in gm_liq_cov.groupby("_SegMarket"):
         # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class) liquideres Listing zuerst
         grp = grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).copy()
         tot = grp[if_cum_col].sum()
         if tot == 0: continue
         grp["_c_before"] = grp[if_cum_col].cumsum().shift(1).fillna(0) / tot * 100
+        # Rein informativ, keine Regel haengt daran: die Coverage-Treppe absolut und in
+        # Prozent, jeweils INKLUSIVE der eigenen Zeile. Macht im Export nachvollziehbar,
+        # zwischen welchen beiden Zeilen ein Cutoff (large_thr / mid_thr / small_thr)
+        # faellt. Es gilt _c_before(Zeile n+1) = _c_after(Zeile n), und der Nenner ist
+        # rekonstruierbar als _cum_cov / _c_after * 100.
+        grp["_cum_cov"] = grp[if_cum_col].cumsum()
+        grp["_c_after"] = grp["_cum_cov"] / tot * 100
 
-        _seg_fn = _size_segment_asym if asym_buffer else _size_segment
+        if entry_at_cutoff:
+            _bms = size_buffer_pp if size_buffer_pp_ms is None else float(size_buffer_pp_ms)
+            _seg_fn = (lambda _p, _c, _lt, _mt, _bw:
+                       _size_segment_entry(_p, _c, _lt, _mt, _bw, _bms))
+        else:
+            _seg_fn = _size_segment_asym if asym_buffer else _size_segment
         if msci_logic:
             # MSCI GIMI: Full-MCap-Cutoffs (Large/Standard rein per-Markt-Coverage,
             # IMI mit GMSR-Mindest-Size-Floor EM=½), Zuordnung per Full-MCap ≥ Cutoff,
@@ -1890,6 +2404,8 @@ def run_selection_pipeline(
 
     gm_all_cov = (pd.concat(gm_results, ignore_index=True) if gm_results
                   else pd.DataFrame(columns=gm_liq.columns.tolist() + ["Segment_New"]))
+    # Hilfsspalte des Waterfalls — darf nicht in Exporte/Downstream durchschlagen.
+    gm_all_cov = gm_all_cov.drop(columns=["_SegMarket"], errors="ignore")
 
     # Labeling-zuerst: Mitgliedschaft = Label ∩ liquide. Auf dem vollen gm_eumss
     # gelabelte, aber illiquide Titel haben den Coverage-Nenner mitbestimmt, fallen
@@ -1898,6 +2414,68 @@ def run_selection_pipeline(
     if label_before_liquidity and len(gm_all_cov) > 0:
         _liq_syms = set(gm_liq["Symbol"].dropna().unique())
         gm_all_cov = gm_all_cov[gm_all_cov["Symbol"].isin(_liq_syms)].copy()
+
+    # Effektiver Pool-Cutoff: Total MCap des kleinsten Standard-Titels im EU-Pool, also
+    # die Groessenlinie, die der gemeinsame Coverage-Schnitt gezogen hat. VOR dem
+    # Mindestbesetzungs-Backstop gemessen, damit die Zahl den reinen Pooling-Effekt zeigt.
+    europe_pool_cutoff = 0.0
+    if europe_pool and len(gm_all_cov) > 0:
+        _pool_std = gm_all_cov[
+            (gm_all_cov["Classification"] == "DM")
+            & gm_all_cov["Mapping Country"].fillna("").astype(str).str.upper().isin(EUROPE_COUNTRIES)
+            & gm_all_cov["Segment_New"].isin(["Large Cap", "Mid Cap"])
+        ]
+        if len(_pool_std) > 0:
+            europe_pool_cutoff = float(
+                pd.to_numeric(_pool_std["Total MCap Y2025"], errors="coerce").min())
+
+    # Size-Integrity-Auffüllung (Post-Step): Small Cap + Full MCap ≥ T → Mid Cap, EM = ½ T.
+    # Nur nach oben, nie nach unten — die Länder-Sleeves bleiben additiv (EU ⊆ DM ⊆ GM).
+    # Micro (EUMSS gerissen) und Non-Investable (IF = 0) bleiben unberührt: die Regel ist ein
+    # Größen-, kein Investability-Kriterium und darf kein vorgelagertes Gate aushebeln.
+    # Position: NACH europe_pool_cutoff (die Kennzahl soll den reinen Pooling-Effekt zeigen)
+    # und VOR der Länder-Mindestbesetzung (die auf dem finalen Segment prüfen muss, sonst
+    # zieht sie Small Caps hoch, die die Auffüllung ohnehin geholt hätte).
+    gm_all_cov["Size_Integrity_Filled"] = False
+    gm_all_cov["Size_Integrity_Blocked"] = False
+    si_filled_n = si_blocked_n = 0
+    if apply_size_integrity and len(gm_all_cov) > 0:
+        _si_mcap = pd.to_numeric(gm_all_cov["Total MCap Y2025"], errors="coerce").fillna(0.0)
+        _si_thr = pd.Series(np.where(gm_all_cov["Classification"] == "EM",
+                                     _EM_SIZE_FACTOR * si_threshold, si_threshold),
+                            index=gm_all_cov.index)
+        _si_big = (gm_all_cov["Segment_New"] == "Small Cap") & (_si_mcap >= _si_thr)
+        if si_edge_pp is None:
+            _si_fill = _si_big
+        else:
+            _si_fill = _si_big & (gm_all_cov["_c_before"] < float(si_edge_pp))
+            gm_all_cov["Size_Integrity_Blocked"] = _si_big & ~_si_fill
+            si_blocked_n = int(gm_all_cov["Size_Integrity_Blocked"].sum())
+        gm_all_cov.loc[_si_fill, "Segment_New"] = "Mid Cap"
+        gm_all_cov["Size_Integrity_Filled"] = _si_fill
+        si_filled_n = int(_si_fill.sum())
+
+    # Laender-Mindestbesetzung (nur bei Europe-Pooling, Default aus). Der gemeinsame
+    # EU-Cutoff duennt kleine Maerkte aus, weil deren Mid Caps gegen die grossen
+    # Nachbarn antreten. Faellt ein Europa-Land unter min_per_country Standard-Titel,
+    # werden seine groessten Small Caps zu Mid Cap hochgezogen, bis die Zahl erreicht ist
+    # (oder das Land keine Small Caps mehr hat). Reine Research-Klammer, per Flag auditierbar.
+    gm_all_cov["Country_Floor_Promoted"] = False
+    if europe_pool and min_per_country > 0 and len(gm_all_cov) > 0:
+        _eu_rows = gm_all_cov[
+            (gm_all_cov["Classification"] == "DM")
+            & gm_all_cov["Mapping Country"].fillna("").astype(str).str.upper().isin(EUROPE_COUNTRIES)
+        ]
+        for _ctry, _sub in _eu_rows.groupby("Mapping Country"):
+            _need = min_per_country - int(_sub["Segment_New"].isin(["Large Cap", "Mid Cap"]).sum())
+            if _need <= 0:
+                continue
+            _cand = (_sub[_sub["Segment_New"] == "Small Cap"]
+                     .sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False])
+                     .head(_need))
+            if len(_cand) > 0:
+                gm_all_cov.loc[_cand.index, "Segment_New"] = "Mid Cap"
+                gm_all_cov.loc[_cand.index, "Country_Floor_Promoted"] = True
 
     # Audit-Flag: Titel, deren Segment durch den Size Buffer abweichend vom reinen
     # Cut-off gehalten wurde (= Hysterese griff). Nur relevant bei aktivem Size Buffer.
@@ -1931,11 +2509,26 @@ def run_selection_pipeline(
     else:
         gm_all_cov["Kept_In_Standard_By_Buffer"] = False
 
+    # Präzedenz: ein aufgefüllter Titel steht wegen der Größenregel im Standard, nicht wegen
+    # eines Buffers. Beide Buffer-Flags prüfen dieselbe Konstellation (_c_before ≥ mid_thr bzw.
+    # Segment ≠ harter Cut) und würden denselben Titel sonst ein zweites Mal zählen.
+    if len(gm_all_cov) > 0 and bool(gm_all_cov["Size_Integrity_Filled"].any()):
+        _si_hit = gm_all_cov["Size_Integrity_Filled"]
+        gm_all_cov.loc[_si_hit, "Kept_In_Standard_By_Buffer"] = False
+        gm_all_cov.loc[_si_hit, "Size_Buffer_Held"] = False
+
     # Standard (Large+Mid) vs. coverage-basiertes Small (ersetzt das frühere gm_above85)
     gm_std     = gm_all_cov[gm_all_cov["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
     # Small = alle Nicht-L+M-Titel aus dem Waterfall (Coverage ≥85%, ≤99% via EUMSS).
     # Über ~isin(L,M) gefangen (robust gegen künftige Zusatz-Label).
     gm_above85 = gm_all_cov[~gm_all_cov["Segment_New"].isin(["Large Cap", "Mid Cap"])].copy()
+
+    # Höchste Länder-Coverage, die ein Standard-Titel nach der Auffüllung erreicht (_c_before
+    # des letzten L/M-Titels). Bei gesetzter si_edge_pp muss der Wert darunter bleiben; ohne
+    # Kante zeigt er, wie weit die Coverage über das Zielband hinausläuft.
+    si_max_coverage = 0.0
+    if apply_size_integrity and len(gm_std) > 0 and "_c_before" in gm_std.columns:
+        si_max_coverage = float(pd.to_numeric(gm_std["_c_before"], errors="coerce").max())
 
     # Variante A: Wer EUMSS besteht, aber die Liquidität reißt, erfüllt die
     # Investierbarkeits-Kriterien NICHT → komplett RAUS (nicht Small, nicht Micro,
@@ -1956,7 +2549,8 @@ def run_selection_pipeline(
     gm_complete = pd.concat([gm_final, gm_above85, gm_micro, gm_noninv], ignore_index=True)
     gm_complete = gm_complete.drop_duplicates(subset=["Symbol"]).copy()
     # gm_micro trägt die Audit-Flags nicht → auf False auffüllen
-    for _flag in ("Size_Buffer_Held", "Kept_In_Standard_By_Buffer"):
+    for _flag in ("Size_Buffer_Held", "Kept_In_Standard_By_Buffer", "Country_Floor_Promoted",
+                  "Size_Integrity_Filled", "Size_Integrity_Blocked"):
         if _flag in gm_complete.columns:
             gm_complete[_flag] = gm_complete[_flag].fillna(False).astype(bool)
         else:
@@ -2011,6 +2605,11 @@ def run_selection_pipeline(
         "gm_universe":      gm_u,
         "gm_eumss":         gm_eumss,
         "gm_liq":           gm_liq,
+        # Pool, auf dem der Coverage-Waterfall rechnet: nach EUMSS, Min FF % und Liquiditaet,
+        # Adj_FF > 0, aber VOR der Segmentierung. Das ist das investierbare Universum im
+        # eigentlichen Sinn und im Gegensatz zu "Segment in L/M/S" unabhaengig davon, ob je
+        # Land oder gepoolt segmentiert wird (der 99%-Small-Cut wuerde es sonst verschieben).
+        "gm_liq_cov":       gm_liq_cov,
         "gm_liq_excluded":  gm_liq_excluded,
         "gm_std":           gm_std,
         "gm_final":         gm_final,
@@ -2020,6 +2619,14 @@ def run_selection_pipeline(
         "eumss_ff":         eumss_ff,
         "eumss_calib_fallback": eumss_calib_fallback,
         "buffer_breakdown": buffer_breakdown,
+        "europe_pool_cutoff": europe_pool_cutoff,
+        # Size-Integrity: R85 und T (DM) je Periode, EM-Schwelle = _EM_SIZE_FACTOR × T.
+        "si_r85":           si_r85,
+        "si_threshold":     si_threshold,
+        "si_threshold_em":  _EM_SIZE_FACTOR * si_threshold,
+        "si_filled_n":      si_filled_n,
+        "si_blocked_n":     si_blocked_n,
+        "si_max_coverage":  si_max_coverage,
     }
 
-__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'with_fol_breakdown', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']
+__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'load_spinoff_list', 'seed_spinoff_incumbents', 'SPINOFF_COLS', 'spinoff_liquidity_exemptions', 'SPINOFF_HORIZON_MONTHS', 'with_fol_breakdown', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']

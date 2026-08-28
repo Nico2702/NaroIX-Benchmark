@@ -44,10 +44,13 @@ Global exclusions (applied to all listings):
 - **Thailand** SHARE→NVDR mode (qualification on SHARE, liquidity/index on NVDR)
 - **HK** stocks with Trading Currency **CNY**
 - `Country of Risk = @NA`
-- **NAICS** open-end investment funds
 - Exchange **Euro MTF / @NA**
 - Name contains **"ETF" / "SICAV" / "%"**
 - `Classification` (DM/EM/FM) must be set via `Mapping Country`
+
+> **Removed 2026-08-23:** the NAICS "open-end investment fund" exclusion. The FactSet field
+> flagged mostly operating asset managers (WisdomTree, Jupiter Fund Management, IntegraFin,
+> Groww). Genuine fund vehicles stay out via the size floor: all of them land in Micro Cap.
 
 Then **FOL / Inclusion Factor**:
 - `IF = min(1, FOL / Free Float %)`; FOL lookup fallback chain **Industry (exact) → Industry (normalized, whitespace/case-tolerant) → Sector (strictest) → Country default → 1.0**. The normalized step absorbs YAML-vs-FactSet spelling differences (e.g. `Cruiselines` vs `Cruise lines`) so an existing matrix entry isn't missed and wrongly fall through to an unrelated restricted industry.

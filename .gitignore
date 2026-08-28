@@ -22,3 +22,16 @@ Claude_Excel_Files/
 Incorrect_Hitstorical_Prices_and_Total_MCap.xlsx
 NX-EU-LM_fehlend_aggregiert.xlsx
 NaroIX_ACWI_Selection_no-Float.xlsx
+
+# Alte Arbeitsstaende / Archiv (lokal, teilweise sehr gross)
+Old Files/
+
+# Analyse-Outputs aus Ad-hoc-Laeufen (Konvention: nach Claude_Excel_Files/)
+Datenpruefung_Float_und_MCap_Ausreisser*.xlsx
+MSCI_CHECK.xlsx
+MSCI_Abgaenge_Diagnose.xlsx
+MSCI_vs_NX-EU-LM_Pooled_Abgleich.xlsx
+FactSet_Challenge_Liste_08_2026.xlsx
+Europe Markets Index vs MSCI Europe.xlsx
+NaroIX_EuropePooled_Backtest_Weights_*.xlsx
+europe_pool_waterfall.csv

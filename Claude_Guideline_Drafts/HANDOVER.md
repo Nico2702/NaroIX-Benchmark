@@ -324,10 +324,14 @@ The universe is built in `build_new_universe()` (inline in `naroix_benchmark.py`
 - Thailand SHARE→NVDR mode (default: keep NVDR over SHARE for foreign-investable A-Shares)
 - HK stocks with Trading Currency CNY excluded
 - `Country of Risk ≠ @NA`
-- NAICS-based exclusions (Open-End Investment Funds)
 - Exchange Name exclusions (Euro MTF, @NA)
 - Name contains "ETF", "SICAV", "%" → excluded
 - `Classification` (DM/EM/FM) must be set (via `country_cls.map(Mapping Country)`)
+
+**Removed 2026-08-23:** the NAICS-based exclusion (Open-End Investment Funds). The FactSet
+NAICS field flags operating asset managers as funds (WisdomTree, Jupiter Fund Management,
+IntegraFin, Groww), so it was unusable as a fund-vehicle criterion. The genuine vehicles among
+the 16 hits all fall into Micro Cap and therefore stay out of the IMI segments anyway.
 
 ### Step 2 — FOL Matrix Application
 - **Active matrix (switched 2026-06-11):** `NaroIX_FOL_Master_Aggregated_v1.9.yaml`, internal version **`1.9-redteam-corrected`** — **12 jurisdictions** (added **Taiwan**), Qatar banks & insurers fixed to 49%, and all logical `auto>max` violations resolved (India pharma `fol_automatic` 1.0→0.74, internet retail max 0→1). v1.9 is now the **only** FOL matrix in the repo (the older v1.3/v1.6 files were deleted — `load_fol_matrix` looks for v1.9 only, no fallback). **Taiwan requires `"TAIWAN":"TW"` in `FOL_COUNTRY_CODE_MAP`** (added) — without it Taiwan's FOL is loaded but never matched. Lineage: 1.3→1.6 = point-in-time corrections (IN insurers 26→49→74%, AE/ID/KW/TH finance & telecom); 1.6→1.9 = +Taiwan +Qatar-financials +auto>max fixes. **Index impact** (simulated, ACWI 2026): tiny — EM weight ~−0.03pp vs v1.1 (Qatar financials + Taiwan telecom/transport; Taiwan megacaps are tech = 100% open), a few small India pharma IFs drop. Historical years (2014-2020) shift more. NOTE: some corrections legitimately end before 2026 (real liberalization, documented in the YAML changelog with legal bases).
@@ -365,11 +369,13 @@ The Helvetica pipeline (`build_helvetica_pipeline()`) is **structurally simpler*
 
 ## 4. Master File Format
 
-The new multi-period Master File is the upcoming standard input format.
+The multi-period Master File is the standard input format. Current file (as of 2026-08-24):
+`NaroIX_Universe_Selection_Master_Final_08_2026_Complete.xlsx`.
 
 ### Structure
-- **Sheet name**: "Master"
-- **Rows**: 52,764 stocks (full FactSet universe)
+- **Sheet name**: "Master" (the file also carries a note sheet "Manuell Added"; the loader
+  prefers the "Master" sheet and ignores the rest)
+- **Rows**: 59,516 stocks (full FactSet universe)
 - **Columns**: 458 total
   - 26 metadata columns (A-Z)
   - 432 periodic data columns (48 periods × 9 fields)
@@ -394,11 +400,13 @@ P. Trading Exchange
 Q. Exchange Name
 R. Trading Currency
 S. Exchange Country *(renamed from "Exchange Country Name")*
-**T. Country Mapping** *(NEW — user maintains this manually)*
-U. Country of Incorp
-V. Country of Risk
-W. Country of Rev_Risk *(not used in pipeline)*
-X. Country HQ *(not used in pipeline)*
+T. Country of Incorp
+U. Country of Risk
+V. Country of GeoRev *(not used in pipeline — the column previously documented here as
+   "Country of Rev_Risk"; added with the 08/2026 master, rides along as an extra static column)*
+W. Country HQ *(not used in pipeline)*
+**X. Country Mapping** *(user maintains this manually — position moved in the 08/2026 master,
+   the loader resolves it by name, not by column letter)*
 Y. Region by Exchange *(not used in pipeline)*
 Z. Region by Primary Listing *(not used in pipeline)*
 
@@ -419,10 +427,11 @@ Per period:
 
 ### Selection Dates Coverage
 - First: 2014-11-19
-- Last: 2026-05-20
+- Last: 2026-08-19
 - 48 quarterly periods (Feb / May / Aug / Nov)
 
-`Selection Dates.xlsx` was recently updated to include 2026-05-20 (was missing).
+`Selection Dates.xlsx` was updated for the 08/2026 master to include 2026-08-19; `Historical
+Classification.xlsx` and `China Inclusion Factor.xlsx` cover the same set (see progress.md).
 
 ### Listing Status Derivation
 
@@ -678,8 +687,8 @@ If you're continuing work in Cursor on this codebase:
 - `naroix_benchmark.py` — main Streamlit app, contains ALL logic (universe, pipeline, Helvetica, all tabs)
 - `README.md` — Windows local-run instructions
 - `requirements.txt` — includes `python-calamine`
-- `pipeline_core.py` — **does not exist** (planned extraction, see §1 / §6)
-- Multi-period Master File (user-uploaded via UI): `NaroIX_..._Master_..._WITH_FLOAT.xlsx`, ~458 cols × 52,764 rows, "Float MCap" naming
+- `pipeline_core.py` — **exists** (Streamlit-free engine; the extraction planned in §1 / §6 was done)
+- Multi-period Master File (user-uploaded via UI): `NaroIX_Universe_Selection_Master_Final_08_2026_Complete.xlsx`, 458 cols × 59,516 rows, "Float MCap" naming
 
 ### Recent fixes
 **This session (2026-06-04):**

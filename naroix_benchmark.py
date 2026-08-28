@@ -9,12 +9,14 @@ from io import BytesIO
 # ── Pipeline engine (extracted, Streamlit-free) ─────────────────────────────
 from pipeline_core import *  # noqa: F401,F403  (public API via __all__)
 from pipeline_core import _resolve_fol_row, _rank_band_select, _norm_isin, _match_key  # internal helpers used by UI
+from pipeline_core import _SEG_AC  # IMI-Segmente (Large+Mid+Small) = Investable Universe
 from pipeline_core import derive_mapping_country  # zentrale Mapping-Country-Regel (File-Feld + Risk-First-Fallback)
 from pipeline_core import apply_universe_exclusions, fif_inclusion_factor  # zentrale Exclusions + FIF-Formel
 from pipeline_core import (
     load_master_excel as _c_load_master_excel,
     load_fol_matrix as _c_load_fol_matrix,
     load_ineligible_list as _c_load_ineligible_list,
+    load_spinoff_list as _c_load_spinoff_list,
     build_sector_fallback_table as _c_build_sector_fallback_table,
 )
 
@@ -30,6 +32,10 @@ def load_fol_matrix():
 @st.cache_data
 def load_ineligible_list():
     return _c_load_ineligible_list()
+
+@st.cache_data
+def load_spinoff_list(valid_selection_dates_iso):
+    return _c_load_spinoff_list(valid_selection_dates_iso)
 
 @st.cache_data(show_spinner=False)
 def build_sector_fallback_table(fol_matrix):
@@ -92,6 +98,69 @@ def to_excel_one(df, sheet_name="Sheet1"):
     return to_excel_multi({sheet_name: df})
 
 
+# Spalten, mit denen das Investable Universe je Produkt/Periode im Session-State gehalten
+# wird. Bewusst schlank (statt gm_complete komplett), weil das Universe ein Vielfaches der
+# Konstituenten umfasst und über alle Perioden gespeichert bleibt.
+_IU_KEEP_COLS = [
+    "Symbol", "Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country",
+    "Segment_New", "Prev_Segment", "Free Float Percent", "Total MCap Y2025",
+    "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight",
+    # Coverage-Treppe aus der Pipeline, je Segmentierungsmarkt in Waterfall-Reihenfolge.
+    # Exportlabels: Coverage_before_% / Cum_FF_MCap / Coverage_after_%. Die Segmentregel
+    # testet Coverage_before_%; es gilt Coverage_before_%(n+1) = Coverage_after_%(n), der
+    # Cut liegt also zwischen den beiden Zeilen, wo Coverage_after_% die Schwelle reisst.
+    "_c_before", "_cum_cov", "_c_after",
+    "Prev_In_Index", "Im_Index", "Index_Status", "Index_Reason",
+]
+
+
+def _iu_with_status(gm_complete, ix, cons, prev_index_isin, prev_segments, mid_thr,
+                    pool_symbols=None):
+    """Investable Universe eines Produkt-Scopes, angereichert um Index-Status und Begruendung.
+
+    Index_Status  Remain In Index | Added to Index | Removed from Index | Not in Index
+    Index_Reason  warum drin (regulaere Coverage-Regel oder Bestandsschutz per Buffer)
+                  bzw. warum draussen (Segment, Coverage oder Rang bei Fixed-Count-Produkten).
+
+    Der Buffer-Fall ist genau der, den man sonst nicht sieht: Coverage >= mid_thr, aber
+    trotzdem im Index, weil das Vorperioden-Segment ihn haelt.
+    """
+    # pool_symbols = gm_liq_cov (Pool vor der Segmentierung). Damit enthaelt das Universum
+    # auch die Titel, die erst der 99%-Small-Cut nach Micro schiebt, und ist deshalb in
+    # jedem Segmentierungsmodus identisch. Ohne pool_symbols das alte Verhalten (nur L/M/S).
+    _segs = (_SEG_AC + ["Micro Cap"]) if pool_symbols is not None else _SEG_AC
+    iu = build_index(gm_complete, ix["region"], _segs,
+                     industries=ix.get("industries"), apply_cap=False)
+    if pool_symbols is not None and "Symbol" in iu.columns:
+        iu = iu[iu["Symbol"].isin(set(pool_symbols))].copy()
+    if len(iu) == 0:
+        return iu
+    _cons_syms = set(cons["Symbol"].dropna()) if "Symbol" in cons.columns else set()
+    now = iu["Symbol"].isin(_cons_syms) if "Symbol" in iu.columns else pd.Series(False, index=iu.index)
+    prev = _norm_isin(iu["ISIN"]).isin(set(prev_index_isin or ()))
+    cb = pd.to_numeric(iu.get("_c_before"), errors="coerce")
+    seg = iu["Segment_New"].astype(str)
+    prod_segs = set(ix["segments"])
+    is_topn = bool(ix.get("top_n"))
+
+    status = np.where(now & prev, "Remain In Index",
+              np.where(now & ~prev, "Added to Index",
+               np.where(~now & prev, "Removed from Index", "Not in Index")))
+    # "Coverage-Regel" statt "Coverage-Cut": der Titel ist INNERHALB des Cut-offs und
+    # damit ueber die regulaere Regel drin, nicht weggeschnitten.
+    in_reason = np.where(cb < float(mid_thr),
+                         f"Coverage-Regel (< {mid_thr:g} %)",
+                         f"Buffer (Bestand, Coverage >= {mid_thr:g} %)")
+    out_reason = np.where(~seg.isin(prod_segs), "Segment " + seg,
+                          "nicht in Top-N" if is_topn else f"Coverage >= {mid_thr:g} %")
+    return iu.assign(
+        Prev_Segment=_match_key(iu).map(dict(prev_segments or {})),
+        Prev_In_Index=prev, Im_Index=now,
+        Index_Status=status,
+        Index_Reason=np.where(now, in_reason, out_reason),
+    )
+
+
 # ── Multi-Period Excel-Export (LAZY: erst auf Klick "Downloads vorbereiten") ──────
 # Baut aus dem gespeicherten Lauf-Ergebnis die 4 Export-Dateien. Wird NICHT mehr
 # eager nach jedem Run erzeugt, sondern nur wenn der Nutzer sie anfordert — das
@@ -138,18 +207,22 @@ def _mp_bt_xlsx(_by_idx):
     return _buf.getvalue()
 
 
-def _mp_build_export_bytes():
+def _mp_build_export_bytes(prefix="multi"):
     """Erzeugt die 4 Multi-Period-Export-Dateien aus dem Session-State-Lauf und
-    legt sie im Session-State ab. Aufruf nur auf 'Downloads vorbereiten'-Klick."""
-    _res = st.session_state.get("multi_results", {})
-    _sum = st.session_state.get("multi_summary", pd.DataFrame())
-    _wide = st.session_state.get("multi_wide", {})
-    _seg = st.session_state.get("multi_segmatrix", {})
+    legt sie im Session-State ab. Aufruf nur auf 'Downloads vorbereiten'-Klick.
+
+    `prefix` waehlt den Lauf: "multi" = Multi-Period-Tab, "eupool" = Europe MP
+    (Pooled). Beide Tabs teilen damit denselben Export-Code."""
+    _res = st.session_state.get(f"{prefix}_results", {})
+    _sum = st.session_state.get(f"{prefix}_summary", pd.DataFrame())
+    _wide = st.session_state.get(f"{prefix}_wide", {})
+    _seg = st.session_state.get(f"{prefix}_segmatrix", {})
     _long_cols = ["Selection Date", "Exchange Ticker", "Name", "ISIN", "Entity ID",
                   "Classification", "Mapping Country", "Exchange Country Name",
                   "Segment_New", "Size_Buffer_Held", "Free Float Percent",
                   "Total MCap Y2025", "Share MCap Y2025", "Free Float MCap Y2025",
-                  "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight"]
+                  "FOL_Value", "IF", "Adj_FF_MCap", "IF_Source", "Index_Weight",
+                  "Spinoff_Seeded"]
     _sheets_long = {"Summary": _sum}
     for _idx_name, _period_dict in _res.items():
         _parts = []
@@ -165,15 +238,641 @@ def _mp_build_export_bytes():
             ["Selection Date", "Index_Weight"], ascending=[True, False]).reset_index(drop=True)
     _sheets_wide = {"Summary": _sum, **{k[:31]: v for k, v in _wide.items()}}
     _sheets_seg = {"Summary": _sum, **{k[:31]: v for k, v in _seg.items()}}
+    # Settings des LAUFS (nicht der aktuellen Sidebar) in jede Datei — sonst ist der
+    # Export nicht reproduzierbar, siehe Kommentar bei _settings_snapshot().
+    _cfg = st.session_state.get(f"{prefix}_settings")
+    if _cfg is not None and len(_cfg):
+        for _sh in (_sheets_long, _sheets_wide, _sheets_seg):
+            _sh["Settings"] = _cfg
+    # Spin-off-Protokoll des Laufs: welches Kind wurde geseedet, welches verworfen und warum
+    _solog = st.session_state.get(f"{prefix}_spinoff_log")
+    if _solog is not None and len(_solog):
+        _sheets_long["Spin-offs"] = _solog
     _bt_by_idx = {}
     for _idx_name, _period_dict in _res.items():
         _btm = _mp_bt_matrix(_period_dict)
         if _btm is not None:
             _bt_by_idx[_idx_name] = _btm
-    st.session_state["multi_export_long_bytes"] = to_excel_multi(_sheets_long)
-    st.session_state["multi_export_wide_bytes"] = to_excel_multi(_sheets_wide, pct_date_cols=True)
-    st.session_state["multi_export_seg_bytes"] = to_excel_multi(_sheets_seg)
-    st.session_state["multi_export_bt_bytes"] = _mp_bt_xlsx(_bt_by_idx) if _bt_by_idx else None
+    st.session_state[f"{prefix}_export_long_bytes"] = to_excel_multi(_sheets_long)
+    st.session_state[f"{prefix}_export_wide_bytes"] = to_excel_multi(_sheets_wide, pct_date_cols=True)
+    st.session_state[f"{prefix}_export_seg_bytes"] = to_excel_multi(_sheets_seg)
+    st.session_state[f"{prefix}_export_bt_bytes"] = _mp_bt_xlsx(_bt_by_idx) if _bt_by_idx else None
+
+
+_ADTV_SCREEN_COLS = ["3M ADTV Y2025", "6M ADTV Y2025"]
+
+
+def _spinoff_horizon_rows(spinoff_df, exempt_by_h, selection_date_iso, snapshot,
+                          seeded_keys):
+    """Protokoll-Zeilen fuer Perioden, in denen ein Horizont noch offen ist, aber KEIN
+    Seed passiert. Ohne das waere die Wirkung am Folgetermin unsichtbar."""
+    if not exempt_by_h or spinoff_df is None or len(spinoff_df) == 0:
+        return None
+    _all = set().union(*exempt_by_h.values()) if exempt_by_h else set()
+    _pending = _all - set(seeded_keys or ())
+    if not _pending or snapshot is None or len(snapshot) == 0:
+        return None
+    _k = _match_key(snapshot)
+    _si = _norm_isin(snapshot["ISIN"])
+    rows = []
+    for _, r in spinoff_df.iterrows():
+        _ck = {x for x in _k[_si == r["Child ISIN"]] if x}
+        if not (_ck & _pending):
+            continue
+        _hs = [h for h, keys in exempt_by_h.items() if _ck & set(keys)]
+        rows.append({
+            "Selection Date": selection_date_iso, "Child Ticker": r["Child Ticker"],
+            "Child Name": r["Child Name"], "Child ISIN": r["Child ISIN"],
+            "Parent Ticker": r["Parent Ticker"], "Parent ISIN": r["Parent ISIN"],
+            "Event Type": r["Event Type"], "Segment": "", "Status": "Ausnahme aktiv",
+            "Begruendung": f"Ex-Date {str(r['Ex-Date'])[:10]}, Horizont "
+                           f"{' + '.join(sorted(_hs))} noch nicht erreichbar",
+            "ADTV-Ausnahme": f"greift ({' + '.join(sorted(_hs))})",
+        })
+    return pd.DataFrame(rows) if rows else None
+
+
+def _spinoff_adtv_note(log, snapshot):
+    """Weist im Protokoll aus, ob die ADTV-Ausnahme fuer dieses Kind ueberhaupt greift.
+
+    Sie greift nur bei FEHLENDEM 3M-/6M-ADTV. FactSet fuellt die langen Horizonte
+    normalerweise mit dem kurzen Fenster auf, der Fall ist also selten — deshalb steht
+    im Regelfall "nicht nötig" und man sieht sofort, wann er doch eintritt.
+    """
+    if log is None or len(log) == 0 or snapshot is None or len(snapshot) == 0:
+        return log
+    out = log.copy()
+    _si = _norm_isin(snapshot["ISIN"]) if "ISIN" in snapshot.columns else None
+    notes = []
+    for isin, st_ in zip(out["Child ISIN"], out["Status"]):
+        if st_ != "geseedet" or _si is None:
+            notes.append("—")
+            continue
+        _m = _si == str(isin).strip().upper()
+        # "fehlt" = NaN oder <= 0, gleiche Definition wie in apply_liquidity_new:
+        # build_new_universe macht fillna(0), NaN und echte Null sind dort nicht
+        # mehr unterscheidbar.
+        _miss = []
+        for c in _ADTV_SCREEN_COLS:
+            if c not in snapshot.columns:
+                continue
+            _v = pd.to_numeric(snapshot.loc[_m, c], errors="coerce")
+            if len(_v) and (_v.isna() | (_v <= 0)).all():
+                _miss.append(c)
+        notes.append(f"greift ({' + '.join(x.split()[0] for x in _miss)} fehlt)"
+                     if _miss else "nicht nötig")
+    out["ADTV-Ausnahme"] = notes
+    return out
+
+
+def _spinoff_outcome(log, gm_complete, seeded_keys):
+    """Ergaenzt das Seed-Protokoll um das Segment, das das Kind im Lauf bekommen hat.
+
+    Ein Seed kann aus vielen Gruenden verpuffen: Liquiditaet, EUMSS, Coverage jenseits
+    der Maintenance-Kante, Exclusions. Statt fuer jeden Grund eine Ausnahme zu bauen,
+    wird das Ergebnis sichtbar gemacht. 'Segment nach Lauf' = Large/Mid heisst im
+    Standard-Index angekommen, Small/Micro heisst geseedet aber nicht im Standard,
+    'nicht im Lauf' heisst an einem Screen gescheitert.
+    """
+    if log is None or len(log) == 0:
+        return log
+    out = log.copy()
+    if gm_complete is None or len(gm_complete) == 0 or not seeded_keys:
+        out["Segment nach Lauf"] = "nicht im Lauf"
+        return out
+    _k = _match_key(gm_complete)
+    _seg = dict(zip(_k.values, gm_complete["Segment_New"].values))
+    _isin2key = dict(zip(_norm_isin(gm_complete["ISIN"]).values, _k.values))
+    out["Segment nach Lauf"] = [
+        (_seg.get(_isin2key.get(str(i).strip().upper(), ""), "nicht im Lauf")
+         if st_ == "geseedet" else "—")
+        for i, st_ in zip(out["Child ISIN"], out["Status"])
+    ]
+    return out
+
+
+# ── Gemeinsamer Ergebnis-Block fuer Multi-Period-Laeufe ──────────────────────
+# EIN Renderer fuer den kompletten Nach-Lauf-Block: Detail-Ansicht, Country-/
+# Sektor-Breakdown, Index Characteristics, die lazy Excel-Exporte ("Downloads
+# vorbereiten"), Gewichtsmatrix, Backtest-Matrix, Segment-Wanderung, Country-/
+# Sector-Gewichte ueber Zeit und Tenure.
+# Genutzt vom Multi-Period-Tab (prefix="multi") UND vom Europe-MP-Tab
+# (prefix="eupool") — beide Tabs zeigen damit identische Auswertungen statt
+# zwei getrennt gepflegter Bloecke.
+#
+# Erwartete Session-State-Keys (prefix-abhaengig):
+#   {prefix}_results  {prefix}_iu  {prefix}_wide  {prefix}_segmatrix
+#   {prefix}_eumss  {prefix}_si  {prefix}_detail_period
+def render_mp_results(prefix, file_tag="", extra_cols=None, caption_extra=None):
+    """Detail-Ansicht + Characteristics + Exporte eines Multi-Period-Laufs.
+
+    prefix      Session-State-/Widget-Key-Prefix ("multi" | "eupool")
+    file_tag    Namensbaustein der Download-Dateien ("" | "EuropePooled_")
+    extra_cols  Zusatzspalten fuer die Konstituenten-Detailtabelle
+    caption_extra  optionales callable(sel_period) -> str, wird an die Detail-Caption
+                   angehaengt (Europe MP zeigt darin den Pool-Cutoff)
+    """
+    _results = st.session_state[f"{prefix}_results"]
+    _k_period = f"{prefix}_detail_period"
+    _k_long = f"{prefix}_export_long_bytes"
+    # Periodenbereich der Dateinamen aus dem GESPEICHERTEN Lauf ableiten, nicht
+    # aus dem Range-Picker — sonst wandert der Dateiname mit, sobald jemand den
+    # Picker verstellt ohne neu zu rechnen.
+    _all_p = sorted({p for _pd in _results.values() for p in _pd.keys()})
+    _fp = f"{_all_p[0]}_to_{_all_p[-1]}" if _all_p else "empty"
+
+    # Stale-Guard: zeigt die Anzeige noch einen Lauf, der nicht mehr zu den
+    # Sidebar-Einstellungen passt? Die Ergebnisse werden BEWUSST nicht verworfen
+    # (ein 48-Perioden-Lauf ist zu teuer, um ihn wegen eines Klicks zu killen),
+    # aber die Abweichung wird benannt — sonst schreibt man ein Ergebnis der
+    # falschen Parametrisierung zu.
+    _cfg_run = st.session_state.get(f"{prefix}_settings")
+    _cfg_diff = _settings_diff(_cfg_run, SETTINGS_NOW)
+    if len(_cfg_diff):
+        st.warning(
+            f"⚠️ **Einstellungen seit diesem Lauf geändert** ({len(_cfg_diff)} Parameter). "
+            "Die Tabellen und Exporte unten zeigen weiterhin den ALTEN Lauf. Für Ergebnisse "
+            "zu den aktuellen Einstellungen den Lauf neu starten.")
+        st.dataframe(_cfg_diff, width='stretch', hide_index=True)
+    _solog_run = st.session_state.get(f"{prefix}_spinoff_log")
+    if _solog_run is not None and len(_solog_run):
+        _n_ok = int((_solog_run["Status"] == "geseedet").sum())
+        with st.expander(f"🌱 Spin-off-Aufnahme — {_n_ok} von {len(_solog_run)} Einträgen "
+                         "geseedet", expanded=False):
+            st.caption("Status **Ausnahme aktiv** = kein Seed in dieser Periode, aber ein "
+                       "Liquiditäts-Horizont ist seit dem Ex-Date noch nicht erreichbar. "
+                       "Geseedet = der Seed wurde angewandt, nicht dass er nötig war: das "
+                       "Kind wäre eventuell auch über die Entry-Schwellen reingekommen. "
+                       "**Segment nach Lauf** zeigt, was tatsächlich herauskam — Large/Mid "
+                       "heißt im Standard-Index angekommen, Small/Micro heißt geseedet aber "
+                       "nicht im Standard, *nicht im Lauf* heißt an einem Screen gescheitert. "
+                       "Liegt als Sheet **Spin-offs** im Long-Format-Export.")
+            st.dataframe(_solog_run, width='stretch', hide_index=True)
+
+    if _cfg_run is not None and len(_cfg_run):
+        with st.expander("⚙️ Einstellungen dieses Laufs"
+                         + (" — weichen von der Sidebar ab" if len(_cfg_diff) else ""),
+                         expanded=False):
+            st.caption("Eingefroren beim Start des Laufs. Liegt als Sheet **Settings** in "
+                       "jeder Export-Datei, damit der Backtest reproduzierbar bleibt.")
+            st.dataframe(_cfg_run, width='stretch', hide_index=True)
+    _rt = file_tag.rstrip("_") or "MultiPeriod"   # Lauf-Kennung im Dateinamen
+
+    # Detail-Picker pro Period+Index
+    st.markdown("### 🔍 Detail-Ansicht")
+    _di1, _di2 = st.columns(2)
+    with _di1:
+        _sel_idx = st.selectbox("Index",
+                                  options=list(_results.keys()),
+                                  format_func=lambda c: INDEX_BY_CODE.get(c, {}).get("name", c),
+                                  key=f"{prefix}_detail_idx2")
+    _sel_name = INDEX_BY_CODE.get(_sel_idx, {}).get("name", _sel_idx)
+    with _di2:
+        _det_periods = sorted(_results[_sel_idx].keys())
+        # Default = letzte Periode; persistierten/ungültigen State auf letzte korrigieren
+        if st.session_state.get(_k_period) not in _det_periods:
+            st.session_state[_k_period] = _det_periods[-1]
+        _sel_period = st.selectbox("Period",
+                                     options=_det_periods,
+                                     key=_k_period)
+
+    if _sel_idx and _sel_period:
+        _det = _results[_sel_idx][_sel_period]
+        _iu_det = st.session_state.get(f"{prefix}_iu", {}).get(_sel_idx, {}).get(_sel_period)
+        _iu_n = len(_iu_det) if _iu_det is not None else 0
+        st.caption(f"**{_sel_name}** am **{_sel_period}** — {len(_det)} Konstituenten"
+                   + (f" aus {_iu_n:,} Titeln des Investable Universe" if _iu_n else "")
+                   + f", FF MCap total: {format_bn(_det['Free Float MCap Y2025'].sum())}, "
+                     f"Adj. FF MCap: {format_bn(_det['Adj_FF_MCap'].sum())}"
+                   + (caption_extra(_sel_period) if caption_extra else ""))
+
+        _show_cols = [c for c in [
+            "Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country",
+            "Segment_New", "Free Float Percent", "Total MCap Y2025",
+            "Share MCap Y2025", "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight"
+        ] + list(extra_cols or []) if c in _det.columns]
+        _det_show = clean_export_cols(with_fol_breakdown(
+            _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True)))
+        st.dataframe(_det_show.head(50), width='stretch', hide_index=True)
+        if len(_det) > 50:
+            st.caption(f"… {len(_det)-50} weitere — vollständig im Excel-Export verfügbar.")
+        # Zweiter Tab: das Investable Universe im Scope dieses Produkts (Region +
+        # ggf. Industrie, alle IMI-Segmente). Im_Index zeigt, welche Titel daraus
+        # in den Index gelangt sind — damit ist die Selektion im File nachvollziehbar.
+        _dl_sheets = {"Constituents": _det_show}
+        if _cfg_run is not None and len(_cfg_run):
+            _dl_sheets["Settings"] = _cfg_run
+        if _iu_n:
+            _dl_sheets["Investable Universe"] = clean_export_cols(with_fol_breakdown(
+                _iu_det.drop(columns=["Symbol"], errors="ignore")
+                       .sort_values(["Index_Status", "Index_Weight"],
+                                    ascending=[True, False])
+                       .reset_index(drop=True)))
+        st.download_button(
+            "📥 Detail-Ansicht herunterladen"
+            + (" (Konstituenten + Investable Universe)" if _iu_n else " (alle Konstituenten)"),
+            data=to_excel_multi(_dl_sheets),
+            file_name=f"{file_tag}{_sel_idx}_{_sel_period}_constituents.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_detail",
+        )
+        if _iu_n and "Index_Status" in _iu_det.columns:
+            _st_cnt = _iu_det["Index_Status"].value_counts()
+            st.caption("Index-Status im Universum: "
+                       + "  ·  ".join(f"**{k}**: {v}" for k, v in _st_cnt.items())
+                       + f"  ·  davon über den Buffer gehalten: "
+                         f"{int(_iu_det['Index_Reason'].astype(str).str.startswith('Buffer').sum())}")
+
+        # ── DM/EM Country Breakdown + Gewicht-Chart (GIMI-Stil) für die gewählte Periode ──
+        st.markdown("---")
+
+        def _country_table_mp(df_cls, cls_adj):
+            ct = df_cls.groupby(df_cls["Mapping Country"].fillna("—")).agg(
+                Stocks=("Symbol", "count"),
+                FF_MCap=("Free Float MCap Y2025", "sum"),
+                Adj_MCap=("Adj_FF_MCap", "sum"),
+                Avg_MCap=("Adj_FF_MCap", "mean"),
+            ).reset_index().sort_values("Adj_MCap", ascending=False)
+            ct["FF MCap"] = ct["FF_MCap"].apply(format_bn)
+            ct["Avg Adj. MCap"] = ct["Avg_MCap"].apply(format_bn)
+            ct["Weight %"] = ((ct["Adj_MCap"] / cls_adj * 100).apply(lambda x: f"{x:.2f}%")
+                              if cls_adj > 0 else "—")
+            return ct[["Mapping Country", "Stocks", "FF MCap", "Avg Adj. MCap", "Weight %"]].rename(
+                columns={"Mapping Country": "Land"})
+
+        _dm_sel = _det[_det["Classification"] == "DM"]
+        _em_sel = _det[_det["Classification"] == "EM"]
+        st.caption(f"**Country Breakdown — {_sel_name} am {_sel_period}** · "
+                   f"{len(_dm_sel)} DM / {len(_em_sel)} EM · Weight % je relativ zur eigenen DM-/EM-Gruppe")
+        _ccp1, _ccp2 = st.columns(2)
+        with _ccp1:
+            st.markdown(f"**DM Country Breakdown ({len(_dm_sel):,} Stocks)**")
+            st.dataframe(_country_table_mp(_dm_sel, _dm_sel["Adj_FF_MCap"].sum()),
+                         width='stretch', hide_index=True)
+        with _ccp2:
+            st.markdown(f"**EM Country Breakdown ({len(_em_sel):,} Stocks)**")
+            st.dataframe(_country_table_mp(_em_sel, _em_sel["Adj_FF_MCap"].sum()),
+                         width='stretch', hide_index=True)
+
+        st.markdown("**Nach Gewicht (Adj. FF MCap %)** — Anteil am Index")
+        _tot_adj = _det["Adj_FF_MCap"].sum()
+        if _tot_adj > 0:
+            _gw1, _gw2 = st.columns(2)
+            with _gw1:
+                st.markdown("**Nach Land**")
+                _byw = _det.groupby("Mapping Country").agg(Adj=("Adj_FF_MCap", "sum")).reset_index()
+                _byw["Weight%"] = (_byw["Adj"] / _tot_adj * 100).round(2)
+                _byw = _byw.sort_values("Adj", ascending=False)
+                _top30 = _byw.head(30)
+                _rest = _byw.iloc[30:]
+                if len(_rest):
+                    _top30 = pd.concat([pd.DataFrame([{"Mapping Country": f"Others ({len(_rest)})",
+                        "Adj": _rest["Adj"].sum(), "Weight%": _rest["Weight%"].sum()}]), _top30])
+                _top30 = _top30.sort_values("Adj", ascending=True)
+                _figw = go.Figure(go.Bar(x=_top30["Weight%"], y=_top30["Mapping Country"],
+                    orientation="h", marker_color="#ce93d8",
+                    text=_top30["Weight%"].apply(lambda x: f"{x:.2f}%"), textposition="outside"))
+                _figw.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
+                    height=700, margin=dict(t=10, b=10, l=10, r=60), xaxis=dict(showgrid=False))
+                st.plotly_chart(_figw, width='stretch')
+            with _gw2:
+                st.markdown("**Nach Sektor (FactSet Economy)**")
+                _sec = _det.get("FactSet Economy")
+                if _sec is None:
+                    _sec = pd.Series(["—"] * len(_det), index=_det.index)
+                _secvals = _sec.fillna("—").astype(str).str.strip().replace("", "—")
+                _bys = (_det.assign(_Sector=_secvals)
+                            .groupby("_Sector").agg(Adj=("Adj_FF_MCap", "sum")).reset_index())
+                _bys["Weight%"] = (_bys["Adj"] / _tot_adj * 100).round(2)
+                _bys = _bys.sort_values("Adj", ascending=True)
+                _figs = go.Figure(go.Bar(x=_bys["Weight%"], y=_bys["_Sector"],
+                    orientation="h", marker_color="#2979ff",
+                    text=_bys["Weight%"].apply(lambda x: f"{x:.2f}%"), textposition="outside"))
+                _figs.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
+                    height=470, margin=dict(t=10, b=10, l=10, r=60), xaxis=dict(showgrid=False))
+                st.plotly_chart(_figs, width='stretch')
+
+                # Kleiner DM/EM-Gesamtanteil als flacher Balken — rechte Spalte
+                # (Sektor + DM/EM) ergibt zusammen ~ die Höhe des Länder-Graphen links.
+                st.markdown("**DM vs EM (Gesamtanteil)**")
+                _dm_adj = _det.loc[_det["Classification"] == "DM", "Adj_FF_MCap"].sum()
+                _em_adj = _det.loc[_det["Classification"] == "EM", "Adj_FF_MCap"].sum()
+                _tot2 = _dm_adj + _em_adj
+                if _tot2 > 0:
+                    _dm_w = round(_dm_adj / _tot2 * 100, 2)
+                    _em_w = round(_em_adj / _tot2 * 100, 2)
+                    _figd = go.Figure(go.Bar(
+                        x=[_em_w, _dm_w], y=["EM", "DM"], orientation="h",
+                        marker_color=["#ce93d8", "#2979ff"],
+                        text=[f"{_em_w:.2f}%", f"{_dm_w:.2f}%"], textposition="outside"))
+                    _figd.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
+                        height=180, margin=dict(t=10, b=10, l=10, r=60),
+                        xaxis=dict(showgrid=False, range=[0, 100]))
+                    st.plotly_chart(_figd, width='stretch')
+                else:
+                    st.caption("Keine DM/EM-Daten für diese Periode.")
+        else:
+            st.caption("Keine Adj. FF MCap-Daten für diese Periode.")
+
+    # ── Index Characteristics pro Periode ───────────────────────────
+    # Wie das MSCI-Factsheet: Anzahl Konstituenten + Mkt-Cap-Kennzahlen
+    # (Index/Largest/Smallest/Avg/Median) je MCap-Basis, plus DM/EM-Gewicht.
+    # Für den in der Detail-Ansicht gewählten Index (_sel_idx).
+    st.markdown("---")
+    st.markdown(f"### 📋 Index Characteristics — {_sel_name}")
+    st.caption("Mkt Cap (**Total MCap**) in **USD Millions** · DM/EM-Gewicht nach Adj. FF MCap · "
+               "**EUMSS Full/FF** = auf DM-Primary kalibrierte Schwellen (Total- bzw. FF-MCap), global angewandt")
+
+    _ic_bases = [("Total", "Total MCap Y2025")]
+    _ic_rows = []
+    for _sd in sorted(_results[_sel_idx].keys()):
+        _c = _results[_sel_idx][_sd]
+        _adj = pd.to_numeric(_c.get("Adj_FF_MCap"), errors="coerce") if "Adj_FF_MCap" in _c.columns else pd.Series(dtype=float)
+        _adj_tot = float(_adj.sum())
+        _cls = _c["Classification"] if "Classification" in _c.columns else pd.Series([""] * len(_c), index=_c.index)
+        _dm_w = (_adj[_cls == "DM"].sum() / _adj_tot * 100) if _adj_tot > 0 else 0.0
+        _em_w = (_adj[_cls == "EM"].sum() / _adj_tot * 100) if _adj_tot > 0 else 0.0
+        _row = {"Selection Date": _sd, "# Const": len(_c),
+                "DM W%": f"{_dm_w:.2f}%", "EM W%": f"{_em_w:.2f}%"}
+        _eu = st.session_state.get(f"{prefix}_eumss", {}).get(_sd)
+        _row["EUMSS Full"] = f"{_eu[0]/1e6:,.2f}" if _eu else "—"
+        _row["EUMSS FF"]   = f"{_eu[1]/1e6:,.2f}" if _eu else "—"
+        _si = st.session_state.get(f"{prefix}_si", {}).get(_sd)
+        if _si:
+            _row["R85"]        = format_bn(_si[0])
+            _row["T (DM)"]     = format_bn(_si[1])
+            _row["T (EM)"]     = format_bn(_si[2])
+            _row["SI Fills"]   = _si[3]
+            _row["SI Blocked"] = _si[4]
+            _row["Max Cov %"]  = f"{_si[5]:.1f}"
+        for _lbl, _col in _ic_bases:
+            _v = (pd.to_numeric(_c.get(_col), errors="coerce").dropna() / 1e6
+                  if _col in _c.columns else pd.Series(dtype=float))
+            if len(_v):
+                _row[f"Index ({_lbl})"]    = f"{_v.sum():,.2f}"
+                _row[f"Largest ({_lbl})"]  = f"{_v.max():,.2f}"
+                _row[f"Smallest ({_lbl})"] = f"{_v.min():,.2f}"
+                _row[f"Avg ({_lbl})"]      = f"{_v.mean():,.2f}"
+                _row[f"Median ({_lbl})"]   = f"{_v.median():,.2f}"
+            else:
+                for _m in ("Index", "Largest", "Smallest", "Avg", "Median"):
+                    _row[f"{_m} ({_lbl})"] = "—"
+        _ic_rows.append(_row)
+    st.dataframe(pd.DataFrame(_ic_rows), width='stretch', hide_index=True)
+
+    # Excel-Export — LAZY: die schweren Export-Dateien werden erst auf Klick
+    # erzeugt (nicht mehr eager nach jedem Lauf), damit der Run schlank bleibt.
+    # Danach liegen die Bytes im Session-State und werden hier nur ausgeliefert.
+    st.markdown("---")
+    st.markdown("### 💾 Multi-Period Export")
+
+    if _k_long not in st.session_state:
+        st.caption("Die Download-Dateien werden erst auf Klick erzeugt "
+                   "(hält den Multi-Period-Run schlank).")
+        if st.button("📦 Downloads vorbereiten", key=f"{prefix}_prep_dl", type="primary"):
+            with st.spinner("Baue Export-Dateien…"):
+                _mp_build_export_bytes(prefix)
+            st.rerun()
+
+    if _k_long in st.session_state:
+        st.download_button(
+            "📥 Konstituenten (Long Format — 1 Sheet/Produkt, alle Perioden)",
+            data=st.session_state[_k_long],
+            file_name=f"NaroIX_{_rt}_Long_{_fp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_long",
+        )
+
+    # ── Gewichtsmatrix (Wide Format) ──
+    st.markdown("---")
+    st.markdown("### 📐 Gewichtsmatrix — alle Konstituenten × alle Perioden")
+    st.caption("Zeile = Aktie | Spalte = Selection Date | Wert = Indexgewicht (%) | Leer = nicht im Index "
+               "| **Segment = Stand der zuletzt vorhandenen Periode**")
+
+    _wide_by_idx = st.session_state.get(f"{prefix}_wide", {})
+    # Datumsspalten robust per Muster (YYYY-MM-DD) erkennen — NICHT per
+    # Ausschluss einer Statik-Liste (das bricht bei Spalten-Umbenennung
+    # oder veraltetem session_state, siehe Symbol→Exchange-Ticker-Wechsel).
+    _date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+    if _wide_by_idx:
+        _first_idx = list(_wide_by_idx.keys())[0]
+        wide_df = _wide_by_idx[_first_idx]
+        date_cols = sorted(c for c in wide_df.columns
+                           if isinstance(c, str) and _date_re.match(c))
+
+        n_always   = int(wide_df[date_cols].notna().all(axis=1).sum())
+        _first_col = wide_df[date_cols].iloc[:, 0].notna()
+        _last_col  = wide_df[date_cols].iloc[:, -1].notna()
+        n_newcomer = int((_last_col & ~_first_col).sum())
+        n_dropout  = int((_first_col & ~_last_col).sum())
+        n_total    = len(wide_df)
+
+        st.markdown(f"**{_first_idx}** — {n_total} einzigartige Aktien über alle Perioden")
+        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+        _m1.metric("Immer im Index", n_always,
+                   help="Stocks die in JEDER Period im Index waren.")
+        _m2.metric("Newcomer", n_newcomer,
+                   help="Stocks die in der ersten Period nicht im Index waren, in der letzten aber schon.")
+        _m3.metric("Drop-Outs", n_dropout,
+                   help="Stocks die in der ersten Period im Index waren, in der letzten aber nicht mehr.")
+        _m4.metric("Zeitweise dabei", n_total - n_always,
+                   help="Stocks die mindestens eine Period im Index waren, aber nicht alle. "
+                        "Umfasst Newcomer, Drop-Outs und Stocks die zwischendurch rein/raus gingen.")
+        _m5.metric("Periods im Lauf", len(date_cols))
+
+        # Vorschau-Tabelle (Top 50 nach letztem Gewicht)
+        st.dataframe(
+            wide_df.head(50).style.format(
+                {sd: (lambda x: f"{x:.4f}%" if pd.notna(x) and x > 0 else ("" if pd.isna(x) else "0.0000%"))
+                 for sd in date_cols},
+                na_rep=""
+            ),
+            width='stretch', hide_index=True
+        )
+        if n_total > 50:
+            st.caption(f"… {n_total-50} weitere Aktien im vollständigen Excel-Export.")
+
+    if f"{prefix}_export_wide_bytes" in st.session_state:
+        st.download_button(
+            "📥 Gewichtsmatrix herunterladen (Wide Format)",
+            data=st.session_state[f"{prefix}_export_wide_bytes"],
+            file_name=f"NaroIX_{file_tag}WeightMatrix_{_fp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_wide",
+        )
+    if st.session_state.get(f"{prefix}_export_bt_bytes"):
+        st.download_button(
+            "📥 Backtest-Export (Gewichtsmatrix: Termin × Ticker, %)",
+            data=st.session_state[f"{prefix}_export_bt_bytes"],
+            file_name=f"NaroIX_{file_tag}Backtest_Weights_{_fp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_bt",
+        )
+
+    # ── Segment-Wanderung (Segment × Periode) ───────────────────────
+    # Analog zur Gewichtsmatrix, aber die Zellen zeigen das Segment statt
+    # des Gewichts → macht die Wanderung (Large↔Mid↔Small) über Zeit sichtbar.
+    # Für den in der Detail-Ansicht gewählten Index (_sel_idx).
+    st.markdown("---")
+    st.markdown(f"### 🔀 Segment-Wanderung — {_sel_name}")
+    st.caption("Zeile = Aktie | Spalte = Selection Date | Wert = Segment | Leer = nicht im Index "
+               "· Sortierung: meiste Segment-Wechsel zuerst")
+
+    _seg_df = st.session_state.get(f"{prefix}_segmatrix", {}).get(_sel_idx)
+    if _seg_df is not None and not _seg_df.empty:
+        _seg_date_cols = sorted(c for c in _seg_df.columns
+                                if isinstance(c, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", c))
+        _seg_color = {"Large": "#2979ff", "Mid": "#00e676", "Small": "#ff9100", "Micro": "#37474f"}
+
+        def _style_segcell(v):
+            _c = _seg_color.get(v)
+            return f"background-color:{_c};color:#0b0b0b;font-weight:600" if _c else ""
+
+        st.dataframe(
+            _seg_df.head(50).style.map(_style_segcell, subset=_seg_date_cols).format(na_rep=""),
+            width='stretch', hide_index=True
+        )
+        if len(_seg_df) > 50:
+            st.caption(f"… {len(_seg_df)-50} weitere Aktien im vollständigen Excel-Export.")
+        if f"{prefix}_export_seg_bytes" in st.session_state:
+            st.download_button(
+                "📥 Segment-Wanderung herunterladen",
+                data=st.session_state[f"{prefix}_export_seg_bytes"],
+                file_name=f"NaroIX_{file_tag}SegmentMatrix_{_fp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{prefix}_dl_seg",
+            )
+    else:
+        st.caption("Keine Segment-Daten für diesen Index verfügbar.")
+
+    # ── Country-Gewichte über Zeit (Land × Periode) ─────────────────
+    # Für den oben in der Detail-Ansicht gewählten Index (_sel_idx).
+    # Ländergewicht = Summe Index_Weight (bereits in %, pro Index-Scope
+    # auf 100 normiert). Zeigt die Entwicklung der Ländergewichte über alle Perioden.
+    st.markdown("---")
+    st.markdown(f"### 🌍 Country-Gewichte über Zeit — {_sel_name}")
+
+    _cb_periods = sorted(_results[_sel_idx].keys())
+    _cb_matrix = {}  # land -> {period_iso: weight%}
+    for _sd in _cb_periods:
+        _dfp = _results[_sel_idx][_sd]
+        if "Mapping Country" not in _dfp.columns or "Index_Weight" not in _dfp.columns:
+            continue
+        _gp = _dfp.groupby(_dfp["Mapping Country"].fillna("—"))["Index_Weight"].sum()
+        for _land, _w in _gp.items():
+            _cb_matrix.setdefault(_land, {})[_sd] = round(float(_w), 4)
+
+    if _cb_matrix:
+        _cb_rows = []
+        for _land, _wmap in _cb_matrix.items():
+            _row = {"Land": _land}
+            for _sd in _cb_periods:
+                _row[_sd] = _wmap.get(_sd)
+            _cb_rows.append(_row)
+        _cb_df = pd.DataFrame(_cb_rows).sort_values(
+            _cb_periods[-1], ascending=False, na_position="last"
+        ).reset_index(drop=True)
+
+        st.caption("Zeile = Land | Spalte = Selection Date | Wert = Ländergewicht in % | Leer = nicht im Index")
+        st.dataframe(
+            _cb_df.style.format(
+                {sd: (lambda x: f"{x:.2f}%" if pd.notna(x) else "") for sd in _cb_periods},
+                na_rep="",
+            ),
+            width='stretch', hide_index=True,
+        )
+        st.download_button(
+            "📥 Country-Gewichte herunterladen",
+            data=to_excel_one(_cb_df, "Country_x_Period"),
+            file_name=f"{file_tag}{_sel_idx}_country_weights_by_period.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_country_w",
+        )
+    else:
+        st.caption("Keine Länder-Daten für diesen Index verfügbar.")
+
+    # ── Sector-Gewichte über Zeit (Sektor × Periode) ────────────────
+    # Analog zur Länder-Matrix, aber nach FactSet Economy → Sektor-Drift.
+    st.markdown(f"### 🏭 Sector-Gewichte über Zeit — {_sel_name}")
+    _sec_matrix = {}  # sektor -> {period_iso: weight%}
+    for _sd in _cb_periods:
+        _dfp = _results[_sel_idx][_sd]
+        if "FactSet Economy" not in _dfp.columns or "Index_Weight" not in _dfp.columns:
+            continue
+        _secv = _dfp["FactSet Economy"].fillna("—").astype(str).str.strip().replace("", "—")
+        _gp = _dfp.assign(_S=_secv).groupby("_S")["Index_Weight"].sum()
+        for _s, _w in _gp.items():
+            _sec_matrix.setdefault(_s, {})[_sd] = round(float(_w), 4)
+
+    if _sec_matrix:
+        _sec_rows = []
+        for _s, _wmap in _sec_matrix.items():
+            _row = {"Sektor": _s}
+            for _sd in _cb_periods:
+                _row[_sd] = _wmap.get(_sd)
+            _sec_rows.append(_row)
+        _sec_df = pd.DataFrame(_sec_rows).sort_values(
+            _cb_periods[-1], ascending=False, na_position="last").reset_index(drop=True)
+        st.caption("Zeile = Sektor (FactSet Economy) | Spalte = Selection Date | Wert = Sektorgewicht in %")
+        st.dataframe(
+            _sec_df.style.format(
+                {sd: (lambda x: f"{x:.2f}%" if pd.notna(x) else "") for sd in _cb_periods},
+                na_rep=""),
+            width='stretch', hide_index=True,
+            height=35 * (len(_sec_df) + 1) + 3)   # alle Sektoren ohne Scroll
+        st.download_button(
+            "📥 Sector-Gewichte herunterladen",
+            data=to_excel_one(_sec_df, "Sector_x_Period"),
+            file_name=f"{file_tag}{_sel_idx}_sector_weights_by_period.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_sector",
+        )
+    else:
+        st.caption("Keine Sektor-Daten für diesen Index verfügbar.")
+
+    # ── Tenure — längste Verweildauer im Index ──────────────────────
+    st.markdown("---")
+    st.markdown(f"### 🏅 Tenure — längste Verweildauer im Index ({_sel_name})")
+    _wdf_t = st.session_state.get(f"{prefix}_wide", {}).get(_sel_idx)
+    if _wdf_t is not None and not _wdf_t.empty:
+        _tdate = sorted(c for c in _wdf_t.columns
+                        if isinstance(c, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", c))
+        _ntot = len(_tdate)
+
+        def _streak(vals):
+            best = cur = 0
+            for v in vals:
+                if pd.notna(v):
+                    cur += 1; best = max(best, cur)
+                else:
+                    cur = 0
+            return best
+
+        _present = _wdf_t[_tdate].notna().sum(axis=1)
+        _longest = _wdf_t[_tdate].apply(lambda r: _streak(r.values), axis=1)
+        _tcols = [c for c in ["Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country"]
+                  if c in _wdf_t.columns]
+        _ten = _wdf_t[_tcols].copy()
+        _ten["Perioden im Index"] = _present.astype(int).astype(str) + f" / {_ntot}"
+        _ten["Längste Serie"] = _longest.astype(int)
+        _ten["Aktuell drin"] = _wdf_t[_tdate[-1]].notna().map({True: "✓", False: ""}) if _tdate else ""
+        _ten = (_ten.assign(_p=_present.values, _l=_longest.values)
+                    .sort_values(["_p", "_l"], ascending=[False, False])
+                    .drop(columns=["_p", "_l"]))
+        st.caption(f"Sortiert nach Perioden im Index (von {_ntot}), dann längster ununterbrochener Serie. Top 50.")
+        st.dataframe(_ten.head(50), width='stretch', hide_index=True)
+        if len(_ten) > 50:
+            st.caption(f"… {len(_ten)-50} weitere — alle im Excel-Export.")
+        st.download_button(
+            "📥 Tenure herunterladen (alle Titel)",
+            data=to_excel_one(_ten.reset_index(drop=True), "Tenure"),
+            file_name=f"{file_tag}{_sel_idx}_tenure.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{prefix}_dl_tenure",
+        )
+    else:
+        st.caption("Keine Matrix-Daten für diesen Index verfügbar.")
 
 # clean_export_cols / EXPORT_COL_RENAME are imported from pipeline_core (single
 # source of truth). to_excel_multi() applies clean_export_cols to every sheet, so
@@ -847,6 +1546,11 @@ if not selection_dates:
 
 # Ineligible List (optional — fehlt das File, wird der Filter automatisch deaktiviert)
 ineligible_df = load_ineligible_list()
+# Spin-off-Liste: Kinder eines Indexmitglieds kommen beim Ereignis als BESTANDSTITEL
+# rein (einmaliger Seed in den Incumbent-State), statt die Entry-Schwellen zu muessen.
+# Fehlt das File, ist die Liste leer und die Regel ein exakter No-op.
+spinoff_df, spinoff_problems = load_spinoff_list(
+    frozenset(d.strftime("%Y-%m-%d") for d in selection_dates))
 
 # FOL Matrix (PFLICHT — ohne YAML läuft der Index-Aufbau nicht)
 fol_matrix, fol_version, _fol_debug = load_fol_matrix()
@@ -870,7 +1574,7 @@ with st.sidebar:
     data_mode = st.radio(
         "Input-Modus:",
         ["Single Snapshot", "Master File (Multi-Period)"],
-        index=0,
+        index=1,   # Default: Master File — der Regelbetrieb laeuft Multi-Period
         key="data_mode",
         horizontal=False,
         help="Single Snapshot: Ein FactSet-Export pro Selection Date (bisheriger Modus).\n\n"
@@ -965,6 +1669,55 @@ with st.sidebar:
     with _cpa: use_max_price = st.checkbox("Max Price ≤", value=True, key="use_max_price")
     with _cpb: _max_price_raw = st.text_input("Max Price", value="20000", key="max_price_input",
         label_visibility="collapsed", disabled=not use_max_price)
+
+    # Hochpreis-Regel: statt hartem Ausschluss eine Liquiditaetsbedingung. Ein nominell
+    # hoher Kurs sagt nichts ueber die Handelbarkeit — am 2026-08-19 traf der harte Cut
+    # 5 Titel, darunter Berkshire Hathaway A (ATVR 14,1 %) und die Lindt-Namenaktie
+    # (32,1 %) neben drei praktisch unhandelbaren mit ATVR 0,000 bis 0,055 %.
+    _MP_HARD = "Ausschluss (bisher)"
+    _MP_ATVR = "ATVR-Bedingung"
+    _mp_mode = st.radio(
+        "Umgang mit Hochpreis-Titeln", options=[_MP_HARD, _MP_ATVR], index=1,
+        key="max_price_mode", disabled=not use_max_price, horizontal=True,
+        help="Ausschluss: Titel mit Kurs ≥ Max Price fallen komplett raus (altes "
+             "Verhalten).\n\n"
+             "ATVR-Bedingung: sie bleiben, müssen aber eine Mindestliquidität erfüllen, "
+             "gemessen als min(ATVR 3M, ATVR 6M). Neue Kandidaten und Bestandstitel haben "
+             "getrennte Schwellen (die beiden Felder unten); die Maintenance-Schwelle greift "
+             "nur bei aktiven Buffer Rules.\n\n"
+             "Geprüft wird erst auf der Liquiditätsstufe, weil die ATVR vorher noch nicht "
+             "berechnet ist. Der Titel bleibt also im Universe und wird nicht mehr in den "
+             "Universe-Exclusions verworfen."
+    )
+    if use_max_price and _mp_mode == _MP_ATVR:
+        _mpa, _mpb = st.columns([3, 4])
+        with _mpa:
+            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>"
+                        "davon Mindest-ATVR (%)</div>", unsafe_allow_html=True)
+        with _mpb:
+            _mp_atvr_raw = st.text_input("Hochpreis ATVR neu", value="10.0",
+                                         key="max_price_atvr_raw", label_visibility="collapsed")
+        _mpc, _mpd = st.columns([3, 4])
+        with _mpc:
+            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>"
+                        "davon Mindest-ATVR Maint. (%)</div>", unsafe_allow_html=True)
+        with _mpd:
+            _mp_atvr_m_raw = st.text_input("Hochpreis ATVR Maint.", value="5.0",
+                                           key="max_price_atvr_m_raw", label_visibility="collapsed")
+        try:
+            max_price_atvr = float(str(_mp_atvr_raw).replace(",", ".")) / 100
+        except (ValueError, TypeError):
+            max_price_atvr = 0.10
+        try:
+            m_max_price_atvr = float(str(_mp_atvr_m_raw).replace(",", ".")) / 100
+        except (ValueError, TypeError):
+            m_max_price_atvr = 0.05
+        st.caption(f"→ Kurs ≥ {_max_price_raw}: bleibt, wenn min(ATVR 3M, ATVR 6M) ≥ "
+                   f"{max_price_atvr*100:g} % (neu) bzw. {m_max_price_atvr*100:g} % "
+                   "(Bestand). Kein Ausschluss wegen des Kurses allein.")
+    else:
+        max_price_atvr = None
+        m_max_price_atvr = None
     try:    max_closing_price = float(_max_price_raw.replace(",","")) if use_max_price else None
     except (ValueError, TypeError): max_closing_price = 20000.0
 
@@ -974,13 +1727,38 @@ with st.sidebar:
             help="Sekundärnotierungen (Listing=Secondary) mit 'LON' im Exchange Ticker und Trading Currency=USD "
                  "— i.d.R. ADR/GDR-Linien parallel zur Heimatnotiz. Entfernt Doppelzählung mit der Primary-Notiz.")
         exclude_country_risk_na = st.checkbox("Country of Risk = @NA", value=True, key="excl_cor")
-        exclude_naics_funds     = st.checkbox("NAICS Investment Funds", value=True, key="excl_naics")
         exclude_euro_mtf        = st.checkbox("Exchange Euro MTF / @NA", value=True, key="excl_euro")
         exclude_etf_sicav       = st.checkbox("Name: ETF / SICAV / %", value=True, key="excl_etf")
         exclude_delisted        = st.checkbox("Listing Status = inaktiv (1)", value=True, key="excl_delisted",
             help="Deaktivieren für historische Snapshots — delisted Stocks waren zum Snapshot-Datum ggf. noch aktiv handelbar.")
 
     _ie_default = not ineligible_df.empty
+    apply_spinoffs = st.checkbox(
+        f"Spin-off-Aufnahme ({len(spinoff_df)} Einträge)",
+        value=True,
+        key="apply_spinoffs",
+        help="Ein aus einem Indexmitglied abgespaltener Titel wird beim Ereignis als "
+             "BESTANDSTITEL aufgenommen und muss die Entry-Schwellen nie durchlaufen. "
+             "Danach ist er ein normaler Bestandstitel: Maintenance-Schwellen für Free "
+             "Float und ADTV sowie die Size-Hysterese greifen ab sofort.\n\n"
+             "Zusätzlich gilt: ein Horizont, der seit dem Ex-Date rechnerisch noch nicht "
+             "voll sein kann, wird nicht geprüft, solange der Wert fehlt oder null ist "
+             "(3M-Bein bis 3 Monate, 6M-Bein bis 6 Monate nach dem Ex-Date). "
+             "Ein Titel, der erst seit Wochen handelt, kann kein 3-Monats-Mittel haben, und "
+             "ohne diese Ausnahme würde er am Liquiditäts-Screen scheitern, dadurch seinen "
+             "geerbten Bestandsschutz sofort wieder verlieren und dauerhaft ausgesperrt "
+             "bleiben. Ein VORHANDENER Wert unter der Schwelle schließt weiterhin aus.\n\n"
+             "Quelle ist die kuratierte Liste 'Spin-Off Data.xlsx'. Ist sie leer oder "
+             "fehlt sie, ändert der Schalter nichts.\n\n"
+             "Wirkt nur im Multi-Period-Lauf — im Single Snapshot gibt es keine Vorperiode, "
+             "aus der ein Segment geerbt werden könnte."
+    )
+    if spinoff_problems:
+        with st.expander(f"⚠️ {len(spinoff_problems)} Hinweise zur Spin-off-Liste", expanded=False):
+            st.dataframe(pd.DataFrame(spinoff_problems,
+                                      columns=["Excel-Zeile", "Kind", "Meldung"]),
+                         width='stretch', hide_index=True)
+
     apply_ineligible = st.checkbox(
         "Ineligible-Filter anwenden",
         value=_ie_default,
@@ -1229,11 +2007,138 @@ with st.sidebar:
             _sb_pp_raw = st.text_input("Size Buffer pp", value="5", key="size_buffer_pp_raw", label_visibility="collapsed")
         try:    size_buffer_pp = float(_sb_pp_raw)
         except (ValueError, TypeError): size_buffer_pp = 5.0
-        st.caption(f"±{size_buffer_pp:g} pp um 70 % und 85 % · Large bleibt bis "
-                   f"{70+size_buffer_pp:g} %, Mid zwischen {70-size_buffer_pp:g}–{85+size_buffer_pp:g} %.")
+        # Bewusst OHNE "±": ob die Bandbreite ein- oder zweiseitig wirkt, entscheidet
+        # erst die Variante. Im Modus "Aufstieg am Cut-off" wirkt sie NUR auf der
+        # Halteseite, ein "±" waere dort schlicht falsch.
+        st.caption(f"Bandbreite **{size_buffer_pp:g} pp**. Auf welche Seite der Grenzen sie "
+                   "wirkt, bestimmt die Variante darunter.")
     else:
         size_buffer_pp = 5.0
         st.caption("→ Size Buffer inaktiv — Segmente werden bei jedem Rebalancing neu am Cut-off bestimmt.")
+
+    # Anbieternamen bewusst NICHT im Label — sie stehen im Hilfetext, wo sie
+    # Dokumentation sind und nicht Etikett. Reihenfolge: Default zuerst.
+    _SB_ENTRY = "Aufstieg am Cut-off"
+    _SB_SYM = "Symmetrisch"
+    _SB_ASYM = "Asymmetrisch (nur Mid/Small-Kante)"
+    _sb_mode = st.radio(
+        "Size-Buffer-Variante",
+        options=[_SB_ENTRY, _SB_SYM, _SB_ASYM],
+        index=0,   # Default: Aufstieg am Cut-off
+        key="size_buffer_mode",
+        disabled=st.session_state.get("msci_logic", False),
+        help="Wie die Hysterese an den Segment-Grenzen wirkt. Nur mit aktivem Size Buffer "
+             "(oben) und im Multi-Period-Lauf relevant.\n\n"
+             "• Aufstieg am Cut-off (Default): Aufnahme UND Aufstieg an den glatten Schwellen "
+             "70% und 85% für alle, die Bandbreite wirkt nur auf der Halteseite (Large bleibt "
+             "bis 70+pp, Mid bis 85+pp). Kein Bestandstitel wird schlechter behandelt als ein "
+             "Neuzugang. Nur diese Variante erlaubt eine getrennte Bandbreite für die "
+             "Mid/Small-Kante. Vorbild FTSE GEIS §7.6.1/§7.6.4 (Inclusion 68/86, Exclusion 72/92).\n\n"
+             "• Symmetrisch: Bandbreite auf beiden Seiten jeder Grenze, Vorbild Solactive "
+             "GBS. Nachteil: ein Small-Bestandstitel steigt erst unter 80% auf, ein Neuzugang "
+             "kommt schon unter 85% ins Mid — Bestandstitel sind damit schlechter gestellt "
+             "(gemessen 166,7 blockierte Titel je Periode).\n\n"
+             "• Asymmetrisch: nur die Mid/Small-Kante wird geöffnet (Small steigt unter 85% "
+             "auf), die Large/Mid-Kante bleibt symmetrisch. Für ein Large+Mid-Produkt "
+             "identisch zu 'Aufstieg am Cut-off'.\n\n"
+             "Gilt für ALLE Tabs: Single-Snapshot, Multi-Period, Europe MP (gepoolt) und "
+             "Helvetica. Bei Helvetica schaltet 'Aufstieg am Cut-off' die dortigen Bänder von "
+             "65 / 84,5 auf 70 / 85; 'Asymmetrisch' wirkt dort wie 'Symmetrisch', weil Helvetica "
+             "keine asymmetrische Variante kennt."
+    )
+    asym_buffer = (_sb_mode == _SB_ASYM)
+    entry_at_cutoff = (_sb_mode == _SB_ENTRY)
+
+    # Getrennte Bandbreite für die Mid/Small-Kante — nur im FTSE-Modus, weil nur
+    # _size_segment_entry() sie auswertet. Die beiden Kanten haben verschiedene
+    # Funktionen: Mid/Small entscheidet über die INDEX-ZUGEHÖRIGKEIT (Standard =
+    # Large+Mid), Large/Mid nur über die Zuordnung zu den Size-Sub-Indizes. Wer die
+    # Mid-Kante testen will, muss die Large-Kante deshalb nicht mitziehen.
+    size_buffer_pp_ms = None
+    if apply_size_buffer and entry_at_cutoff and not st.session_state.get("msci_logic", False):
+        _msa, _msb = st.columns([3, 4])
+        with _msa:
+            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>"
+                        "Mid/Small abweichend (pp)</div>", unsafe_allow_html=True)
+        with _msb:
+            # BEWUSST leer als Default, nicht mit der Buffer-Breite vorbelegt: Streamlit
+            # behaelt bei Widgets mit key den Session-Wert, `value=` greift nur beim ersten
+            # Rendern. Vorbelegt wuerde das Feld auf dem Erstwert einfrieren, und eine
+            # Aenderung der Buffer-Breite oben wuerde die Mid-Kante stillschweigend NICHT
+            # mitziehen. Leer = folgt der Buffer-Breite (Engine: bw_ms=None -> bw).
+            _sb_ms_raw = st.text_input(
+                "Mid/Small Buffer pp", value="", key="size_buffer_pp_ms_raw",
+                placeholder=f"leer = {size_buffer_pp:g} (wie oben)",
+                label_visibility="collapsed",
+                help="Bandbreite NUR für die Mid/Small-Kante (85 %). **Leer lassen heißt: sie "
+                     "folgt der Buffer-Breite oben.** Nur ausfüllen, wenn die beiden Kanten "
+                     "auseinandergehen sollen.\n\n"
+                     "Warum getrennt: die Mid/Small-Kante entscheidet über die "
+                     "INDEX-ZUGEHÖRIGKEIT (Standard = Large+Mid), die Large/Mid-Kante nur über "
+                     "die Aufteilung in die Size-Sub-Indizes. Wer die Mid-Kante verschieben "
+                     "will, muss die Large-Kante nicht mitziehen.\n\n"
+                     "Beispiel: oben 5, hier 6 → Large hält bis 75 %, Mid hält bis 91 %. "
+                     "FTSE GEIS v14.2 §7.6.4 nutzt genau solche ungleichen Bänder "
+                     "(Exclusion 72 / 92, also 2 pp an der Large- und 7 pp an der Mid-Kante).")
+        try:
+            size_buffer_pp_ms = (float(str(_sb_ms_raw).replace(",", "."))
+                                 if str(_sb_ms_raw).strip() else None)
+        except (ValueError, TypeError):
+            size_buffer_pp_ms = None
+
+    # Eine einzige Caption mit den TATSAECHLICHEN Kanten der gewaehlten Variante.
+    # Sie steht absichtlich hier, nach dem Mid/Small-Feld, weil sie dessen Wert braucht.
+    if apply_size_buffer and not st.session_state.get("msci_logic", False):
+        _bw = size_buffer_pp
+        _bms = _bw if size_buffer_pp_ms is None else size_buffer_pp_ms
+        if entry_at_cutoff:
+            st.caption(
+                f"→ Bandbreite wirkt **nur auf der Halteseite**. Aufstieg für alle an den "
+                f"glatten Schwellen (<{large_thr:g} % / <{mid_thr:g} %), Verbleib bis "
+                f"**{large_thr+_bw:g} %** (Large) bzw. **{mid_thr+_bms:g} %** (Mid)."
+                + ("  Kanten getrennt gesetzt." if size_buffer_pp_ms is not None else ""))
+        elif asym_buffer:
+            st.caption(
+                f"→ Large/Mid **beidseitig** ({large_thr-_bw:g}–{large_thr+_bw:g} %), "
+                f"Mid/Small **nur nach oben**: hält bis {mid_thr+_bw:g} %, Aufstieg aber "
+                f"schon unter {mid_thr:g} %. Small bleibt Residual {mid_thr:g}–{small_thr:g} %.")
+        else:
+            st.caption(
+                f"→ **Beidseitig** um beide Grenzen: Large {large_thr-_bw:g}–{large_thr+_bw:g} %, "
+                f"Mid hält bis {mid_thr+_bw:g} %, Aufstieg Small→Mid aber erst unter "
+                f"{mid_thr-_bw:g} % — Bestandstitel sind damit schlechter gestellt als Neuzugänge.")
+
+    # Resultierende Schwellen der GEWÄHLTEN Variante — macht sichtbar, dass sich
+    # Asymmetrisch und Aufstieg-am-Cut-off ausschliesslich an der Large/Mid-Kante
+    # unterscheiden und für ein Large+Mid-Produkt damit dasselbe Ergebnis liefern.
+    if apply_size_buffer and not st.session_state.get("msci_logic", False):
+        _bw = size_buffer_pp
+        _bms = _bw if size_buffer_pp_ms is None else size_buffer_pp_ms
+        if entry_at_cutoff:
+            _up_lm, _hold_mid = f"< {large_thr:g} %", f"≤ {mid_thr+_bms:g} %"
+        elif asym_buffer:
+            _up_lm, _hold_mid = f"< {large_thr-_bw:g} %", f"≤ {mid_thr+_bw:g} %"
+        else:
+            _up_lm, _hold_mid = f"< {large_thr-_bw:g} %", f"≤ {mid_thr+_bw:g} %"
+        _up_ms = f"< {mid_thr:g} %" if (entry_at_cutoff or asym_buffer) else f"< {mid_thr-_bw:g} %"
+        with st.expander("Resultierende Schwellen dieser Variante", expanded=False):
+            st.dataframe(pd.DataFrame([
+                {"Übergang": "Large bleibt Large", "Schwelle": f"≤ {large_thr+_bw:g} %",
+                 "wirkt auf": "Sub-Index-Zuordnung"},
+                {"Übergang": "Mid steigt zu Large", "Schwelle": _up_lm,
+                 "wirkt auf": "Sub-Index-Zuordnung"},
+                {"Übergang": "Mid bleibt Mid (Halteseite)", "Schwelle": _hold_mid,
+                 "wirkt auf": "INDEX-ZUGEHÖRIGKEIT"},
+                {"Übergang": "Small steigt zu Mid", "Schwelle": _up_ms,
+                 "wirkt auf": "INDEX-ZUGEHÖRIGKEIT"},
+            ]), width='stretch', hide_index=True)
+            st.caption(
+                "Nur die beiden unteren Zeilen entscheiden, ob ein Titel im Standard-Index "
+                "(Large+Mid) landet. **Asymmetrisch und Aufstieg am Cut-off unterscheiden "
+                "sich ausschliesslich in der Zeile 'Mid steigt zu Large'** (65 % gegen 70 %) "
+                "und liefern für ein Large+Mid-Produkt deshalb identische Konstituenten — "
+                "verifiziert über 48 Perioden, kein einziger Titel Unterschied. Sie "
+                "verschieben nur die Aufteilung zwischen Large- und Mid-Sleeve.")
 
     # Solactive-Style Small↔Micro-Coverage-Cut (per-Land-99%, Buffer 99,5% für Incumbents)
     apply_small_buffer = st.checkbox(
@@ -1305,7 +2210,9 @@ with st.sidebar:
     st.markdown("**Alternative Methodik-Varianten**")
     st.caption("Abweichende Size-Segmentierungs-Logiken. MSCI Logic ersetzt die Standard-Buffer "
                "komplett (und graut sie oben aus). Der Asymmetrische Size-Buffer ist eine Variante "
-               "des Size Buffers — wirksam nur, wenn der Size Buffer oben aktiv ist (Multi-Period).")
+               "des Size Buffers — wirksam nur, wenn der Size Buffer oben aktiv ist (Multi-Period). "
+               "Die Size-Integrity-Auffüllung ergänzt die Coverage-Segmentierung um eine globale "
+               "Mindestgröße und ist mit beiden Buffern kombinierbar.")
     msci_logic = st.checkbox(
         "MSCI Logic (GIMI)",
         value=False,
@@ -1322,23 +2229,191 @@ with st.sidebar:
         st.caption("→ MSCI-Modus aktiv: Zuordnung per Full-MCap ≥ Cutoff (GMSR-geklammert). "
                    "Migrations-Buffer −33/+50 greift im Multi-Period. Die Size-Buffer oben "
                    "sind deaktiviert.")
-    asym_buffer = st.checkbox(
-        "Asymmetrischer Size-Buffer",
+    apply_size_integrity = st.checkbox(
+        "Size-Integrity-Auffüllung",
         value=False,
-        key="asym_buffer",
+        key="apply_size_integrity",
         disabled=msci_logic,
-        help="Asymmetrischer Buffer an der Mid/Small-Grenze (85%): Mid-Bestandstitel werden "
-             "nach oben bis 90% gehalten (Abstieg Mid→Small gepuffert), ein Small-Titel wird "
-             "aber NICHT nach unten gehalten — sinkt seine Coverage unter 85%, steigt er sofort "
-             "nach Mid (Aufstieg ungepuffert). So landen Grenzfälle wie CBOE im Standard. "
-             "Variante des Size Buffers — wirksam nur mit aktivem Size Buffer (oben), Multi-Period."
+        help="Hebt Titel, die als Small Cap aus der Länder-Coverage fallen, aber eine global "
+             "kalibrierte Mindestgröße T erreichen, auf Mid Cap. T = k × R85, mit R85 = Full "
+             "MCap am 85%-Coverage-Punkt des DM-Pools; EM = ½ T (GIMI §2.3.2). Korrigiert die "
+             "Größen-Inversion zwischen Märkten — der implizite 85%-Cutoff liegt in den USA bei "
+             "~29 Mrd USD, in der Türkei bei ~0,6 Mrd. Wirkt nur nach oben (Small → Mid), nie "
+             "nach unten: Large und All Cap bleiben unverändert, die Länder-Sleeves additiv. "
+             "Volle Wirkung im Multi-Period, weil aufgefüllte Titel danach als Mid-Incumbent "
+             "über den Size Buffer gehalten werden. Von MSCI Logic überschrieben (GIMI hat mit "
+             "dem GMSR-Floor eine eigene Größenschicht)."
     )
-    if asym_buffer:
-        st.caption("→ Mid klebt nach oben (bis 90%), Small klebt nicht nach unten (<85% → Mid). "
-                   "Small bleibt als Residual 85–99%; All-Cap = Large+Mid+Small.")
+    if apply_size_integrity:
+        _sic1, _sic2 = st.columns([2, 1])
+        with _sic1:
+            st.markdown("<div style='font-size:13px;padding-top:6px;'>↳ Schwellenfaktor k</div>",
+                        unsafe_allow_html=True)
+        with _sic2:
+            _si_k_raw = st.text_input("k", value="1,00", key="si_k_raw",
+                                      label_visibility="collapsed")
+        try:    si_k = float(_si_k_raw.replace(",", "."))
+        except (ValueError, TypeError): si_k = 1.00
+        si_edge_on = st.checkbox(
+            "↳ 90-%-Kante aktiv", value=True, key="si_edge_on",
+            help="An: Auffüllung nur, solange die Länder-Coverage unter der Kante liegt — die "
+                 "Abdeckung bleibt im Zielband. Aus: Größe hat Vorrang vor Marktabdeckung "
+                 "(MSCI-Priorisierung), die Länder-Coverage darf 90% überschreiten."
+        )
+        # Kante folgt der Maintenance-Coverage der Buffer Rules; ohne Buffer die glatte 90.
+        si_edge_pp = (float(buffer_coverage) if apply_buffer else 90.0) if si_edge_on else None
+        st.caption(f"→ Small→Mid ab Full MCap ≥ {si_k:g} × R85 (EM: ½ davon)"
+                   + (f", nur bis {si_edge_pp:g}% Coverage." if si_edge_pp is not None
+                      else ", ohne Coverage-Grenze.")
+                   + " Untersucht sind k = 1,00 und 0,75.")
+    else:
+        si_k, si_edge_pp = 1.00, 90.0
 
     st.markdown("---")
     st.markdown("<div style='color:#8892b0;font-size:11px;'>NaroIX Benchmark Series<br/>© 2026 NaroIX</div>", unsafe_allow_html=True)
+
+
+# ─── Settings-Stempel ──────────────────────────────────────────────────────────
+# Ein Backtest ohne die Parameter, die ihn erzeugt haben, ist nicht reproduzierbar.
+# Der Snapshot wird beim LAUF eingefroren (nicht beim Export), landet als Sheet
+# "Settings" in jeder Export-Datei und speist den Stale-Guard in render_mp_results.
+def _criteria_box(variant="serie"):
+    """Selektionskriterien als Info-Box, gespeist aus den AKTIVEN Sidebar-Werten.
+
+    Zwei Auspraegungen, weil die Laeufe verschiedene Regelwerke fahren:
+      * "serie"     — Multi-Period und Europe MP (EUMSS, ATVR-Screen, Coverage je Land)
+      * "helvetica" — eigene Pipeline ohne EUMSS und ohne ATVR-Screen, dafuer Rang-Band
+                      und feste Sleeves
+
+    Bewusst aus den Live-Werten gerendert und nicht aus SETTINGS_NOW: die Box soll zeigen,
+    womit der naechste Lauf rechnen WUERDE. Was ein bereits gelaufener Lauf benutzt hat,
+    steht im Settings-Blatt des Exports.
+    """
+    _sep = " &nbsp;|&nbsp; "
+    _b = lambda v: "aktiv" if v else "inaktiv"
+    _de = lambda x: ("%g" % x).replace(".", ",")      # deutsches Dezimalkomma
+    _hp = (f"ATVR-Bedingung ab {max_closing_price:,.0f} ({_de(max_price_atvr*100)} % neu / "
+           f"{_de((m_max_price_atvr or max_price_atvr)*100)} % Bestand)"
+           if (max_closing_price and max_price_atvr is not None)
+           else (f"harter Cut ab {max_closing_price:,.0f}" if max_closing_price else "aus"))
+
+    if variant == "helvetica":
+        r = _helv_rules_from_sidebar()
+        rows = [
+            f"Universe: Exchange Country = Schweiz{_sep}alle Share Lines, Dedup auf die "
+            f"liquideste Linie je Firma{_sep}<b>kein EUMSS-Floor</b>",
+            f"Coverage-Cuts: Large {r['large']:g} %{_sep}Mid {r['std']:g} %{_sep}"
+            f"Small {r['small']:g} %{_sep}Halt bis "
+            f"{r['large']+r['hold_large_pp']:g} / {r['std']+r['hold_std_pp']:g} / "
+            f"{_de(r['small']+r['hold_small_pp'])} %",
+            f"Min FF: {_de(r['min_ff']*100)} % neu{_sep}{_de(r['min_ff_maint']*100)} % Bestand"
+            f"{_sep}3M-ADTV: {_helv_mio(new_adtv_dm)} neu{_sep}{_helv_mio(buffer_adtv_dm)} Bestand",
+            f"Sleeves: Top {HELVETICA_TOPN} je Segment, gleichgewichtet (10 / 15 / 15 %)"
+            f"{_sep}Real Estate alle qualifizierten inkl. Micro (15 %){_sep}45 % statisch",
+            f"Bestandsschutz: Rang-Band {HELVETICA_BUFFER_HARD} / {HELVETICA_BUFFER_EXIT}"
+            f"{_sep}Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)}"
+            f"{_sep}Variante: {'Aufstieg am Cut-off' if entry_at_cutoff else ('Asymmetrisch' if asym_buffer else 'Symmetrisch')}",
+            f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
+            f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}",
+        ]
+    else:
+        _sb = ("Aufstieg am Cut-off" if entry_at_cutoff
+               else "Asymmetrisch" if asym_buffer else "Symmetrisch")
+        _ms = ("= Bandbreite" if size_buffer_pp_ms is None else f"{_de(size_buffer_pp_ms)} pp")
+        rows = [
+            f"Listing: Primary + Secondary{_sep}Reihenfolge: "
+            f"{'Coverage vor Liquiditaet' if label_before_liquidity else 'Liquiditaet vor Coverage'}"
+            f"{_sep}IF: {if_selection_mode}",
+            f"ADTV DM/EM: {new_adtv_dm:,.0f} / {new_adtv_em:,.0f} USD{_sep}"
+            f"Maintenance: {buffer_adtv_dm:,.0f} / {buffer_adtv_em:,.0f}{_sep}"
+            f"ATVR DM/EM: {_de(new_atvr_dm*100)} % / {_de(new_atvr_em*100)} %",
+            f"Large: {large_thr} %{_sep}Mid: {mid_thr} %{_sep}Small: {small_thr} %{_sep}"
+            f"Min FF: {_de(min_ff_pct*100)} % neu / {_de(buffer_min_ff*100)} % Bestand{_sep}"
+            f"EUMSS FF-Ratio: {new_eumss_ff_ratio*100:g} %",
+            f"Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)} "
+            f"({_de(size_buffer_pp)} pp, Mid/Small {_ms}, {_sb}){_sep}"
+            f"Small-Cut 99/{_de(99+small_buffer_pp)} {_b(apply_small_buffer)}",
+            f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
+            f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}{_sep}"
+            f"Capping {_b(apply_cap)}",
+            f"China IF: {china_inclusion_factor*100:.1f} %{_sep}FOL Matrix: "
+            f"{('aktiv, YAML ' + str(fol_version)) if (apply_fol and fol_matrix) else 'inaktiv'}"
+            f"{_sep}MSCI Logic {_b(msci_logic)}{_sep}Size Integrity {_b(apply_size_integrity)}",
+        ]
+    st.markdown('<div class="info-box"><b>Selektionskriterien</b><br>' + "<br>".join(rows)
+                + "</div>", unsafe_allow_html=True)
+
+
+def _settings_snapshot():
+    """Alle laufrelevanten Sidebar-Parameter als {Gruppe, Parameter, Wert}-Tabelle."""
+    _sb_var = ("Aufstieg am Cut-off" if entry_at_cutoff
+               else "Asymmetrisch" if asym_buffer else "Symmetrisch")
+    _rows = [
+        ("Universe", "Thailand-Modus", thailand_sec_type),
+        ("Universe", "Max. Schlusskurs", max_closing_price),
+        ("Universe", "Hochpreis-Regel", _MP_ATVR if max_price_atvr is not None else _MP_HARD),
+        ("Universe", "Hochpreis Mindest-ATVR neu / Bestand (%)",
+         f"{max_price_atvr*100:g} / {m_max_price_atvr*100:g}"
+         if max_price_atvr is not None else "—"),
+        ("Universe", "Excl. HK/CNY", exclude_hk_cny),
+        ("Universe", "Excl. Country of Risk = @NA", exclude_country_risk_na),
+        ("Universe", "Excl. Euro MTF", exclude_euro_mtf),
+        ("Universe", "Excl. ETF/SICAV", exclude_etf_sicav),
+        ("Universe", "Excl. LON USD-Zweitlisting", exclude_lon_usd_sec),
+        ("Universe", "In-Eligible-Liste aktiv", apply_ineligible),
+        ("Universe", "Spin-off-Aufnahme", apply_spinoffs),
+        ("Universe", "Spin-off-Einträge in der Liste", len(spinoff_df)),
+        ("Size", "Large / Mid / Small (%)", f"{large_thr:g} / {mid_thr:g} / {small_thr:g}"),
+        ("Size", "Min. Free Float (%)", f"{min_ff_pct*100:g}"),
+        ("Size", "EUMSS FF-Ratio (%)", f"{new_eumss_ff_ratio*100:g}"),
+        ("Size", "Labeling vor Liquidität", label_before_liquidity),
+        ("Liquidität", "ADTV Entry DM / EM", f"{new_adtv_dm:,.0f} / {new_adtv_em:,.0f}"),
+        ("Liquidität", "ATVR Entry DM / EM (%)", f"{new_atvr_dm*100:g} / {new_atvr_em*100:g}"),
+        ("Liquidität", "ATVR-Nenner", atvr_denominator),
+        ("Buffer", "Buffer Rules aktiv", apply_buffer),
+        ("Buffer", "Maint. Free Float (%)", f"{buffer_min_ff*100:g}"),
+        ("Buffer", "Maint. Coverage (%)", buffer_coverage),
+        ("Buffer", "Maint. ADTV DM / EM", f"{buffer_adtv_dm:,.0f} / {buffer_adtv_em:,.0f}"),
+        ("Buffer", "Maint. ATVR DM / EM (%)", f"{buffer_atvr_dm*100:g} / {buffer_atvr_em*100:g}"),
+        ("Size Buffer", "Size Buffer aktiv", apply_size_buffer),
+        ("Size Buffer", "Variante", _sb_var),
+        ("Size Buffer", "Bandbreite (pp)", f"{size_buffer_pp:g}"),
+        ("Size Buffer", "davon Mid/Small (pp)",
+         "= Bandbreite" if size_buffer_pp_ms is None else f"{size_buffer_pp_ms:g}"),
+        ("Size Buffer", "Small-Cap Coverage-Cut 99/99,5", apply_small_buffer),
+        ("Size Buffer", "Small-Buffer (pp)", f"{small_buffer_pp:g}"),
+        ("Size Buffer", "MSCI Logic (GIMI)", msci_logic),
+        ("Size Integrity", "aktiv", apply_size_integrity),
+        ("Size Integrity", "k", f"{si_k:g}"),
+        ("Size Integrity", "Kanten-Schutz (pp)", si_edge_pp),
+        ("Gewichtung", "FOL/IF anwenden", apply_fol),
+        ("Gewichtung", "IF-Modus", if_selection_mode),
+        ("Gewichtung", "Kumulations-Basis", if_cum_col),
+        ("Gewichtung", "Capping aktiv", apply_cap),
+    ]
+    return pd.DataFrame(
+        [{"Gruppe": g, "Parameter": p, "Wert": ("ja" if v is True else "nein" if v is False
+                                                else "—" if v is None else str(v))}
+         for g, p, v in _rows])
+
+
+SETTINGS_NOW = _settings_snapshot()
+
+
+def _settings_diff(old_df, new_df):
+    """Geänderte Parameter zwischen zwei Snapshots als DataFrame (leer = identisch)."""
+    if old_df is None or not isinstance(old_df, pd.DataFrame) or old_df.empty:
+        return pd.DataFrame()
+    _o = old_df.set_index(["Gruppe", "Parameter"])["Wert"]
+    _n = new_df.set_index(["Gruppe", "Parameter"])["Wert"]
+    _all = _o.index.union(_n.index)
+    _o, _n = _o.reindex(_all), _n.reindex(_all)
+    _chg = _all[(_o.fillna("—").values != _n.fillna("—").values)]
+    if len(_chg) == 0:
+        return pd.DataFrame()
+    return pd.DataFrame({"Gruppe": [c[0] for c in _chg], "Parameter": [c[1] for c in _chg],
+                         "beim Lauf": _o.reindex(_chg).fillna("—").values,
+                         "jetzt": _n.reindex(_chg).fillna("—").values})
 
 
 # ─── Load Data ─────────────────────────────────────────────────────────────────
@@ -1410,7 +2485,7 @@ else:  # SHARE → NVDR: keep SHAREs for all-listings, NVDRs handled in build_ne
 df_raw_all = apply_universe_exclusions(
     df_raw_all, max_price=max_closing_price, excl_hk_cny=exclude_hk_cny,
     excl_lon_usd_sec=exclude_lon_usd_sec,
-    excl_cor_na=exclude_country_risk_na, excl_naics=exclude_naics_funds,
+    excl_cor_na=exclude_country_risk_na,
     excl_euro=exclude_euro_mtf, excl_etf=exclude_etf_sicav, excl_delisted=False)
 df_raw_all = df_raw_all[df_raw_all["Classification"].notna()].copy()
 
@@ -1422,8 +2497,13 @@ df_em_full = df_raw_all[df_raw_all["Classification"] == "EM"].copy()
 # einmalig berechnet, damit alle Tabs (insbesondere Helvetica) konsistenten
 # Zugriff darauf haben, unabhängig davon welcher Tab zuerst angeklickt wird.
 _gm_u_global = build_new_universe(
-    df_raw_original, country_cls, thailand_sec_type, max_closing_price,
-    exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+    df_raw_original, country_cls, thailand_sec_type,
+    # Hochpreis-Regel: im ATVR-Modus darf hier NICHT hart geschnitten werden, sonst weicht
+    # das vorgebaute Universe von dem ab, das run_selection_pipeline selbst bauen wuerde
+    # (die uebergibt an dieser Stelle None) — und der Titel waere weg, bevor die
+    # ATVR-Bedingung ihn pruefen kann. Betrifft GIMI/Europe (prebuilt_universe) und Helvetica.
+    (None if max_price_atvr is not None else max_closing_price),
+    exclude_hk_cny, exclude_country_risk_na, exclude_euro_mtf, exclude_etf_sicav,
     china_inclusion_factor,
     atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted, excl_lon_usd_sec=exclude_lon_usd_sec,
     fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_active_selection_date.year,
@@ -1441,7 +2521,8 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica, tab_helvetica_mp, tab_multi = st.tabs([
+(tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica,
+ tab_helvetica_mp, tab_multi, tab_europe_mp) = st.tabs([
     "🌍 Universe Overview",
     "⚡ GIMI Method",
     "🇪🇺 Europe Index",
@@ -1450,6 +2531,7 @@ tab_overview, tab_gimi, tab_europe, tab_germany, tab_switzerland, tab_helvetica,
     "🏔️ Helvetica",
     "🏔️ Helvetica MP",
     "🔁 Multi-Period Run",
+    "🇪🇺 Europe MP (Pooled)",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1565,27 +2647,22 @@ with tab_overview:
         _m = (_exc_df["Country of Risk"].fillna("") == "@NA") & (_exc_reason == "")
         _exc_reason[_m] = "Country of Risk = @NA"
 
-    # 6. NAICS Investment Funds
-    if exclude_naics_funds:
-        _m = (_exc_df["NAICS"].fillna("").str.contains("Open-End Investment Fund", case=False, na=False)) & (_exc_reason == "")
-        _exc_reason[_m] = "NAICS: Open-End Investment Fund"
-
-    # 7. Euro MTF / @NA Exchange
+    # 6. Euro MTF / @NA Exchange
     if exclude_euro_mtf:
         _m = (_exc_df["Exchange Name"].fillna("").isin(["Euro MTF", "@NA"])) & (_exc_reason == "")
         _exc_reason[_m] = "Exchange: Euro MTF / @NA"
 
-    # 8. ETF / SICAV / %
+    # 7. ETF / SICAV / %
     if exclude_etf_sicav:
         _m = (_exc_df["Name"].fillna("").str.contains(_re_ov.compile(r'\bETF\b|\bSICAV\b|%', _re_ov.IGNORECASE))) & (_exc_reason == "")
         _exc_reason[_m] = "Name: ETF / SICAV / %"
 
-    # 9. Listing Status = 1 (Inactive / Delisted)
+    # 8. Listing Status = 1 (Inactive / Delisted)
     if exclude_delisted and "Listing Status" in _exc_df.columns:
         _m = (_exc_df["Listing Status"].fillna("0").astype(str).str.strip() == "1") & (_exc_reason == "")
         _exc_reason[_m] = "Listing Status = 1 (Inactive / Delisted)"
 
-    # 10. Kein Classification-Mapping
+    # 9. Kein Classification-Mapping
     _exc_df["_MappingCountry"] = derive_mapping_country(_exc_df)
     _exc_df["_Classification"] = _exc_df["_MappingCountry"].map(country_cls)
     _m = (_exc_df["_Classification"].isna()) & (_exc_reason == "")
@@ -1782,19 +2859,22 @@ with tab_gimi:
     _res = run_selection_pipeline(
         df_raw_original, country_cls, china_inclusion_factor, _active_selection_date.year,
         thailand_sec_type, max_closing_price,
-        exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+        exclude_hk_cny, exclude_country_risk_na, exclude_euro_mtf, exclude_etf_sicav,
         large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
         new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
         fol_matrix, fol_sector_fb, apply_fol,
         if_cum_col, atvr_mcap_col,
+        max_price_atvr=max_price_atvr, m_max_price_atvr=m_max_price_atvr,
         incumbents_isin=incumbents_keys, apply_buffer=apply_buffer,
         buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
         buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
         buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
         apply_size_buffer=False,
-        asym_buffer=asym_buffer,
+        asym_buffer=asym_buffer, entry_at_cutoff=entry_at_cutoff,
+        size_buffer_pp_ms=size_buffer_pp_ms,
         msci_logic=msci_logic,
         apply_small_buffer=apply_small_buffer, small_buffer_pp=small_buffer_pp,
+        apply_size_integrity=apply_size_integrity, si_k=si_k, si_edge_pp=si_edge_pp,
         excl_delisted=exclude_delisted, exclude_lon_usd_sec=exclude_lon_usd_sec,
         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
         selection_date=_active_selection_date,
@@ -1808,19 +2888,22 @@ with tab_gimi:
         _res_tm = run_selection_pipeline(
             df_raw_original, country_cls, china_inclusion_factor, _active_selection_date.year,
             thailand_sec_type, max_closing_price,
-            exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+            exclude_hk_cny, exclude_country_risk_na, exclude_euro_mtf, exclude_etf_sicav,
             large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
             new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
             fol_matrix, fol_sector_fb, apply_fol,
             if_cum_col, atvr_mcap_col,
+            max_price_atvr=max_price_atvr, m_max_price_atvr=m_max_price_atvr,
             incumbents_isin=incumbents_keys, apply_buffer=apply_buffer,
             buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
             buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
             buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
             apply_size_buffer=False,
-            asym_buffer=asym_buffer,
+            asym_buffer=asym_buffer, entry_at_cutoff=entry_at_cutoff,
+        size_buffer_pp_ms=size_buffer_pp_ms,
             msci_logic=msci_logic,
             apply_small_buffer=False,  # TM läuft IMMER bis 100% — kein 99/99,5-Cut, auch wenn Toggle global an
+            apply_size_integrity=False,  # TM ist All Cap: Small→Mid ändert die Konstituentenmenge nicht
             eumss_enabled=False,
             excl_delisted=exclude_delisted, exclude_lon_usd_sec=exclude_lon_usd_sec,
             ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
@@ -2193,21 +3276,33 @@ with tab_switzerland:
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper: Helvetica Pipeline (kundenspezifischer Schweizer Index)
 # ══════════════════════════════════════════════════════════════════════════════
-def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, incumbents_isin=None,
-                             prior_segments=None, label_before_liquidity=False):
+def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=None, incumbents_isin=None,
+                             prior_segments=None, label_before_liquidity=False,
+                             entry_at_cutoff=False, adtv_maint_thr=None,
+                             max_price=None, max_price_atvr=None, m_max_price_atvr=None,
+                             adtv_exempt_isin=None,
+                             ineligible_df=None, apply_ineligible=False, selection_date=None,
+                             rules=None):
     """Eigenständige Helvetica-Pipeline aus dem Universe (vor EUMSS).
 
     Schwellen — Entry (Neukandidaten) vs Maintenance (Bestandstitel/Inkumbenten):
                        Entry        Maintenance
       Min FF %         ≥ 10%        ≥ 7.5%
+      3M ADTV          ≥ adtv_thr   ≥ adtv_maint_thr (Default: adtv_thr × 0,75)
       Large Cap        _c_before <70%   <75%
       Standard         _c_before <85%   <90%
       Small Cap        _c_before <99%   <99.5%
-    ADTV 3M: ein fester Wert ($0.5M / $0.25M via Toggle), kein Buffer.
 
     Buffer PRO TITEL: Maintenance-Schwellen gelten, wenn der Titel in `incumbents_isin`
     (Vorperioden-Konstituenten, Multi-Period) ist ODER `use_buffer=True` (globaler
     Vergleichsmodus im Single-Snapshot-Tab). Sonst Entry-Schwellen.
+
+    `adtv_maint_thr`: Maintenance-Schwelle für das 3M-ADTV. None = adtv_thr ×
+    HELVETICA_ADTV_MAINT_RATIO, also dasselbe Verhältnis wie in der NaroIX-Serie
+    (Entry 1,0 Mio → Maintenance 750k). Vorher lief die Liquidität als EINZIGE Schwelle
+    ohne Bestandsschutz, während FF % und Coverage längst einen hatten — ein
+    Indexmitglied konnte an einem Quartal mit dünnem Handel herausfallen, obwohl es
+    jede andere Maintenance-Schwelle hielt.
 
     `prior_segments` (Multi-Period): dict {Entity ID -> Segment_New der Vorperiode}. Aktiviert die
     firmen-interne ±5/±0,5-Coverage-Hysterese (Bestands-Firma bleibt in ihrem Segment, solange die
@@ -2216,13 +3311,39 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
 
     Variante B: Primary + Secondary laufen gemeinsam durch (beide bleiben drin, sofern sie
     die Filter individuell bestehen). Returns (helv [L/M/S], helv_full_pool [+Micro], params)."""
-    ENTRY = {"min_ff": 0.10,  "large": 70.0, "std": 85.0, "small": 99.0}
-    MAINT = {"min_ff": 0.075, "large": 75.0, "std": 90.0, "small": 99.5}
+    R = dict(HELVETICA_RULES); R.update(rules or {})
+    ENTRY = {"min_ff": R["min_ff"], "large": R["large"], "std": R["std"], "small": R["small"]}
+    MAINT = {"min_ff": R["min_ff_maint"],
+             "large": R["large"] + R["hold_large_pp"],
+             "std":   R["std"]   + R["hold_std_pp"],
+             "small": R["small"] + R["hold_small_pp"]}
+    adtv_thr = HELVETICA_ADTV_ENTRY if adtv_thr is None else float(adtv_thr)
+    _adtv_m = (adtv_thr * HELVETICA_ADTV_MAINT_RATIO if adtv_maint_thr is None
+               else float(adtv_maint_thr))
     _inc = set(incumbents_isin or [])
+    _exempt = set(adtv_exempt_isin or [])
 
     def _maint(frame):
         _is = _norm_isin(frame["ISIN"]).isin(_inc)
         return (_is | bool(use_buffer)).to_numpy()
+
+    def _adtv_ok(frame):
+        """3M-ADTV gegen die per-Titel-Schwelle (Bestand: _adtv_m, sonst adtv_thr).
+
+        Spin-off-Ausnahme: ein Kind, dessen 3M-Fenster seit dem Ex-Date rechnerisch noch
+        nicht voll sein kann, wird nicht geprueft, SOLANGE der Wert fehlt oder 0 ist. Ein
+        vorhandener Wert unter der Schwelle schliesst weiterhin aus (wie apply_liquidity_new).
+        """
+        _a = pd.to_numeric(frame["3M ADTV Y2025"], errors="coerce").fillna(0.0).to_numpy()
+        _ok = _a >= np.where(_maint(frame), _adtv_m, adtv_thr)
+        if _exempt:
+            _ok = _ok | (_norm_isin(frame["ISIN"]).isin(_exempt).to_numpy() & (_a <= 0))
+        return _ok
+
+    def _liq_ok(frame):
+        """Liquiditaets-Gate: ADTV UND Hochpreis-Regel, beide per Titel."""
+        return _adtv_ok(frame) & _helv_high_price_ok(
+            frame, _maint(frame), max_price, max_price_atvr, m_max_price_atvr)
 
     # Step 1: Hard Filter — CH-gelistet, FF MCap > 0
     df = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
@@ -2232,12 +3353,14 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     m = _maint(df)
     df = df[df["Free Float Percent"] >= np.where(m, MAINT["min_ff"], ENTRY["min_ff"])].copy()
 
-    # Step 3: Liquidity — ein fester 3M-ADTV-Schwellenwert (kein Buffer).
+    # Step 3: Liquidity — 3M-ADTV per Titel (Bestandstitel: Maintenance-Schwelle, sonst Entry).
     # Reihenfolge-Toggle: im Default VOR der Coverage; bei label_before_liquidity erst
     # NACH dem Labeling als Mitgliedschafts-Gate (Coverage läuft dann auf dem vollen
     # CH-Pool — illiquide Titel bestimmen die Größengrenzen mit, fallen aber unten raus).
+    # Der Buffer greift PRO LINIE: die Schwestergattung eines Bestandstitels ist selbst
+    # kein Indexmitglied und läuft deshalb weiter gegen die Entry-Schwelle.
     if not label_before_liquidity:
-        df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
+        df = df[_liq_ok(df)].copy()
 
     # Step 3b: Company-level Dedup VOR dem Coverage-Cut — pro Firma nur die liquideste
     # Linie (höchstes 3M-ADTV). Verhindert Doppelzählung von Mehrfach-Listings (Variante B)
@@ -2246,7 +3369,8 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     # hält aber z.B. Lindt korrekt über LISP, falls die Primary (LISN) preis-gefiltert wurde.
     df = _helv_dedup_most_liquid(df)
 
-    _legacy = {"adtv_thr": adtv_thr, "use_buffer": use_buffer, "n_incumbents": len(_inc),
+    _legacy = {"adtv_thr": adtv_thr, "adtv_maint_thr": _adtv_m,
+               "use_buffer": use_buffer, "n_incumbents": len(_inc),
                "min_ff_pct": (MAINT if use_buffer else ENTRY)["min_ff"],
                "large_cut": (MAINT if use_buffer else ENTRY)["large"],
                "std_cut":   (MAINT if use_buffer else ENTRY)["std"],
@@ -2258,6 +3382,10 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     df = df.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False]).reset_index(drop=True)
     tot = df["Adj_FF_MCap"].sum()
     df["_c_before"] = (df["Adj_FF_MCap"].cumsum().shift(1).fillna(0) / tot * 100) if tot > 0 else 0.0
+    # Gleiche Coverage-Treppe wie in run_selection_pipeline, damit auch der Helvetica-Export
+    # zeigt, zwischen welchen Zeilen ein Cut faellt. Rein informativ.
+    df["_cum_cov"] = df["Adj_FF_MCap"].cumsum()
+    df["_c_after"] = (df["_cum_cov"] / tot * 100) if tot > 0 else 0.0
 
     # Step 5: Coverage-Cuts → Segment (firmen-intern, da der Cut über Total MCap läuft; Mehrfach-
     # Listings sind durch Step 3b ohnehin schon auf eine Linie reduziert).
@@ -2275,13 +3403,22 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
                 np.where(cb < _cut["small"], "Small Cap", "Micro Cap")))
     if prior_segments:
         _L, _M, _S = ENTRY["large"], ENTRY["std"], ENTRY["small"]  # 70 / 85 / 99
+        # entry_at_cutoff (FTSE-Prinzip, wie neu in der NaroIX-Serie): die Untergrenzen der
+        # Halte-Bänder rücken auf den glatten Cut-off. Ein Bestandstitel steigt dann an
+        # derselben Schwelle auf wie ein Neuzugang (Large ab <70, Mid ab <85) statt erst bei
+        # 65 bzw. 84,5. Die Halteseiten (75 / 90 / 99,5) bleiben in beiden Varianten gleich.
+        # ACHTUNG Kaskade: ein Aufsteiger nach Large tritt im Large-Sleeve gegen Nestlé/Roche/
+        # Novartis an und fällt bei Rang > 10 ganz heraus (kein Overflow nach unten). Gemessen
+        # 2026-05-20: Alcon und Swisscom raus, Lindt PS und Helvetia Baloise rein.
+        _lo_mid = _L if entry_at_cutoff else _L - R["hold_large_pp"]   # 70 statt 65
+        _lo_sml = _M if entry_at_cutoff else _M - R["hold_small_pp"]   # 85 statt 84,5
         _ent = df["Entity ID"].fillna("").astype(str).str.strip().to_numpy()
         _seg = []
         for _i in range(len(df)):
             _p = prior_segments.get(_ent[_i]); _c = cb[_i]; _s = _hard[_i]
-            if   _p == "Large Cap" and _c < _L + 5.0:               _s = "Large Cap"
-            elif _p == "Mid Cap"   and (_L - 5.0) <= _c < _M + 5.0: _s = "Mid Cap"
-            elif _p == "Small Cap" and (_M - 0.5) <= _c < _S + 0.5: _s = "Small Cap"
+            if   _p == "Large Cap" and _c < _L + R["hold_large_pp"]:            _s = "Large Cap"
+            elif _p == "Mid Cap"   and _lo_mid <= _c < _M + R["hold_std_pp"]:   _s = "Mid Cap"
+            elif _p == "Small Cap" and _lo_sml <= _c < _S + R["hold_small_pp"]: _s = "Small Cap"
             _seg.append(_s)
         df["Segment_New"] = _seg
     else:
@@ -2290,7 +3427,15 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=500_000, in
     # Reihenfolge-Toggle: Liquidität jetzt als Mitgliedschafts-Gate (nach dem Labeling).
     # Segment-Labels stammen aus der vollen Markt-Coverage; illiquide Titel fallen hier raus.
     if label_before_liquidity:
-        df = df[df["3M ADTV Y2025"] >= adtv_thr].copy()
+        df = df[_liq_ok(df)].copy()
+
+    # In-Eligible-Liste (z.B. Sanktionen): NACH der Segmentierung, wie in run_selection_pipeline.
+    # Der Titel bleibt damit Teil des Marktes, der die Groessengrenzen definiert, wird aber nicht
+    # selektiert. Fuer die Equity-Sleeves heisst das: das Sleeve rueckt auf 10 nach; Real Estate
+    # verliert den Titel und verteilt die 15 % auf die verbleibenden.
+    if apply_ineligible and ineligible_df is not None and len(ineligible_df) and selection_date is not None:
+        df, _ie_removed, _ = apply_ineligible_filter(df, ineligible_df, selection_date)
+        _legacy["ineligible_removed"] = int(len(_ie_removed))
 
     helv = df[df["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()  # Konstituenten i.e.S.
     helv_full_pool = df.copy()                                                       # inkl. Micro Cap
@@ -2318,6 +3463,77 @@ HELVETICA_TARGET = {"Cash": 5.0, "Government Bonds": 10.0, "Corporate Bonds": 15
 
 HELVETICA_BUFFER_HARD = 8    # Equity-Top-10 Rang-Band: hart drin <= Rang 8
 HELVETICA_BUFFER_EXIT = 13   # Inkumbent bleibt in den Top-10, solange Rang <= 13
+# 3M-ADTV-Maintenance als Anteil der Entry-Schwelle. 0,75 spiegelt die NaroIX-Serie
+# (Sidebar: Entry 1,0 Mio USD, Maintenance 750k) und damit MSCIs Verhaeltnis. Gilt fuer
+# Helveticas Pipeline UND die Swiss-Size-Sub-Indizes, damit deren Pool-Filter identisch
+# bleibt: sonst koennte ein per ADTV-Buffer gehaltener Helvetica-Titel im Sub-Index fehlen.
+HELVETICA_ADTV_MAINT_RATIO = 0.75
+# Guideline-Defaults der Selektionsschwellen. Die Tabs uebergeben stattdessen die
+# Sidebar-Werte (Stand 2026-08-28 sind beide zahlengleich); dieses Dict ist der Fallback
+# fuer Aufrufe ohne `rules`, also Tests und Headless-Laeufe. Die Haltebaender ergeben sich
+# als Cut + hold_*_pp, exakt wie in der Serie (mid_thr + size_buffer_pp).
+HELVETICA_RULES = {
+    "min_ff": 0.10, "min_ff_maint": 0.075,
+    "large": 70.0, "std": 85.0, "small": 99.0,
+    "hold_large_pp": 5.0, "hold_std_pp": 5.0, "hold_small_pp": 0.5,
+}
+# Entry-Schwelle fuer das 3M-ADTV. Feste Guideline-Groesse wie 70/85/99 und 10/7,5 % — kein
+# Bedienelement. Der frueher im Tab angebotene Umschalter ($0,25M / $0,5M) war ein Testhebel
+# aus der Entwicklungsphase und ist am 2026-08-28 entfallen.
+HELVETICA_ADTV_ENTRY = 1_000_000
+
+
+def _helv_rules_from_sidebar():
+    """Helvetica-Schwellen aus den Sidebar-Feldern statt aus HELVETICA_RULES.
+
+    Die Werte sind Stand 2026-08-28 zahlengleich mit den Guideline-Defaults; die Kopplung
+    existiert, weil die Guideline noch nicht final ist (ETF nicht live) und Anpassungen
+    ohne Code-Aenderung durchgerechnet werden sollen. Nachvollziehbar bleibt das ueber den
+    Settings-Stempel, der in jedem Helvetica-Export als Blatt "Settings" liegt.
+
+    Zuordnung: die Haltebaender ergeben sich wie in der Serie als Cut + Bandbreite, die
+    Mid/Small-Kante folgt der separaten Bandbreite, falls in der Sidebar gesetzt.
+    """
+    return {
+        "min_ff": min_ff_pct, "min_ff_maint": buffer_min_ff,
+        "large": float(large_thr), "std": float(mid_thr), "small": float(small_thr),
+        "hold_large_pp": float(size_buffer_pp),
+        "hold_std_pp": float(size_buffer_pp if size_buffer_pp_ms is None else size_buffer_pp_ms),
+        "hold_small_pp": float(small_buffer_pp),
+    }
+
+
+def _helv_mio(v):
+    """Schwellenbetrag als 'CHF x,xx Mio.' — deutsches Format, bewusst OHNE Dollarzeichen.
+
+    Zwei Gruende: Helvetica laeuft auf einem eigenen File, dessen Werte in CHF stehen, und
+    zwei '$' in derselben Markdown-Zeile rendert Streamlit als LaTeX-Formel — die Caption
+    stand dadurch im Formelsatz statt als Text.
+    """
+    return ("CHF %.2f Mio." % (float(v) / 1e6)).replace(".", ",", 1)
+
+def _helv_high_price_ok(frame, maint_mask, max_price, max_price_atvr, m_max_price_atvr):
+    """Hochpreis-Regel im ATVR-Modus, identisch zu apply_liquidity_new (Serie).
+
+    Ein Titel mit Kurs >= max_price bleibt, wenn min(ATVR 3M, ATVR 6M) die Schwelle
+    erreicht: max_price_atvr fuer Neukandidaten, m_max_price_atvr fuer Bestandstitel.
+    Ein nominell hoher Kurs sagt nichts ueber die Handelbarkeit — der frueher harte
+    Cut traf in der Schweiz ausschliesslich die Lindt-Namenaktie (ATVR ~32 %).
+
+    Gibt eine Bool-Maske zurueck. Ist max_price_atvr None (Sidebar-Modus "Ausschluss"),
+    hat build_new_universe den Titel bereits entfernt und die Maske ist durchgaengig True.
+    """
+    n = len(frame)
+    if not max_price or max_price_atvr is None or "Closing Price" not in frame.columns:
+        return np.ones(n, dtype=bool)
+    _num = lambda c: (pd.to_numeric(frame[c], errors="coerce").fillna(0.0).to_numpy()
+                      if c in frame.columns else np.zeros(n))
+    _thr = np.where(maint_mask,
+                    max_price_atvr if m_max_price_atvr is None else m_max_price_atvr,
+                    max_price_atvr).astype(float)
+    return (_num("Closing Price") < float(max_price)) | (
+        np.minimum(_num("ATVR_3M"), _num("ATVR_6M")) >= _thr)
+
 
 def _helv_dedup_most_liquid(df, id_col="Entity ID", liq_col="3M ADTV Y2025"):
     """Pro Firma (Entity ID) nur die LIQUIDESTE Linie (höchstes 3M-ADTV) behalten —
@@ -2352,8 +3568,9 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     the top-10 of its OWN coverage segment, ranked by FREE-FLOAT MCap (Adj_FF_MCap, Total MCap as
     tiebreaker — the same key as the Swiss-size sub-indices; the size CLASS itself comes from Total MCap
     in the pipeline). Selected names are removed from the remaining pool before the next sleeve. If a
-    segment has <10 own names, it pulls the BEST names (by Adj_FF_MCap) from the next-smaller segment
-    (Large←Mid, Mid←Small, Small←Micro), marked "Aufrücker" (true size class preserved). Because those
+    segment has <10 own names, it pulls the BEST names (by Adj_FF_MCap) from ALL smaller segments
+    (Large←Mid/Small/Micro, Mid←Small/Micro, Small←Micro) — in practice the next-smaller one, since the
+    ranking is by float and it is never exhausted. Marked "Aufrücker" (true size class preserved). Because those
     are removed, the next sleeve checks ">=10" on the REDUCED pool and the cascade propagates (a short
     Large can push Mid below 10 → Mid pulls from Small, etc.). LARGER segments are excluded as a source
     → NO overflow down: a segment keeping >10 names after deductions takes its top-10, the surplus is
@@ -2370,7 +3587,13 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     # Top-10-Auswahl je Sleeve: Rang nach FREE-FLOAT-MCAP (Adj_FF_MCap, Total MCap als Tiebreaker).
     # Damit zieht Helvetica genau die 10 größten Konstituenten des Float-MCap-gewichteten
     # Swiss-Size-Sub-Index (Segment-KLASSE bleibt firmen-intern über Total MCap, siehe Pipeline).
-    helv_eq = (_helv_dedup_most_liquid(helv[~is_re(helv)])
+    # Quellpool = helv_full_pool, also INKLUSIVE Micro Cap. Die Guideline nennt Micro
+    # ausdruecklich als Fill-up-Quelle fuer das Small-Sleeve ("Fill-up Constituent", 4.2.1);
+    # mit `helv` (nur L/M/S) war dieser Pfad toter Code, der Eintrag "Micro Cap" in _SEG_RANK
+    # konnte nie greifen. Micro bildet weiterhin KEIN eigenes Sleeve: die Schleife laeuft nur
+    # ueber HELVETICA_EQUITY_SLEEVES, Micro kann also ausschliesslich ueber den Fallback
+    # nachruecken und wird dort korrekt als "Aufruecker" mit True_Segment "Micro Cap" gefuehrt.
+    helv_eq = (_helv_dedup_most_liquid(helv_full_pool[~is_re(helv_full_pool)])
                .sort_values(["Adj_FF_MCap", "Total MCap Y2025"], ascending=[False, False]).reset_index(drop=True))
     helv_eq = helv_eq.assign(_isin_k=_norm_isin(helv_eq["ISIN"]))
 
@@ -2433,23 +3656,30 @@ def build_helvetica_composite(helv, helv_full_pool, re_industries, incumbents_is
     return comp, summ
 
 
-def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=None,
+def build_swiss_size_subindices(gm_universe, adtv_thr=None, prior_segments=None,
                                 incumbents_isin=None, re_industries=None, use_buffer=False,
-                                full=None, label_before_liquidity=False):
+                                full=None, label_before_liquidity=False,
+                                entry_at_cutoff=False, adtv_maint_thr=None,
+                                max_price=None, max_price_atvr=None, m_max_price_atvr=None,
+                                adtv_exempt_isin=None,
+                                ineligible_df=None, apply_ineligible=False, selection_date=None,
+                                rules=None):
     """Drei eigenständige Swiss-Size-Sub-Indizes (Large / Mid / Small Cap), aus denen Helvetica
     die Top-10 zieht. Eigenschaften:
-      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent/use_buffer ≥ 7,5 %), 3M-ADTV ≥ adtv_thr.
+      - Universe: Exchange Country = CH, FF MCap > 0, FF % ≥ 10 % (Inkumbent/use_buffer ≥ 7,5 %),
+        3M-ADTV ≥ adtv_thr (Inkumbent/use_buffer ≥ adtv_maint_thr, Default adtv_thr × 0,75).
       - Variante B: ALLE Share Lines (kein Dedup) — Mehrfach-Listings dürfen vertreten sein.
       - Segment: firmen-interner Coverage-Cut (über build_helvetica_pipeline → eine Linie/Firma,
         inkl. ±5/±0,5-Hysterese via prior_segments). Jede Linie erbt das Segment IHRER Firma.
       - Gewichtung: Float-MCap (Adj_FF_MCap) cap-gewichtet, je Sub-Index auf 100 % normiert.
-    `incumbents_isin` (Multi-Period): identische FF%-Maintenance (7,5 %) wie Helveticas Pipeline,
+    `incumbents_isin` (Multi-Period): identische FF%- und ADTV-Maintenance wie Helveticas Pipeline,
     damit Helveticas selektierte Titel stets eine Teilmenge des Sub-Index sind. `use_buffer` muss
     mit dem Helvetica-Composite übereinstimmen (Single-Tab-Vergleich), sonst weichen Segmentgrenzen
     und FF%-Schwelle ab. `full` = bereits berechneter helv_full_pool (mit Segment_New); wird er
     übergeben, entfällt der zweite, identische Pipeline-Lauf (Performance).
     Real Estate wird ausgeschlossen (eigenes Helvetica-Sleeve). Gibt dict {Segment: DataFrame}.
     """
+    adtv_thr = HELVETICA_ADTV_ENTRY if adtv_thr is None else float(adtv_thr)
     _re = re_industries or HELVETICA_RE_INDUSTRIES
     # 1) Firmen-Segmente (eine Linie je Firma) aus der Helvetica-Pipeline (firmen-interner Cut +
     #    Hysterese). `full` kann vom Aufrufer vorberechnet hereingereicht werden (identische Args)
@@ -2457,7 +3687,15 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     if full is None:
         _, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=use_buffer, adtv_thr=adtv_thr,
                                               incumbents_isin=incumbents_isin, prior_segments=prior_segments,
-                                              label_before_liquidity=label_before_liquidity)
+                                              label_before_liquidity=label_before_liquidity,
+                                              entry_at_cutoff=entry_at_cutoff,
+                                              adtv_maint_thr=adtv_maint_thr,
+                                              max_price=max_price, max_price_atvr=max_price_atvr,
+                                              m_max_price_atvr=m_max_price_atvr,
+                                              rules=rules, adtv_exempt_isin=adtv_exempt_isin,
+                                              ineligible_df=ineligible_df,
+                                              apply_ineligible=apply_ineligible,
+                                              selection_date=selection_date)
     if full is None or len(full) == 0:
         _empty = full.iloc[0:0].copy() if full is not None else pd.DataFrame()
         return {s: _empty.copy() for s in ["Large Cap", "Mid Cap", "Small Cap"]}
@@ -2468,10 +3706,25 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     pool = gm_universe[(gm_universe["Exchange Country Name"] == "SWITZERLAND") &
                        (gm_universe["Free Float MCap Y2025"] > 0)].copy()
     _inc = set(incumbents_isin or [])
+    _adtv_m = (adtv_thr * HELVETICA_ADTV_MAINT_RATIO if adtv_maint_thr is None
+               else float(adtv_maint_thr))
     _maint_pool = _norm_isin(pool["ISIN"]).isin(_inc) | bool(use_buffer)
-    _ff_min = np.where(_maint_pool, 0.075, 0.10)
-    pool = pool[(pool["Free Float Percent"] >= _ff_min) & (pool["3M ADTV Y2025"] >= adtv_thr)]
+    _R = dict(HELVETICA_RULES); _R.update(rules or {})
+    _ff_min = np.where(_maint_pool, _R["min_ff_maint"], _R["min_ff"])
+    _adtv_min = np.where(_maint_pool, _adtv_m, adtv_thr)
+    _pool_a = pd.to_numeric(pool["3M ADTV Y2025"], errors="coerce").fillna(0.0)
+    _pool_adtv_ok = _pool_a >= _adtv_min
+    if adtv_exempt_isin:   # Spin-off-Ausnahme identisch zur Pipeline
+        _pool_adtv_ok = _pool_adtv_ok | (_norm_isin(pool["ISIN"]).isin(set(adtv_exempt_isin))
+                                         & (_pool_a <= 0))
+    pool = pool[(pool["Free Float Percent"] >= _ff_min) & _pool_adtv_ok
+                & _helv_high_price_ok(pool, _maint_pool.to_numpy(), max_price,
+                                      max_price_atvr, m_max_price_atvr)]
     pool = pool[~pool["FactSet Industry"].isin(_re)].copy()
+    # In-Eligible identisch zur Helvetica-Pipeline, sonst zeigt der Sub-Index einen Titel,
+    # den der Index nicht halten darf.
+    if apply_ineligible and ineligible_df is not None and len(ineligible_df) and selection_date is not None:
+        pool, _, _ = apply_ineligible_filter(pool, ineligible_df, selection_date)
     # 3) Jede Linie erbt das Segment ihrer Firma (firmen-interner Cut)
     pool["Segment_New"] = pool["Entity ID"].fillna("").astype(str).str.strip().map(_seg_by_ent)
     pool = pool[pool["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])].copy()
@@ -2485,7 +3738,7 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=1_000_000, prior_segments=
     return out
 
 
-def render_helvetica_tab(gm_universe, label_before_liquidity=False):
+def render_helvetica_tab(gm_universe, label_before_liquidity=False, entry_at_cutoff=False):
     """Render Helvetica Tab — kundenspezifischer Schweizer Index."""
     st.markdown("## 🏔️ Helvetica")
     st.caption(
@@ -2495,36 +3748,36 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     )
     st.caption(f"📅 Snapshot: **{_snapshot_label}**")
 
-    # ── Toggles ────────────────────────────────────────────────────────────
-    _tg1, _tg2 = st.columns(2)
-    with _tg1:
-        _use_buffer = st.toggle(
-            "Maintenance-Schwellen (Vergleich, alle Titel) — 75 / 90 / 99.5 % statt 70 / 85 / 99 %",
-            value=False,
-            key="helvetica_buffer_toggle",
-            help=(
-                "Reiner **Single-Snapshot-Vergleich** — NICHT der echte inkumbenten-basierte Buffer "
-                "des Multi-Period-Tabs (dort: Rang-Band 8/13 + ±5/±0,5-Hysterese nur für Bestandstitel).\n\n"
-                "**Aus (Default):** Entry-Schwellen — Coverage 70/85/99 %, FF % ≥ 10 %.\n\n"
-                "**An:** Maintenance-Schwellen für **alle** Titel — Coverage 75/90/99.5 %, FF % ≥ 7.5 %. "
-                "Zeigt, wie sich die gelockerten Schwellen auf das Universe auswirken; die Auswahl bleibt "
-                "plain Top-10."
-            ),
-        )
-    with _tg2:
-        _adtv_lbl = st.radio(
-            "3M-ADTV-Schwelle", ["$0.25M", "$0.5M", "$1.0M"], index=2, horizontal=True,
-            key="helvetica_adtv_choice",
-            help="3M ADTV ≥ gewählte Schwelle. $1.0M = Default (strenger; konzentrierterer "
-                 "Real-Estate-Korb); $0.5M / $0.25M = inklusiver (mehr kleine Titel / Real Estate). "
-                 "Unabhängig vom Buffer.",
-        )
-
-    _adtv_thr = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_adtv_lbl]
+    # ── Toggle ─────────────────────────────────────────────────────────────
+    # Schwellen aus der Sidebar (die Guideline-Defaults stehen in HELVETICA_RULES und
+    # greifen nur noch bei Aufrufen ohne `rules`, also Tests und Headless-Laeufen).
+    _helv_rules = _helv_rules_from_sidebar()
+    _adtv_thr, _adtv_maint = new_adtv_dm, buffer_adtv_dm
+    _use_buffer = st.toggle(
+        "Maintenance-Schwellen (Vergleich, alle Titel) — 75 / 90 / 99.5 % statt 70 / 85 / 99 %",
+        value=False,
+        key="helvetica_buffer_toggle",
+        help=(
+            "Reiner **Single-Snapshot-Vergleich** — NICHT der echte inkumbenten-basierte Buffer "
+            "des Multi-Period-Tabs (dort: Rang-Band 8/13 + ±5/±0,5-Hysterese nur für Bestandstitel).\n\n"
+            f"**Aus (Default):** Entry-Schwellen — Coverage 70/85/99 %, FF % ≥ 10 %, "
+            f"3M-ADTV ≥ {_helv_mio(_adtv_thr)}\n\n"
+            "**An:** Maintenance-Schwellen für **alle** Titel — Coverage 75/90/99.5 %, FF % ≥ 7.5 %, "
+            f"3M-ADTV ≥ {_helv_mio(_adtv_thr*HELVETICA_ADTV_MAINT_RATIO)} "
+            "Zeigt, wie sich die gelockerten Schwellen auf das Universe auswirken; die Auswahl bleibt "
+            "plain Top-10."
+        ),
+    )
 
     # ── Helvetica Pipeline laufen lassen ────────────────────────────────────
+    # Hochpreis-Regel aus der Sidebar (identisch zur NaroIX-Serie): im ATVR-Modus hat
+    # _gm_u_global nicht hart geschnitten, die Bedingung greift hier auf Liquiditaets-Ebene.
     helv, helv_full_pool, params = build_helvetica_pipeline(gm_universe, use_buffer=_use_buffer, adtv_thr=_adtv_thr,
-                                                            label_before_liquidity=label_before_liquidity)
+                                                            adtv_maint_thr=_adtv_maint, rules=_helv_rules,
+                                                            label_before_liquidity=label_before_liquidity,
+                                                            max_price=max_closing_price,
+                                                            max_price_atvr=max_price_atvr,
+                                                            m_max_price_atvr=m_max_price_atvr)
 
     if len(helv) == 0:
         st.warning("⚠️ Keine Stocks im Helvetica-Universe (Exchange Country = Switzerland, FF MCap > 0, Min FF%, ADTV-Schwellen).")
@@ -2533,7 +3786,7 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     # ── Methodik-Box ───────────────────────────────────────────────────────
     _params_text = (
         f"**Aktive Schwellen** ({'Maintenance' if _use_buffer else 'Entry'}): "
-        f"3M ADTV ≥ ${params['adtv_thr']/1e6:.1f}M (fest) | "
+        f"3M ADTV ≥ {_helv_mio(params['adtv_maint_thr'] if _use_buffer else params['adtv_thr'])} | "
         f"FF % ≥ {params['min_ff_pct']*100:.1f}% | "
         f"Large Cap < {params['large_cut']:.1f}% | "
         f"Standard < {params['std_cut']:.1f}% | "
@@ -2590,7 +3843,7 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     _meta = {
         "Index": "Helvetica (Multi-Asset)",
         "Modus": "Maintenance Buffer" if params["use_buffer"] else "Entry",
-        "ADTV Schwelle": f"${params['adtv_thr']/1e6:.2f}M",
+        "ADTV Schwelle": _helv_mio(params['adtv_thr']),
         "Min FF %": f"{params['min_ff_pct']*100:.1f}%",
         "Cuts L/Std/Small": f"{params['large_cut']:.1f}/{params['std_cut']:.1f}/{params['small_cut']:.1f}%",
         "Equity Top-N je Sleeve": HELVETICA_TOPN,
@@ -2625,8 +3878,12 @@ def render_helvetica_tab(gm_universe, label_before_liquidity=False):
     )
     _comp_w = comp.set_index("Exchange Ticker")["Index_Weight"].to_dict()
     _subs = build_swiss_size_subindices(gm_universe, adtv_thr=_adtv_thr,
+                                        adtv_maint_thr=_adtv_maint, rules=_helv_rules,
                                         use_buffer=_use_buffer, full=helv_full_pool,
-                                        label_before_liquidity=label_before_liquidity)
+                                        label_before_liquidity=label_before_liquidity,
+                                        max_price=max_closing_price,
+                                        max_price_atvr=max_price_atvr,
+                                        m_max_price_atvr=m_max_price_atvr)
     _sub_export = {}
     for _seg in ["Large Cap", "Mid Cap", "Small Cap"]:
         _sdf = _subs.get(_seg)
@@ -2680,7 +3937,7 @@ with tab_helvetica:
     if _gm_u_global is None or len(_gm_u_global) == 0:
         st.warning("⚠️ Universe ist leer. Bitte Datei-Upload und Filter-Einstellungen prüfen.")
     else:
-        render_helvetica_tab(_gm_u_global, label_before_liquidity)
+        render_helvetica_tab(_gm_u_global, label_before_liquidity, entry_at_cutoff=entry_at_cutoff)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2688,8 +3945,9 @@ with tab_helvetica:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_helvetica_mp:
     st.markdown("## 🏔️ Helvetica Multi-Period")
-    st.caption("Mehrperioden-Lauf des Helvetica-Multi-Asset-Index mit frei wählbaren "
-               "Rebalancing-Terminen und echtem inkumbenten-basierten Maintenance-Buffer.")
+    st.caption("Mehrperioden-Lauf des Helvetica-Multi-Asset-Index über alle Termine des geladenen "
+               "Files, mit inkumbenten-basiertem Maintenance-Buffer. Schwellen aus der Sidebar, "
+               "eingefroren im Settings-Blatt jedes Exports.")
     if data_mode != "Master File (Multi-Period)":
         st.info("Bitte im Sidebar **'Master File (Multi-Period)'** wählen und ein Master-File laden.")
     elif master_data is None or not master_data.get("detected_dates"):
@@ -2697,47 +3955,73 @@ with tab_helvetica_mp:
     else:
         _MON = {1: "Jan", 2: "Feb", 3: "Mär", 4: "Apr", 5: "Mai", 6: "Jun",
                 7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt", 11: "Nov", 12: "Dez"}
-        _dates_all = sorted(master_data["detected_dates"])
-        _months_avail = sorted({int(d.split("-")[1]) for d in _dates_all})
-        _years = sorted({int(d.split("-")[0]) for d in _dates_all})
+        # Die Termine kommen VOLLSTAENDIG aus dem geladenen File — keine Frequenz- und
+        # Jahresauswahl mehr. Die Guideline legt den Turnus fest (quartalsweise, Selection Day
+        # 3. Mittwoch Feb/Mai/Aug/Nov), er ist also keine Bedienentscheidung. Die frueheren
+        # Presets hatten zudem stille Kanten: "Jaehrlich" nahm die hoechste Monatsnummer,
+        # "Halbjaehrlich" war auf Mai+Nov verdrahtet und fiel sonst kommentarlos auf alle
+        # Monate zurueck. Wer einen kuerzeren Lauf braucht, laedt ein kuerzeres File.
+        _reb_all = sorted(master_data["detected_dates"])
+        _months_avail = sorted({int(d.split("-")[1]) for d in _reb_all})
 
         st.markdown("### 📅 Rebalancing-Termine")
-        st.caption("Verfügbare Monate im Master: " + ", ".join(_MON[m] for m in _months_avail) + ".")
-        _preset = st.radio("Frequenz", ["Quartalsweise (alle)", "Halbjährlich", "Jährlich", "Eigene Monate"],
-                           index=0, horizontal=True, key="helv_mp_preset")
-        if _preset == "Quartalsweise (alle)":
-            _sel_months = list(_months_avail)
-        elif _preset == "Halbjährlich":
-            _sel_months = [m for m in (5, 11) if m in _months_avail] or list(_months_avail)  # Mai + Nov
-        elif _preset == "Jährlich":
-            _sel_months = [_months_avail[-1]]
-        else:
-            _sel_months = st.multiselect("Monate", _months_avail, default=_months_avail,
-                                         format_func=lambda m: _MON[m], key="helv_mp_months")
+        # Range-Picker wie in Multi-Period und Europe MP: die Termine kommen aus dem File,
+        # gewaehlt wird nur der Ausschnitt. Keine Frequenz- oder Jahresauswahl — den Turnus
+        # legt die Guideline fest (quartalsweise), er ist keine Bedienentscheidung.
+        _hr1, _hr2 = st.columns(2)
+        with _hr1:
+            _h_start = st.selectbox(
+                "Start-Periode (Seed)", options=_reb_all, index=0, key="helv_mp_start",
+                help="Erste Periode des Laufs. Hier gibt es noch keine Inkumbenten — alle "
+                     "Titel durchlaufen die Entry-Schwellen.")
+        with _hr2:
+            _h_end = st.selectbox(
+                "End-Periode", options=_reb_all, index=len(_reb_all) - 1, key="helv_mp_end",
+                help="Letzte Periode des Laufs.")
+        _reb = [d for d in _reb_all if _h_start <= d <= _h_end]
+        if _reb:
+            _mon_sel = sorted({int(d.split("-")[1]) for d in _reb})
+            st.caption(f"📅 Geplante Periods im Lauf: **{len(_reb)}** "
+                       f"({_reb[0]} → {_reb[-1]}, {', '.join(_MON[m] for m in _mon_sel)}). "
+                       "Der Turnus folgt dem File, die Guideline sieht quartalsweise vor.")
 
-        _c1, _c2, _c3, _c4 = st.columns(4)
-        with _c1: _y0 = st.selectbox("Von Jahr", _years, index=0, key="helv_mp_y0")
-        with _c2: _y1 = st.selectbox("Bis Jahr", _years, index=len(_years) - 1, key="helv_mp_y1")
-        with _c3: _mp_buffer = st.toggle("Maintenance Buffer", value=True, key="helv_mp_buffer",
-                      help="Inkumbenten-Bestandsschutz: Equity-Top-10 via Rang-Band (hart 8 / exit 13), "
-                           "Real Estate via FF-Buffer (Bestands-RE bleibt bei FF ≥ 7.5%). Senkt den Turnover.")
-        with _c4: _mp_adtv_lbl = st.selectbox("3M-ADTV", ["$0.25M", "$0.5M", "$1.0M"], index=2, key="helv_mp_adtv")
-        _mp_adtv = {"$0.25M": 250_000, "$0.5M": 500_000, "$1.0M": 1_000_000}[_mp_adtv_lbl]
+        # Schwellen aus der Sidebar; HELVETICA_RULES bleibt der Fallback fuer Tests/Headless.
+        # Die konkreten Werte (Schwellen, Baender, Buffer-Zustand) zeigt die
+        # Selektionskriterien-Box weiter unten — hier stehen nur noch Hinweise, die dort
+        # NICHT ableitbar sind.
+        _helv_rules = _helv_rules_from_sidebar()
+        _mp_adtv, _mp_adtv_maint = new_adtv_dm, buffer_adtv_dm
+        # Die Coverage-Hysterese folgt dem globalen Sidebar-Schalter "Size-Buffer-Variante",
+        # damit beide Produktfamilien dieselbe Logik fahren (ein Schalter für alle Tabs).
+        # Wirkt nur mit aktivem Size Buffer, weil das Vorperioden-Segment gebraucht wird.
+        _mp_entry_cut = bool(entry_at_cutoff)
 
-        _reb = [d for d in _dates_all
-                if int(d.split("-")[1]) in set(_sel_months) and _y0 <= int(d.split("-")[0]) <= _y1]
+        if not (apply_buffer and apply_size_buffer):
+            st.warning(
+                "⚠️ Bestandsschutz teilweise abgeschaltet — dieser Lauf ist **nicht "
+                "guideline-konform** und dient dem Vergleich. Zustand siehe Kriterien unten.")
+        st.caption(
+            "→ Achtung Kaskade: ein Aufsteiger nach Large tritt dort gegen "
+            "Nestlé/Roche/Novartis an und fällt bei Rang > 10 ganz aus dem Index, weil der "
+            "Überschuss nicht nach unten zurückgegeben wird (gemessen 2026-05-20: Alcon und "
+            "Swisscom raus, Lindt PS und Helvetia Baloise rein).")
+
         if not _reb:
-            st.warning("Keine Rebalancing-Termine für die gewählten Monate/Jahre.")
+            st.warning("Keine Selection Dates im geladenen File erkannt.")
         else:
-            _mon_lbl = ", ".join(_MON[m] for m in _sel_months)
-            _term_lbl = ", ".join(_reb) if len(_reb) <= 14 else f"{_reb[0]} … {_reb[-1]} ({len(_reb)})"
-            st.caption(f"**{len(_reb)} Termine** ({_mon_lbl}): {_term_lbl}")
             # Konfig-Signatur des Laufs (Termine + Buffer + ADTV) — ändert sie sich nach einem Lauf,
             # werden die gespeicherten Ergebnisse ausgeblendet (sie passen dann nicht mehr zur Steuerung).
-            _cfg = (tuple(_reb), bool(_mp_buffer), _mp_adtv)
+            _cfg = (tuple(_reb), bool(apply_buffer), bool(apply_size_buffer), bool(_mp_entry_cut),
+                    tuple(sorted(_helv_rules_from_sidebar().items())), new_adtv_dm, buffer_adtv_dm,
+                    bool(apply_spinoffs), bool(apply_ineligible),
+                    None if max_price_atvr is None else (max_closing_price, max_price_atvr,
+                                                         m_max_price_atvr))
+            _criteria_box("helvetica")
+
             if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
                 _RE = HELVETICA_RE_INDUSTRIES
-                _prev = set(); _prev_seg = {}; _comps = {}; _subs_by_date = {}; _rows = []
+                _prev = set(); _prev_seg = {}; _prev_ent = set()
+                _comps = {}; _subs_by_date = {}; _rows = []; _so_logs = []
                 _prog = st.progress(0, text="Starte…")
                 for _i, _sd in enumerate(_reb):
                     _prog.progress(_i / len(_reb), text=f"{_sd} ({_i + 1}/{len(_reb)})")
@@ -2746,22 +4030,53 @@ with tab_helvetica_mp:
                     _cif = float(china_if_map.get(_sdd, 0.20))
                     _snap = build_snapshot_from_master(master_data, _sd)
                     _gmu = build_new_universe(
-                        _snap.copy(), _cc, thailand_sec_type, max_closing_price,
-                        exclude_hk_cny, exclude_country_risk_na, exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                        _snap.copy(), _cc, thailand_sec_type,
+                        # Hochpreis-Regel wie in der Serie: im ATVR-Modus hier NICHT hart
+                        # schneiden, die Bedingung greift auf der Liquiditaets-Stufe.
+                        (None if max_price_atvr is not None else max_closing_price),
+                        exclude_hk_cny, exclude_country_risk_na, exclude_euro_mtf, exclude_etf_sicav,
                         _cif, atvr_mcap_col=atvr_mcap_col, excl_delisted=exclude_delisted,
                         excl_lon_usd_sec=exclude_lon_usd_sec,
                         fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb, fol_year=_sdd.year, fol_enabled=apply_fol)
                     _seed = (len(_prev) == 0)
-                    _inc = (_prev if (_mp_buffer and not _seed) else None)
-                    _pseg = (_prev_seg if (_mp_buffer and not _seed) else None)
+                    # ── Spin-off-Aufnahme ────────────────────────────────────
+                    # Helvetica fuehrt zwei Schluessel: die SELEKTIERTEN Konstituenten als ISIN
+                    # (Maintenance-Schwellen + Rang-Band) und die Segmente der Vorperiode je
+                    # Entity ID (Coverage-Hysterese). Das Seeding laeuft auf der Entity ID,
+                    # weil dort die Segmente liegen, aus denen das Kind erbt; die geseedeten
+                    # Entity IDs werden danach auf ISINs zurueckgespiegelt.
+                    _ent_all = _prev_seg  # {Entity ID: Segment} aus dem vollen Pool der Vorperiode
+                    _so_log = pd.DataFrame()
+                    _so_isin, _so_exempt_isin = set(), set()
+                    if apply_spinoffs and not _seed and len(spinoff_df):
+                        _ent_of = lambda d: d["Entity ID"].fillna("").astype(str).str.strip()
+                        _ent_keys, _ent_segs, _so_log = seed_spinoff_incumbents(
+                            _prev_ent, _ent_all, _sd, _snap, spinoff_df, key_fn=_ent_of)
+                        _new_ent = _ent_keys - _prev_ent
+                        _ex = spinoff_liquidity_exemptions(
+                            spinoff_df, _sd, _snap, incumbent_keys=_prev_ent,
+                            seeded_keys=_new_ent, key_fn=_ent_of)
+                        _e2i = dict(zip(_ent_of(_snap), _norm_isin(_snap["ISIN"])))
+                        _so_isin = {_e2i[e] for e in _new_ent if _e2i.get(e)}
+                        _so_exempt_isin = {_e2i[e] for e in _ex.get("3M", set()) if _e2i.get(e)}
+                        _prev_seg = _ent_segs
+                    _inc = ((_prev | _so_isin) if (apply_buffer and not _seed) else None)
+                    _pseg = (_prev_seg if (apply_size_buffer and not _seed) else None)
+                    _hp = dict(max_price=max_closing_price, max_price_atvr=max_price_atvr,
+                               m_max_price_atvr=(m_max_price_atvr if apply_buffer else None),
+                               rules=_helv_rules, adtv_maint_thr=_mp_adtv_maint)
+                    _gate = dict(adtv_exempt_isin=_so_exempt_isin, ineligible_df=ineligible_df,
+                                 apply_ineligible=apply_ineligible, selection_date=_sdd)
                     _helv, _full, _ = build_helvetica_pipeline(
                         _gmu, use_buffer=False, adtv_thr=_mp_adtv, incumbents_isin=_inc,
-                        prior_segments=_pseg, label_before_liquidity=label_before_liquidity)
+                        prior_segments=_pseg, label_before_liquidity=label_before_liquidity,
+                        entry_at_cutoff=_mp_entry_cut, **_hp, **_gate)
                     _comp, _ = build_helvetica_composite(_helv, _full, _RE, incumbents_isin=_inc)
                     _comps[_sd] = _comp
                     _subs_by_date[_sd] = build_swiss_size_subindices(
                         _gmu, adtv_thr=_mp_adtv, incumbents_isin=_inc, full=_full,
-                        label_before_liquidity=label_before_liquidity)
+                        label_before_liquidity=label_before_liquidity,
+                        entry_at_cutoff=_mp_entry_cut, **_hp, **_gate)
                     _sel = _comp[_comp["Type"].isin(["Equity", "Real Estate"])]
                     _cur = set(_norm_isin(_sel["ISIN"])) - {""}
                     # Universe-Kennzahlen: komplettes (dedupliziertes) CH-Universe inkl. Micro vs. L+M+S
@@ -2787,23 +4102,36 @@ with tab_helvetica_mp:
                         "Gehalten": "Seed" if _seed else len(_cur & _prev),
                         "Neu": "Seed" if _seed else len(_cur - _prev),
                         "Raus": "Seed" if _seed else len(_prev - _cur),
+                        "Spin-off-Seeds": len(_so_isin),
                         "Gewicht %": round(_comp["Index_Weight"].sum(), 2),
                     })
+                    if len(_so_log):
+                        _so_logs.append(_so_log)
                     _prev = _cur
                     # Vorperioden-Segmente (firmen-eben) für die ±5/±0,5-Hysterese der nächsten Periode
                     _prev_seg = dict(zip(_full["Entity ID"].fillna("").astype(str).str.strip(),
                                          _full["Segment_New"])) if len(_full) else {}
+                    # Entity IDs der SELEKTIERTEN Konstituenten — Basis fuer das Spin-off-Seeding
+                    # der Folgeperiode (die Mutter muss selektiert gewesen sein).
+                    _i2e = (dict(zip(_norm_isin(_full["ISIN"]),
+                                     _full["Entity ID"].fillna("").astype(str).str.strip()))
+                            if len(_full) else {})
+                    _prev_ent = {_i2e[i] for i in _cur if _i2e.get(i)}
                 _prog.progress(1.0, text="✅ Fertig")
                 st.session_state["helv_mp_comps"] = _comps
                 st.session_state["helv_mp_subs"] = _subs_by_date
                 st.session_state["helv_mp_summary"] = pd.DataFrame(_rows)
+                st.session_state["helv_mp_spinoff_log"] = (
+                    pd.concat(_so_logs, ignore_index=True) if _so_logs else pd.DataFrame())
+                st.session_state["helv_mp_settings"] = SETTINGS_NOW
                 st.session_state["helv_mp_cfg"] = _cfg
 
             # Stale-Guard: weicht die aktuelle Steuerung von der des letzten Laufs ab, alte Ergebnisse
             # ausblenden (session_state leeren) und zum Neustart auffordern — sonst zeigt die Anzeige
             # unten einen Lauf, der nicht mehr zu Frequenz/Jahren/Buffer/ADTV oben passt.
             if st.session_state.get("helv_mp_comps") and st.session_state.get("helv_mp_cfg") != _cfg:
-                for _k in ("helv_mp_comps", "helv_mp_subs", "helv_mp_summary", "helv_mp_cfg"):
+                for _k in ("helv_mp_comps", "helv_mp_subs", "helv_mp_summary",
+                           "helv_mp_spinoff_log", "helv_mp_settings", "helv_mp_cfg"):
                     st.session_state.pop(_k, None)
                 st.info("ℹ️ Einstellungen geändert — bitte den Multi-Period-Lauf erneut starten.")
 
@@ -2819,6 +4147,16 @@ with tab_helvetica_mp:
                            "„–\" = keine). Turnover (Gehalten/Neu/Raus) bezieht sich auf den selektierten "
                            "55%-Teil (Equity + Real Estate); die 45% statisch (Cash/ETFs) sind konstant.")
                 st.dataframe(st.session_state["helv_mp_summary"], width="stretch", hide_index=True)
+
+                _solog = st.session_state.get("helv_mp_spinoff_log")
+                if _solog is not None and len(_solog):
+                    with st.expander(f"🌱 Spin-off-Protokoll ({len(_solog)} Einträge)", expanded=False):
+                        st.caption("Ein aus einem Helvetica-Konstituenten abgespaltener Titel wird beim "
+                                   "Ereignis als BESTANDSTITEL aufgenommen: Maintenance-Schwellen, "
+                                   "Rang-Band 8/13 und das geerbte Segment gelten ab sofort. "
+                                   "„verworfen\" heißt, die Mutter war in der Vorperiode nicht selektiert "
+                                   "oder das Kind hat am Termin noch keine Daten.")
+                        st.dataframe(_solog, width="stretch", hide_index=True)
 
                 st.markdown("### 🔍 Termin-Detail")
                 _pk = st.selectbox("Termin", _keys, index=len(_keys) - 1, key="helv_mp_pick")
@@ -2852,7 +4190,9 @@ with tab_helvetica_mp:
                         _detail_export[f"Swiss {_seg}"] = _sdf
                 st.download_button(
                     f"⬇️ Termin-Detail {_pk} herunterladen (Excel)",
-                    data=to_excel_multi(_detail_export),
+                    data=to_excel_multi({**_detail_export,
+                                         "Settings": st.session_state.get("helv_mp_settings",
+                                                                         SETTINGS_NOW)}),
                     file_name=f"Helvetica_Composition_{_pk.replace('-', '')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="helv_mp_dl_detail")
@@ -2875,7 +4215,9 @@ with tab_helvetica_mp:
                 st.download_button(
                     "⬇️ Helvetica Multi-Period Export (Excel)",
                     data=to_excel_multi({"Summary": st.session_state["helv_mp_summary"],
-                                         "Long": _long, "Weight Matrix": _wide}),
+                                         "Long": _long, "Weight Matrix": _wide,
+                                         "Settings": st.session_state.get("helv_mp_settings",
+                                                                         SETTINGS_NOW)}),
                     file_name=f"Helvetica_MultiPeriod_{_keys[0]}_to_{_keys[-1]}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="helv_mp_dl")
 
@@ -2958,6 +4300,8 @@ with tab_multi:
                      "die gewählten Produkte sind konsistente Slices davon (build_index)."
             )
 
+            _criteria_box("serie")
+
             run_btn = st.button("▶️ Multi-Period Run starten", type="primary", key="multi_run_btn",
                                  disabled=(len(indices_to_run) == 0))
 
@@ -2967,6 +4311,7 @@ with tab_multi:
                 # (= investierbares Universe L+M+S der Vorperiode) → ein Titel hat genau
                 # EINE Size-Klasse über alle Produkte hinweg.
                 results_per_index = {code: {} for code in indices_to_run}   # {code: {sd_iso: constituents}}
+                iu_per_index = {code: {} for code in indices_to_run}        # {code: {sd_iso: investable universe}}
                 prev_isin = set()                                   # globaler Membership-Incumbent-State
                 prev_seg = {}                                       # globaler {ISIN: Segment} für Size Buffer
                 prev_prod_isin = {code: set() for code in indices_to_run}   # je Produkt (Turnover-Stats)
@@ -2974,6 +4319,8 @@ with tab_multi:
                 _has_tm = any(INDEX_BY_CODE[c].get("eumss_off") for c in indices_to_run)  # Total-Markets-Produkt gewählt?
                 prev_isin_tm = set(); prev_seg_tm = {}   # eigener Incumbent-State für den EUMSS-losen TM-Lauf
                 _eumss_by_period = {}
+                _si_by_period = {}    # {sd_iso: (R85, T_DM, T_EM, fills, blocked, max_cov)}
+                _so_logs = []         # Spin-off-Protokoll je Periode
                 summary_rows = []
 
                 progress = st.progress(0, text="Starte Multi-Period-Lauf...")
@@ -2987,26 +4334,45 @@ with tab_multi:
                     df_snapshot = build_snapshot_from_master(master_data, sd_iso)
                     is_seed = (len(prev_isin) == 0)
 
+                    # Spin-off-Seeds dieses Termins in den Incumbent-State einsetzen.
+                    # is_seed bleibt bewusst auf prev_isin berechnet: in der Startperiode
+                    # gibt es keine Muetter, ein Seed wuerde dort ohnehin verworfen.
+                    _so_keys, _so_segs, _so_log = seed_spinoff_incumbents(
+                        prev_isin, prev_seg, sd_iso, df_snapshot,
+                        spinoff_df if apply_spinoffs else None)
+                    _so_seeded = _so_keys - set(prev_isin)
+                    # Liquiditaets-Ausnahme je Horizont: haengt am Ex-Date, nicht am Seed,
+                    # damit ein Kind auch am Folgetermin nicht an der 6M-Huerde scheitert.
+                    _so_exempt = spinoff_liquidity_exemptions(
+                        spinoff_df if apply_spinoffs else None, sd_iso, df_snapshot,
+                        incumbent_keys=prev_isin, seeded_keys=_so_seeded)
+                    if len(_so_log):
+                        _so_logs.append(_so_log)
+
                     # EIN Pipeline-Lauf pro Periode mit globalem Incumbent-State
                     result = run_selection_pipeline(
                         df_snapshot.copy(), _country_cls, _china_if_period, sd_dt.year,
                         thailand_sec_type, max_closing_price,
                         exclude_hk_cny, exclude_country_risk_na,
-                        exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                        exclude_euro_mtf, exclude_etf_sicav,
                         large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
                         new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
                         fol_matrix, fol_sector_fb, apply_fol,
                         if_cum_col, atvr_mcap_col,
-                        incumbents_isin=prev_isin,
+                        max_price_atvr=max_price_atvr, m_max_price_atvr=m_max_price_atvr,
+                        incumbents_isin=_so_keys,
+                        liquidity_exempt_missing=_so_exempt,
                         apply_buffer=apply_buffer and not is_seed,
                         buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
                         buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
                         buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
                         apply_size_buffer=apply_size_buffer and not is_seed,
-                        incumbent_segments=prev_seg, size_buffer_pp=size_buffer_pp,
-                        asym_buffer=asym_buffer,
+                        incumbent_segments=_so_segs, size_buffer_pp=size_buffer_pp,
+                        asym_buffer=asym_buffer, entry_at_cutoff=entry_at_cutoff,
+                        size_buffer_pp_ms=size_buffer_pp_ms,
                         msci_logic=msci_logic,
                         apply_small_buffer=apply_small_buffer, small_buffer_pp=small_buffer_pp,
+                        apply_size_integrity=apply_size_integrity, si_k=si_k, si_edge_pp=si_edge_pp,
                         exclude_lon_usd_sec=exclude_lon_usd_sec,
                         ineligible_df=ineligible_df,
                         apply_ineligible=apply_ineligible,
@@ -3014,32 +4380,58 @@ with tab_multi:
                         label_before_liquidity=label_before_liquidity,
                     )
                     _gmc = result["gm_complete"]
+                    if len(_so_log):
+                        _so_logs[-1] = _spinoff_outcome(
+                            _spinoff_adtv_note(_so_log, df_snapshot), _gmc, _so_seeded)
+                    _so_hz = _spinoff_horizon_rows(
+                        spinoff_df if apply_spinoffs else None, _so_exempt, sd_iso,
+                        df_snapshot, _so_seeded)
+                    if _so_hz is not None:
+                        _so_logs.append(_spinoff_outcome(_so_hz, _gmc, set()))
                     _eumss_by_period[sd_iso] = (float(result.get("eumss_full") or 0.0),
                                                 float(result.get("eumss_ff") or 0.0))
+                    if apply_size_integrity:
+                        _si_by_period[sd_iso] = (float(result.get("si_r85") or 0.0),
+                                                 float(result.get("si_threshold") or 0.0),
+                                                 float(result.get("si_threshold_em") or 0.0),
+                                                 int(result.get("si_filled_n") or 0),
+                                                 int(result.get("si_blocked_n") or 0),
+                                                 float(result.get("si_max_coverage") or 0.0))
 
                     # Total-Markets-Lauf (EUMSS-Floor AUS) — nur wenn ein eumss_off-Produkt gewählt ist.
                     # Eigener Incumbent-State (prev_isin_tm/prev_seg_tm); sonst identische Settings.
                     _gmc_tm = None
                     if _has_tm:
+                        _so_keys_tm, _so_segs_tm, _ = seed_spinoff_incumbents(
+                            prev_isin_tm, prev_seg_tm, sd_iso, df_snapshot,
+                            spinoff_df if apply_spinoffs else None)
+                        _so_seeded_tm = _so_keys_tm - set(prev_isin_tm)
+                        _so_exempt_tm = spinoff_liquidity_exemptions(
+                            spinoff_df if apply_spinoffs else None, sd_iso, df_snapshot,
+                            incumbent_keys=prev_isin_tm, seeded_keys=_so_seeded_tm)
                         _res_tm_mp = run_selection_pipeline(
                             df_snapshot.copy(), _country_cls, _china_if_period, sd_dt.year,
                             thailand_sec_type, max_closing_price,
                             exclude_hk_cny, exclude_country_risk_na,
-                            exclude_naics_funds, exclude_euro_mtf, exclude_etf_sicav,
+                            exclude_euro_mtf, exclude_etf_sicav,
                             large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
                             new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
                             fol_matrix, fol_sector_fb, apply_fol,
                             if_cum_col, atvr_mcap_col,
-                            incumbents_isin=prev_isin_tm,
+                            max_price_atvr=max_price_atvr, m_max_price_atvr=m_max_price_atvr,
+                            incumbents_isin=_so_keys_tm,
+                            liquidity_exempt_missing=_so_exempt_tm,
                             apply_buffer=apply_buffer and not is_seed,
                             buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
                             buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
                             buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
                             apply_size_buffer=apply_size_buffer and not is_seed,
-                            incumbent_segments=prev_seg_tm, size_buffer_pp=size_buffer_pp,
-                            asym_buffer=asym_buffer,
+                            incumbent_segments=_so_segs_tm, size_buffer_pp=size_buffer_pp,
+                            asym_buffer=asym_buffer, entry_at_cutoff=entry_at_cutoff,
+                            size_buffer_pp_ms=size_buffer_pp_ms,
                             msci_logic=msci_logic,
                             apply_small_buffer=False,  # TM läuft IMMER bis 100% — kein 99/99,5-Cut, auch wenn Toggle global an
+                            apply_size_integrity=False,  # TM ist All Cap: Small→Mid ändert die Konstituentenmenge nicht
                             eumss_enabled=False,
                             exclude_lon_usd_sec=exclude_lon_usd_sec,
                             ineligible_df=ineligible_df,
@@ -3061,7 +4453,20 @@ with tab_multi:
                                            incumbents_isin=(prev_prod_ckey[code] if _use_rank_buf else None),
                                            buffer_hard=_ix.get("buffer_hard"), buffer_exit=_ix.get("buffer_exit"),
                                            cap=_ix.get("cap"), apply_cap=st.session_state.get("apply_cap", False))
+                        if _so_seeded and len(cons):
+                            cons["Spinoff_Seeded"] = _match_key(cons).isin(_so_seeded)
                         results_per_index[code][sd_iso] = cons
+
+                        # Investable Universe im Scope DIESES Produkts: gleiche Region- und
+                        # Industrie-Maske, aber alle IMI-Segmente und kein top_n — also die
+                        # Menge, aus der das Produkt selektiert. Für NX-EU-* somit nur Europa.
+                        # Im_Index markiert, welche davon es in den Index geschafft haben.
+                        _src_res = _res_tm_mp if (_ix.get("eumss_off") and _gmc_tm is not None) else result
+                        _iu = _iu_with_status(_src_gmc, _ix, cons, prev_prod_isin[code],
+                                              prev_seg, mid_thr,
+                                              pool_symbols=set(_src_res["gm_liq_cov"]["Symbol"].dropna()))
+                        iu_per_index[code][sd_iso] = _iu[[c for c in _IU_KEEP_COLS if c in _iu.columns]].copy()
+
                         # Company-Keys dieser Periode merken (für den Rang-Band-Buffer nächste Periode)
                         if _ix.get("buffer_hard"):
                             _ck = cons.get("Entity ID")
@@ -3076,9 +4481,12 @@ with tab_multi:
                                  if "Size_Buffer_Held" in cons.columns else 0)
                         _kept_std = (int(cons["Kept_In_Standard_By_Buffer"].fillna(False).sum())
                                      if "Kept_In_Standard_By_Buffer" in cons.columns else 0)
+                        _si_fill = (int(cons["Size_Integrity_Filled"].fillna(False).sum())
+                                    if "Size_Integrity_Filled" in cons.columns else 0)
                         summary_rows.append({
                             "Selection Date": sd_iso,
                             "Index": _ix["name"],
+                            "Investable Universe": len(_iu),
                             "Konstituenten": len(cons),
                             "Incumbents (Vorperiode)": len(prev),
                             "Davon gehalten": len(cur & prev),
@@ -3088,6 +4496,9 @@ with tab_multi:
                             "Index-Größe Δ": len(cur) - len(prev) if not is_seed else "—",
                             "Held by Size Buffer": _held if (apply_size_buffer and not is_seed) else ("Seed" if is_seed else 0),
                             "Kept in Standard (Buffer)": _kept_std if not is_seed else "Seed",
+                            "Size-Integrity Fills": _si_fill if apply_size_integrity else "—",
+                            "Spin-off-Seeds": (int(cons["Spinoff_Seeded"].fillna(False).sum())
+                                              if "Spinoff_Seeded" in cons.columns else 0),
                         })
                         prev_prod_isin[code] = cur
 
@@ -3108,7 +4519,12 @@ with tab_multi:
 
                 # Save to session state for export & display
                 st.session_state["multi_results"] = results_per_index
+                st.session_state["multi_settings"] = SETTINGS_NOW
+                st.session_state["multi_spinoff_log"] = (
+                    pd.concat(_so_logs, ignore_index=True) if _so_logs else pd.DataFrame())
+                st.session_state["multi_iu"] = iu_per_index
                 st.session_state["multi_eumss"] = _eumss_by_period
+                st.session_state["multi_si"] = _si_by_period
                 _summary_df_run = pd.DataFrame(summary_rows)
                 st.session_state["multi_summary"] = _summary_df_run
                 # Detail-Ansicht nach jedem Lauf auf die letzte Periode defaulten
@@ -3146,424 +4562,291 @@ with tab_multi:
                 st.markdown("### 📊 Multi-Period Summary")
                 st.dataframe(_summary_df, width='stretch', hide_index=True)
 
-                # Detail-Picker pro Period+Index
-                st.markdown("### 🔍 Detail-Ansicht")
-                _di1, _di2 = st.columns(2)
-                with _di1:
-                    _sel_idx = st.selectbox("Index",
-                                              options=list(_results.keys()),
-                                              format_func=lambda c: INDEX_BY_CODE.get(c, {}).get("name", c),
-                                              key="multi_detail_idx2")
-                _sel_name = INDEX_BY_CODE.get(_sel_idx, {}).get("name", _sel_idx)
-                with _di2:
-                    _det_periods = sorted(_results[_sel_idx].keys())
-                    # Default = letzte Periode; persistierten/ungültigen State auf letzte korrigieren
-                    if st.session_state.get("multi_detail_period") not in _det_periods:
-                        st.session_state["multi_detail_period"] = _det_periods[-1]
-                    _sel_period = st.selectbox("Period",
-                                                 options=_det_periods,
-                                                 key="multi_detail_period")
+                # Kompletter Ergebnisblock (Detail, Characteristics, Exporte,
+                # Matrizen, Tenure) — geteilt mit dem Europe-MP-Tab.
+                render_mp_results("multi")
 
-                if _sel_idx and _sel_period:
-                    _det = _results[_sel_idx][_sel_period]
-                    st.caption(f"**{_sel_name}** am **{_sel_period}** — {len(_det)} Konstituenten, "
-                               f"FF MCap total: {format_bn(_det['Free Float MCap Y2025'].sum())}, "
-                               f"Adj. FF MCap: {format_bn(_det['Adj_FF_MCap'].sum())}")
 
-                    _show_cols = [c for c in [
-                        "Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country",
-                        "Segment_New", "Free Float Percent", "Total MCap Y2025",
-                        "Share MCap Y2025", "Free Float MCap Y2025", "FOL_Value", "IF", "Adj_FF_MCap", "Index_Weight"
-                    ] if c in _det.columns]
-                    _det_show = clean_export_cols(with_fol_breakdown(
-                        _det[_show_cols].sort_values("Index_Weight", ascending=False).reset_index(drop=True)))
-                    st.dataframe(_det_show.head(50), width='stretch', hide_index=True)
-                    if len(_det) > 50:
-                        st.caption(f"… {len(_det)-50} weitere — vollständig im Excel-Export verfügbar.")
-                    st.download_button(
-                        "📥 Detail-Ansicht herunterladen (alle Konstituenten)",
-                        data=to_excel_one(_det_show, "Constituents"),
-                        file_name=f"{_sel_idx}_{_sel_period}_constituents.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_detail",
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 9: Europe MP (Pooled) — Developed Europe als EIN Markt segmentiert
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_europe_mp:
+    st.markdown("## 🇪🇺 Europe MP — Developed Europe als ein Markt")
+    st.caption(
+        "Research-Variante: der Coverage-Waterfall läuft für alle DM-Europa-Titel unter EINEM "
+        "gemeinsamen Nenner statt je Land (MSCI §2.2). Ein einziger Größen-Cutoff für ganz Europa. "
+        "Eigener Pipeline-Lauf, eigener Incumbent-State — GIMI-Tab und Multi-Period-Tab bleiben "
+        "unverändert auf der Baseline (je Land)."
+    )
+    st.info(
+        "⚠️ **Nicht die publizierte Methodik.** Die Index Guideline segmentiert je Land. "
+        "Pooling verschiebt außerdem NX-DM-LM und NX-GM-LM mit, weil NX-EU-LM ⊆ NX-DM-LM ⊆ NX-GM-LM "
+        "gilt: was Europa hier verliert, fehlt dort ebenfalls."
+    )
+
+    if data_mode != "Master File (Multi-Period)":
+        st.info("ℹ️ Dieser Tab erfordert den **Master File (Multi-Period)** Modus. "
+                "Bitte oben in der Sidebar umschalten und ein Master-File hochladen.")
+    elif master_data is None:
+        st.warning("⚠️ Bitte zuerst ein Master-File in der Sidebar hochladen.")
+    else:
+        _ep_dates = master_data["detected_dates"]
+        st.caption(f"Master-File: **{len(_ep_dates)}** Selection Dates erkannt "
+                   f"({_ep_dates[0]} bis {_ep_dates[-1]})")
+
+        _ep1, _ep2 = st.columns(2)
+        with _ep1:
+            _ep_start = st.selectbox("Start-Periode (Seed)", options=_ep_dates, index=0,
+                                     key="eupool_start",
+                                     help="Erste Periode. Keine Incumbents, alle Titel laufen "
+                                          "durch die Entry-Schwellen.")
+        with _ep2:
+            _ep_end = st.selectbox("End-Periode", options=_ep_dates, index=len(_ep_dates) - 1,
+                                   key="eupool_end")
+
+        _ep_periods = [d for d in _ep_dates if _ep_start <= d <= _ep_end]
+        if not _ep_periods:
+            st.error("❌ Ungültiger Date-Range.")
+        else:
+            _ep3, _ep4 = st.columns(2)
+            with _ep3:
+                _ep_floor = st.number_input(
+                    "Länder-Mindestbesetzung (0 = aus)", min_value=0, max_value=50, value=0, step=1,
+                    key="eupool_floor",
+                    help="Backstop gegen die Ausdünnung kleiner Märkte: fällt ein Europa-Land unter "
+                         "diese Zahl Standard-Titel, werden seine größten Small Caps zu Mid Cap "
+                         "hochgezogen. ACHTUNG: das ist KEINE MSCI-Regel. MSCIs Index Continuity "
+                         "Rule (§2.4 GIMI, min. 5 DM / 3 EM) greift pro MARKT, und DM Europa ist "
+                         "bei MSCI EIN Markt — die Klammer schützt dort also nicht die einzelnen "
+                         "Länder. 0 = reiner Pooling-Effekt (= MSCI-nah).")
+            with _ep4:
+                _ep_codes = [ix["code"] for ix in INDEX_SERIES if ix["region"] == "EU"]
+                _ep_sel = st.multiselect(
+                    "Welche Europe-Produkte berechnen?", options=_ep_codes, default=["NX-EU-LM"],
+                    format_func=lambda c: f"{c} · {INDEX_BY_CODE[c]['name']}",
+                    key="eupool_indices",
+                    help="Pro Periode läuft die Pipeline EINMAL (gepoolt); die Produkte sind "
+                         "konsistente build_index-Slices davon.")
+
+            st.caption(f"📅 Geplante Periods: **{len(_ep_periods)}** "
+                       f"({_ep_periods[0]} → {_ep_periods[-1]})")
+
+            _criteria_box("serie")
+
+            _ep_run = st.button("▶️ Europe-Pooled Run starten", type="primary",
+                                key="eupool_run_btn", disabled=(len(_ep_sel) == 0))
+
+            if _ep_run:
+                _ep_results = {code: {} for code in _ep_sel}
+                _ep_prev_isin = set()
+                _ep_prev_seg = {}
+                _ep_prev_prod = {code: set() for code in _ep_sel}
+                _ep_prev_ckey = {code: set() for code in _ep_sel}
+                _ep_iu = {code: {} for code in _ep_sel}     # Investable Universe je Produkt/Periode
+                _ep_rows = []
+                _ep_cutoffs = {}
+                _ep_country = {}
+                _so_logs = []     # Spin-off-Protokoll je Periode
+                _ep_eumss = {}    # {sd_iso: (EUMSS Full, EUMSS FF)}  -> Index Characteristics
+                _ep_si = {}       # {sd_iso: (R85, T_DM, T_EM, fills, blocked, max_cov)}
+
+                _ep_prog = st.progress(0, text="Starte Europe-Pooled-Lauf...")
+                _ep_total = len(_ep_periods)
+
+                for _pi, sd_iso in enumerate(_ep_periods):
+                    _ep_prog.progress(_pi / max(_ep_total, 1),
+                                      text=f"Period {sd_iso} ({_pi+1}/{_ep_total})")
+                    sd_dt = pd.Timestamp(sd_iso).date()
+                    _cc = get_classification_dict(hc_df, sd_dt)
+                    _cif = float(china_if_map.get(sd_dt, 0.20))
+                    _snap = build_snapshot_from_master(master_data, sd_iso)
+                    _is_seed = (len(_ep_prev_isin) == 0)
+
+                    _so_keys, _so_segs, _so_log = seed_spinoff_incumbents(
+                        _ep_prev_isin, _ep_prev_seg, sd_iso, _snap,
+                        spinoff_df if apply_spinoffs else None)
+                    _so_seeded = _so_keys - set(_ep_prev_isin)
+                    _so_exempt = spinoff_liquidity_exemptions(
+                        spinoff_df if apply_spinoffs else None, sd_iso, _snap,
+                        incumbent_keys=_ep_prev_isin, seeded_keys=_so_seeded)
+                    if len(_so_log):
+                        _so_logs.append(_so_log)
+
+                    _res = run_selection_pipeline(
+                        _snap.copy(), _cc, _cif, sd_dt.year,
+                        thailand_sec_type, max_closing_price,
+                        exclude_hk_cny, exclude_country_risk_na,
+                        exclude_euro_mtf, exclude_etf_sicav,
+                        large_thr, mid_thr, small_thr, min_ff_pct, new_eumss_ff_ratio,
+                        new_adtv_dm, new_adtv_em, new_atvr_dm, new_atvr_em,
+                        fol_matrix, fol_sector_fb, apply_fol,
+                        if_cum_col, atvr_mcap_col,
+                        max_price_atvr=max_price_atvr, m_max_price_atvr=m_max_price_atvr,
+                        incumbents_isin=_so_keys,
+                        liquidity_exempt_missing=_so_exempt,
+                        apply_buffer=apply_buffer and not _is_seed,
+                        buffer_min_ff=buffer_min_ff, buffer_coverage=buffer_coverage,
+                        buffer_adtv_dm=buffer_adtv_dm, buffer_adtv_em=buffer_adtv_em,
+                        buffer_atvr_dm=buffer_atvr_dm, buffer_atvr_em=buffer_atvr_em,
+                        apply_size_buffer=apply_size_buffer and not _is_seed,
+                        incumbent_segments=_so_segs, size_buffer_pp=size_buffer_pp,
+                        asym_buffer=asym_buffer, entry_at_cutoff=entry_at_cutoff,
+                        size_buffer_pp_ms=size_buffer_pp_ms,
+                        msci_logic=msci_logic,
+                        apply_small_buffer=apply_small_buffer, small_buffer_pp=small_buffer_pp,
+                        apply_size_integrity=apply_size_integrity, si_k=si_k, si_edge_pp=si_edge_pp,
+                        exclude_lon_usd_sec=exclude_lon_usd_sec,
+                        ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
+                        selection_date=sd_dt,
+                        label_before_liquidity=label_before_liquidity,
+                        europe_pool=True, min_per_country=int(_ep_floor),
                     )
+                    _gmc = _res["gm_complete"]
+                    if len(_so_log):
+                        _so_logs[-1] = _spinoff_outcome(
+                            _spinoff_adtv_note(_so_log, _snap), _gmc, _so_seeded)
+                    _so_hz = _spinoff_horizon_rows(
+                        spinoff_df if apply_spinoffs else None, _so_exempt, sd_iso,
+                        _snap, _so_seeded)
+                    if _so_hz is not None:
+                        _so_logs.append(_spinoff_outcome(_so_hz, _gmc, set()))
+                    _ep_cutoffs[sd_iso] = float(_res.get("europe_pool_cutoff") or 0.0)
+                    _ep_eumss[sd_iso] = (float(_res.get("eumss_full") or 0.0),
+                                         float(_res.get("eumss_ff") or 0.0))
+                    if apply_size_integrity:
+                        _ep_si[sd_iso] = (float(_res.get("si_r85") or 0.0),
+                                          float(_res.get("si_threshold") or 0.0),
+                                          float(_res.get("si_threshold_em") or 0.0),
+                                          int(_res.get("si_filled_n") or 0),
+                                          int(_res.get("si_blocked_n") or 0),
+                                          float(_res.get("si_max_coverage") or 0.0))
+                    _promoted = int(_gmc.get("Country_Floor_Promoted",
+                                             pd.Series(dtype=bool)).fillna(False).sum())
 
-                    # ── DM/EM Country Breakdown + Gewicht-Chart (GIMI-Stil) für die gewählte Periode ──
-                    st.markdown("---")
+                    for code in _ep_sel:
+                        _ix = INDEX_BY_CODE[code]
+                        _use_rank_buf = bool(apply_buffer and not _is_seed and _ix.get("buffer_hard"))
+                        cons = build_index(_gmc, _ix["region"], _ix["segments"],
+                                           industries=_ix.get("industries"), top_n=_ix.get("top_n"),
+                                           incumbents_isin=(_ep_prev_ckey[code] if _use_rank_buf else None),
+                                           buffer_hard=_ix.get("buffer_hard"),
+                                           buffer_exit=_ix.get("buffer_exit"),
+                                           cap=_ix.get("cap"),
+                                           apply_cap=st.session_state.get("apply_cap", False))
+                        if _so_seeded and len(cons):
+                            cons["Spinoff_Seeded"] = _match_key(cons).isin(_so_seeded)
+                        _ep_results[code][sd_iso] = cons
+                        _iu = _iu_with_status(_gmc, _ix, cons, _ep_prev_prod[code], _ep_prev_seg,
+                                              mid_thr,
+                                              pool_symbols=set(_res["gm_liq_cov"]["Symbol"].dropna()))
+                        _ep_iu[code][sd_iso] = _iu[[c for c in _IU_KEEP_COLS if c in _iu.columns]].copy()
+                        if _ix.get("buffer_hard"):
+                            _ck = cons.get("Entity ID")
+                            if _ck is not None:
+                                _ck = _ck.fillna("").astype(str).str.strip()
+                                _ck = _ck.where(_ck != "", _norm_isin(cons["ISIN"]))
+                                _ep_prev_ckey[code] = set(_ck) - {""}
 
-                    def _country_table_mp(df_cls, cls_adj):
-                        ct = df_cls.groupby(df_cls["Mapping Country"].fillna("—")).agg(
-                            Stocks=("Symbol", "count"),
-                            FF_MCap=("Free Float MCap Y2025", "sum"),
-                            Adj_MCap=("Adj_FF_MCap", "sum"),
-                            Avg_MCap=("Adj_FF_MCap", "mean"),
-                        ).reset_index().sort_values("Adj_MCap", ascending=False)
-                        ct["FF MCap"] = ct["FF_MCap"].apply(format_bn)
-                        ct["Avg Adj. MCap"] = ct["Avg_MCap"].apply(format_bn)
-                        ct["Weight %"] = ((ct["Adj_MCap"] / cls_adj * 100).apply(lambda x: f"{x:.2f}%")
-                                          if cls_adj > 0 else "—")
-                        return ct[["Mapping Country", "Stocks", "FF MCap", "Avg Adj. MCap", "Weight %"]].rename(
-                            columns={"Mapping Country": "Land"})
+                        _cur = set(cons["ISIN"].dropna().astype(str).str.strip().str.upper())
+                        _prev = _ep_prev_prod[code]
+                        _ep_rows.append({
+                            "Selection Date": sd_iso,
+                            "Index": _ix["name"],
+                            "Konstituenten": len(cons),
+                            "Pool-Cutoff (Total MCap)": format_bn(_ep_cutoffs[sd_iso]),
+                            "Neueinsteiger": len(_cur - _prev) if not _is_seed else "Seed",
+                            "Abgänge": len(_prev - _cur) if not _is_seed else "Seed",
+                            "Index-Größe Δ": len(_cur) - len(_prev) if not _is_seed else "—",
+                            "Floor-Promotions": _promoted if _ep_floor > 0 else "—",
+                            "Spin-off-Seeds": (int(cons["Spinoff_Seeded"].fillna(False).sum())
+                                              if "Spinoff_Seeded" in cons.columns else 0),
+                        })
+                        _ep_prev_prod[code] = _cur
+                        # Länderverteilung nur für das erste gewählte Produkt (Referenz)
+                        if code == _ep_sel[0] and "Mapping Country" in cons.columns:
+                            _ep_country[sd_iso] = cons["Mapping Country"].value_counts()
 
-                    _dm_sel = _det[_det["Classification"] == "DM"]
-                    _em_sel = _det[_det["Classification"] == "EM"]
-                    st.caption(f"**Country Breakdown — {_sel_name} am {_sel_period}** · "
-                               f"{len(_dm_sel)} DM / {len(_em_sel)} EM · Weight % je relativ zur eigenen DM-/EM-Gruppe")
-                    _ccp1, _ccp2 = st.columns(2)
-                    with _ccp1:
-                        st.markdown(f"**DM Country Breakdown ({len(_dm_sel):,} Stocks)**")
-                        st.dataframe(_country_table_mp(_dm_sel, _dm_sel["Adj_FF_MCap"].sum()),
-                                     width='stretch', hide_index=True)
-                    with _ccp2:
-                        st.markdown(f"**EM Country Breakdown ({len(_em_sel):,} Stocks)**")
-                        st.dataframe(_country_table_mp(_em_sel, _em_sel["Adj_FF_MCap"].sum()),
-                                     width='stretch', hide_index=True)
+                    _inv = _gmc[_gmc["Segment_New"].isin(["Large Cap", "Mid Cap", "Small Cap"])]
+                    _ik = _match_key(_inv)
+                    _ep_prev_isin = set(_ik)
+                    _ep_prev_seg = {i: s for i, s in zip(_ik.values, _inv["Segment_New"].values) if i}
 
-                    st.markdown("**Nach Gewicht (Adj. FF MCap %)** — Anteil am Index")
-                    _tot_adj = _det["Adj_FF_MCap"].sum()
-                    if _tot_adj > 0:
-                        _gw1, _gw2 = st.columns(2)
-                        with _gw1:
-                            st.markdown("**Nach Land**")
-                            _byw = _det.groupby("Mapping Country").agg(Adj=("Adj_FF_MCap", "sum")).reset_index()
-                            _byw["Weight%"] = (_byw["Adj"] / _tot_adj * 100).round(2)
-                            _byw = _byw.sort_values("Adj", ascending=False)
-                            _top30 = _byw.head(30)
-                            _rest = _byw.iloc[30:]
-                            if len(_rest):
-                                _top30 = pd.concat([pd.DataFrame([{"Mapping Country": f"Others ({len(_rest)})",
-                                    "Adj": _rest["Adj"].sum(), "Weight%": _rest["Weight%"].sum()}]), _top30])
-                            _top30 = _top30.sort_values("Adj", ascending=True)
-                            _figw = go.Figure(go.Bar(x=_top30["Weight%"], y=_top30["Mapping Country"],
-                                orientation="h", marker_color="#ce93d8",
-                                text=_top30["Weight%"].apply(lambda x: f"{x:.2f}%"), textposition="outside"))
-                            _figw.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
-                                height=700, margin=dict(t=10, b=10, l=10, r=60), xaxis=dict(showgrid=False))
-                            st.plotly_chart(_figw, width='stretch')
-                        with _gw2:
-                            st.markdown("**Nach Sektor (FactSet Economy)**")
-                            _sec = _det.get("FactSet Economy")
-                            if _sec is None:
-                                _sec = pd.Series(["—"] * len(_det), index=_det.index)
-                            _secvals = _sec.fillna("—").astype(str).str.strip().replace("", "—")
-                            _bys = (_det.assign(_Sector=_secvals)
-                                        .groupby("_Sector").agg(Adj=("Adj_FF_MCap", "sum")).reset_index())
-                            _bys["Weight%"] = (_bys["Adj"] / _tot_adj * 100).round(2)
-                            _bys = _bys.sort_values("Adj", ascending=True)
-                            _figs = go.Figure(go.Bar(x=_bys["Weight%"], y=_bys["_Sector"],
-                                orientation="h", marker_color="#2979ff",
-                                text=_bys["Weight%"].apply(lambda x: f"{x:.2f}%"), textposition="outside"))
-                            _figs.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
-                                height=470, margin=dict(t=10, b=10, l=10, r=60), xaxis=dict(showgrid=False))
-                            st.plotly_chart(_figs, width='stretch')
+                _ep_prog.progress(1.0, text=f"✅ Fertig: {_ep_total} Perioden × {len(_ep_sel)} Produkte.")
 
-                            # Kleiner DM/EM-Gesamtanteil als flacher Balken — rechte Spalte
-                            # (Sektor + DM/EM) ergibt zusammen ~ die Höhe des Länder-Graphen links.
-                            st.markdown("**DM vs EM (Gesamtanteil)**")
-                            _dm_adj = _det.loc[_det["Classification"] == "DM", "Adj_FF_MCap"].sum()
-                            _em_adj = _det.loc[_det["Classification"] == "EM", "Adj_FF_MCap"].sum()
-                            _tot2 = _dm_adj + _em_adj
-                            if _tot2 > 0:
-                                _dm_w = round(_dm_adj / _tot2 * 100, 2)
-                                _em_w = round(_em_adj / _tot2 * 100, 2)
-                                _figd = go.Figure(go.Bar(
-                                    x=[_em_w, _dm_w], y=["EM", "DM"], orientation="h",
-                                    marker_color=["#ce93d8", "#2979ff"],
-                                    text=[f"{_em_w:.2f}%", f"{_dm_w:.2f}%"], textposition="outside"))
-                                _figd.update_layout(template="plotly_dark", paper_bgcolor="#0f1117", plot_bgcolor="#161b27",
-                                    height=180, margin=dict(t=10, b=10, l=10, r=60),
-                                    xaxis=dict(showgrid=False, range=[0, 100]))
-                                st.plotly_chart(_figd, width='stretch')
-                            else:
-                                st.caption("Keine DM/EM-Daten für diese Periode.")
-                    else:
-                        st.caption("Keine Adj. FF MCap-Daten für diese Periode.")
+                st.session_state["eupool_results"] = _ep_results
+                st.session_state["eupool_settings"] = SETTINGS_NOW
+                st.session_state["eupool_spinoff_log"] = (
+                    pd.concat(_so_logs, ignore_index=True) if _so_logs else pd.DataFrame())
+                st.session_state["eupool_iu"] = _ep_iu
+                st.session_state["eupool_summary"] = pd.DataFrame(_ep_rows)
+                st.session_state["eupool_cutoffs"] = _ep_cutoffs
+                st.session_state["eupool_country"] = _ep_country
+                st.session_state["eupool_eumss"] = _ep_eumss
+                st.session_state["eupool_si"] = _ep_si
+                st.session_state["eupool_detail_period"] = _ep_periods[-1]
 
-                # ── Index Characteristics pro Periode ───────────────────────────
-                # Wie das MSCI-Factsheet: Anzahl Konstituenten + Mkt-Cap-Kennzahlen
-                # (Index/Largest/Smallest/Avg/Median) je MCap-Basis, plus DM/EM-Gewicht.
-                # Für den in der Detail-Ansicht gewählten Index (_sel_idx).
+                # Nur die LEICHTEN Display-Matrizen bauen (fuer die On-Screen-Tabellen);
+                # die schweren Excel-Exporte kommen erst auf "Downloads vorbereiten"
+                # (_mp_build_export_bytes("eupool")) — identisch zum Multi-Period-Tab.
+                _ep_wide_by_idx = {}
+                for _idx_name, _period_dict in _ep_results.items():
+                    _w, _wp = build_wide_matrix(_period_dict)
+                    if _w is not None and not _w.empty:
+                        _ep_wide_by_idx[_idx_name] = _w
+                _ep_seg_by_idx = {}
+                for _idx_name, _period_dict in _ep_results.items():
+                    _sm, _smp = build_segment_matrix(_period_dict)
+                    if _sm is not None and not _sm.empty:
+                        _ep_seg_by_idx[_idx_name] = _sm
+                st.session_state["eupool_wide"] = _ep_wide_by_idx
+                st.session_state["eupool_segmatrix"] = _ep_seg_by_idx
+                # Export-Bytes eines frueheren Laufs verwerfen — muessen fuer den
+                # neuen Lauf neu vorbereitet werden.
+                for _k in ("eupool_export_long_bytes", "eupool_export_wide_bytes",
+                           "eupool_export_seg_bytes", "eupool_export_bt_bytes"):
+                    st.session_state.pop(_k, None)
+
+            # ── Ergebnisse ────────────────────────────────────────────────────
+            if "eupool_results" in st.session_state:
+                _r = st.session_state["eupool_results"]
+                _sum = st.session_state["eupool_summary"]
+
                 st.markdown("---")
-                st.markdown(f"### 📋 Index Characteristics — {_sel_name}")
-                st.caption("Mkt Cap (**Total MCap**) in **USD Millions** · DM/EM-Gewicht nach Adj. FF MCap · "
-                           "**EUMSS Full/FF** = auf DM-Primary kalibrierte Schwellen (Total- bzw. FF-MCap), global angewandt")
+                st.markdown("### 📊 Summary je Periode")
+                st.dataframe(_sum, width='stretch', hide_index=True)
 
-                _ic_bases = [("Total", "Total MCap Y2025")]
-                _ic_rows = []
-                for _sd in sorted(_results[_sel_idx].keys()):
-                    _c = _results[_sel_idx][_sd]
-                    _adj = pd.to_numeric(_c.get("Adj_FF_MCap"), errors="coerce") if "Adj_FF_MCap" in _c.columns else pd.Series(dtype=float)
-                    _adj_tot = float(_adj.sum())
-                    _cls = _c["Classification"] if "Classification" in _c.columns else pd.Series([""] * len(_c), index=_c.index)
-                    _dm_w = (_adj[_cls == "DM"].sum() / _adj_tot * 100) if _adj_tot > 0 else 0.0
-                    _em_w = (_adj[_cls == "EM"].sum() / _adj_tot * 100) if _adj_tot > 0 else 0.0
-                    _row = {"Selection Date": _sd, "# Const": len(_c),
-                            "DM W%": f"{_dm_w:.2f}%", "EM W%": f"{_em_w:.2f}%"}
-                    _eu = st.session_state.get("multi_eumss", {}).get(_sd)
-                    _row["EUMSS Full"] = f"{_eu[0]/1e6:,.2f}" if _eu else "—"
-                    _row["EUMSS FF"]   = f"{_eu[1]/1e6:,.2f}" if _eu else "—"
-                    for _lbl, _col in _ic_bases:
-                        _v = (pd.to_numeric(_c.get(_col), errors="coerce").dropna() / 1e6
-                              if _col in _c.columns else pd.Series(dtype=float))
-                        if len(_v):
-                            _row[f"Index ({_lbl})"]    = f"{_v.sum():,.2f}"
-                            _row[f"Largest ({_lbl})"]  = f"{_v.max():,.2f}"
-                            _row[f"Smallest ({_lbl})"] = f"{_v.min():,.2f}"
-                            _row[f"Avg ({_lbl})"]      = f"{_v.mean():,.2f}"
-                            _row[f"Median ({_lbl})"]   = f"{_v.median():,.2f}"
-                        else:
-                            for _m in ("Index", "Largest", "Smallest", "Avg", "Median"):
-                                _row[f"{_m} ({_lbl})"] = "—"
-                    _ic_rows.append(_row)
-                st.dataframe(pd.DataFrame(_ic_rows), width='stretch', hide_index=True)
+                _co = st.session_state.get("eupool_cutoffs", {})
+                if _co:
+                    st.markdown("### 📈 Gemeinsamer Europa-Cutoff über die Zeit")
+                    st.caption("Total MCap des kleinsten Standard-Titels im gepoolten Europa. "
+                               "Steigt der Wert, konzentriert sich der europäische Float weiter "
+                               "in den Mega Caps und der gemeinsame Schnitt wandert nach oben.")
+                    _co_df = pd.DataFrame({"Cutoff (Mrd USD)": {k: v / 1e9 for k, v in _co.items()}})
+                    st.line_chart(_co_df)
 
-                # Excel-Export — LAZY: die schweren Export-Dateien werden erst auf Klick
-                # erzeugt (nicht mehr eager nach jedem Lauf), damit der Run schlank bleibt.
-                # Danach liegen die Bytes im Session-State und werden hier nur ausgeliefert.
-                st.markdown("---")
-                st.markdown("### 💾 Multi-Period Export")
-
-                if "multi_export_long_bytes" not in st.session_state:
-                    st.caption("Die Download-Dateien werden erst auf Klick erzeugt "
-                               "(hält den Multi-Period-Run schlank).")
-                    if st.button("📦 Downloads vorbereiten", key="multi_prep_dl", type="primary"):
-                        with st.spinner("Baue Export-Dateien…"):
-                            _mp_build_export_bytes()
-                        st.rerun()
-
-                if "multi_export_long_bytes" in st.session_state:
+                _cty = st.session_state.get("eupool_country", {})
+                if _cty:
+                    st.markdown("### 🗺️ Konstituenten je Land")
+                    st.caption("Der gemeinsame Cutoff verteilt zwischen den Ländern um: große "
+                               "Märkte gewinnen, kleine verlieren ihre nationalen Mid Caps.")
+                    _cty_df = pd.DataFrame(_cty).fillna(0).astype(int).sort_index()
+                    _cty_df["Ø"] = _cty_df.mean(axis=1).round(1)
+                    st.dataframe(_cty_df.sort_values("Ø", ascending=False), width='stretch')
                     st.download_button(
-                        "📥 Konstituenten (Long Format — 1 Sheet/Produkt, alle Perioden)",
-                        data=st.session_state["multi_export_long_bytes"],
-                        file_name=f"NaroIX_MultiPeriod_Long_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
+                        "📥 Länderverteilung herunterladen",
+                        data=to_excel_one(_cty_df.reset_index().rename(
+                            columns={"index": "Mapping Country"}), "Laender"),
+                        file_name="europe_pooled_laender.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+                        key="eupool_dl_country")
 
-                # ── Gewichtsmatrix (Wide Format) ──
-                st.markdown("---")
-                st.markdown("### 📐 Gewichtsmatrix — alle Konstituenten × alle Perioden")
-                st.caption("Zeile = Aktie | Spalte = Selection Date | Wert = Indexgewicht (%) | Leer = nicht im Index "
-                           "| **Segment = Stand der zuletzt vorhandenen Periode**")
-
-                _wide_by_idx = st.session_state.get("multi_wide", {})
-                # Datumsspalten robust per Muster (YYYY-MM-DD) erkennen — NICHT per
-                # Ausschluss einer Statik-Liste (das bricht bei Spalten-Umbenennung
-                # oder veraltetem session_state, siehe Symbol→Exchange-Ticker-Wechsel).
-                _date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-                if _wide_by_idx:
-                    _first_idx = list(_wide_by_idx.keys())[0]
-                    wide_df = _wide_by_idx[_first_idx]
-                    date_cols = sorted(c for c in wide_df.columns
-                                       if isinstance(c, str) and _date_re.match(c))
-
-                    n_always   = int(wide_df[date_cols].notna().all(axis=1).sum())
-                    _first_col = wide_df[date_cols].iloc[:, 0].notna()
-                    _last_col  = wide_df[date_cols].iloc[:, -1].notna()
-                    n_newcomer = int((_last_col & ~_first_col).sum())
-                    n_dropout  = int((_first_col & ~_last_col).sum())
-                    n_total    = len(wide_df)
-
-                    st.markdown(f"**{_first_idx}** — {n_total} einzigartige Aktien über alle Perioden")
-                    _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-                    _m1.metric("Immer im Index", n_always,
-                               help="Stocks die in JEDER Period im Index waren.")
-                    _m2.metric("Newcomer", n_newcomer,
-                               help="Stocks die in der ersten Period nicht im Index waren, in der letzten aber schon.")
-                    _m3.metric("Drop-Outs", n_dropout,
-                               help="Stocks die in der ersten Period im Index waren, in der letzten aber nicht mehr.")
-                    _m4.metric("Zeitweise dabei", n_total - n_always,
-                               help="Stocks die mindestens eine Period im Index waren, aber nicht alle. "
-                                    "Umfasst Newcomer, Drop-Outs und Stocks die zwischendurch rein/raus gingen.")
-                    _m5.metric("Periods im Lauf", len(date_cols))
-
-                    # Vorschau-Tabelle (Top 50 nach letztem Gewicht)
-                    st.dataframe(
-                        wide_df.head(50).style.format(
-                            {sd: (lambda x: f"{x:.4f}%" if pd.notna(x) and x > 0 else ("" if pd.isna(x) else "0.0000%"))
-                             for sd in date_cols},
-                            na_rep=""
-                        ),
-                        width='stretch', hide_index=True
-                    )
-                    if n_total > 50:
-                        st.caption(f"… {n_total-50} weitere Aktien im vollständigen Excel-Export.")
-
-                if "multi_export_wide_bytes" in st.session_state:
-                    st.download_button(
-                        "📥 Gewichtsmatrix herunterladen (Wide Format)",
-                        data=st.session_state["multi_export_wide_bytes"],
-                        file_name=f"NaroIX_WeightMatrix_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                if st.session_state.get("multi_export_bt_bytes"):
-                    st.download_button(
-                        "📥 Backtest-Export (Gewichtsmatrix: Termin × Ticker, %)",
-                        data=st.session_state["multi_export_bt_bytes"],
-                        file_name=f"NaroIX_Backtest_Weights_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="multi_dl_bt",
-                    )
-
-                # ── Segment-Wanderung (Segment × Periode) ───────────────────────
-                # Analog zur Gewichtsmatrix, aber die Zellen zeigen das Segment statt
-                # des Gewichts → macht die Wanderung (Large↔Mid↔Small) über Zeit sichtbar.
-                # Für den in der Detail-Ansicht gewählten Index (_sel_idx).
-                st.markdown("---")
-                st.markdown(f"### 🔀 Segment-Wanderung — {_sel_name}")
-                st.caption("Zeile = Aktie | Spalte = Selection Date | Wert = Segment | Leer = nicht im Index "
-                           "· Sortierung: meiste Segment-Wechsel zuerst")
-
-                _seg_df = st.session_state.get("multi_segmatrix", {}).get(_sel_idx)
-                if _seg_df is not None and not _seg_df.empty:
-                    _seg_date_cols = sorted(c for c in _seg_df.columns
-                                            if isinstance(c, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", c))
-                    _seg_color = {"Large": "#2979ff", "Mid": "#00e676", "Small": "#ff9100", "Micro": "#37474f"}
-
-                    def _style_segcell(v):
-                        _c = _seg_color.get(v)
-                        return f"background-color:{_c};color:#0b0b0b;font-weight:600" if _c else ""
-
-                    st.dataframe(
-                        _seg_df.head(50).style.map(_style_segcell, subset=_seg_date_cols).format(na_rep=""),
-                        width='stretch', hide_index=True
-                    )
-                    if len(_seg_df) > 50:
-                        st.caption(f"… {len(_seg_df)-50} weitere Aktien im vollständigen Excel-Export.")
-                    if "multi_export_seg_bytes" in st.session_state:
-                        st.download_button(
-                            "📥 Segment-Wanderung herunterladen",
-                            data=st.session_state["multi_export_seg_bytes"],
-                            file_name=f"NaroIX_SegmentMatrix_{_periods_to_run[0]}_to_{_periods_to_run[-1]}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
-                else:
-                    st.caption("Keine Segment-Daten für diesen Index verfügbar.")
-
-                # ── Country-Gewichte über Zeit (Land × Periode) ─────────────────
-                # Für den oben in der Detail-Ansicht gewählten Index (_sel_idx).
-                # Ländergewicht = Summe Index_Weight (bereits in %, pro Index-Scope
-                # auf 100 normiert). Zeigt die Entwicklung der Ländergewichte über alle Perioden.
-                st.markdown("---")
-                st.markdown(f"### 🌍 Country-Gewichte über Zeit — {_sel_name}")
-
-                _cb_periods = sorted(_results[_sel_idx].keys())
-                _cb_matrix = {}  # land -> {period_iso: weight%}
-                for _sd in _cb_periods:
-                    _dfp = _results[_sel_idx][_sd]
-                    if "Mapping Country" not in _dfp.columns or "Index_Weight" not in _dfp.columns:
-                        continue
-                    _gp = _dfp.groupby(_dfp["Mapping Country"].fillna("—"))["Index_Weight"].sum()
-                    for _land, _w in _gp.items():
-                        _cb_matrix.setdefault(_land, {})[_sd] = round(float(_w), 4)
-
-                if _cb_matrix:
-                    _cb_rows = []
-                    for _land, _wmap in _cb_matrix.items():
-                        _row = {"Land": _land}
-                        for _sd in _cb_periods:
-                            _row[_sd] = _wmap.get(_sd)
-                        _cb_rows.append(_row)
-                    _cb_df = pd.DataFrame(_cb_rows).sort_values(
-                        _cb_periods[-1], ascending=False, na_position="last"
-                    ).reset_index(drop=True)
-
-                    st.caption("Zeile = Land | Spalte = Selection Date | Wert = Ländergewicht in % | Leer = nicht im Index")
-                    st.dataframe(
-                        _cb_df.style.format(
-                            {sd: (lambda x: f"{x:.2f}%" if pd.notna(x) else "") for sd in _cb_periods},
-                            na_rep="",
-                        ),
-                        width='stretch', hide_index=True,
-                    )
-                    st.download_button(
-                        "📥 Country-Gewichte herunterladen",
-                        data=to_excel_one(_cb_df, "Country_x_Period"),
-                        file_name=f"{_sel_idx}_country_weights_by_period.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_country",
-                    )
-                else:
-                    st.caption("Keine Länder-Daten für diesen Index verfügbar.")
-
-                # ── Sector-Gewichte über Zeit (Sektor × Periode) ────────────────
-                # Analog zur Länder-Matrix, aber nach FactSet Economy → Sektor-Drift.
-                st.markdown(f"### 🏭 Sector-Gewichte über Zeit — {_sel_name}")
-                _sec_matrix = {}  # sektor -> {period_iso: weight%}
-                for _sd in _cb_periods:
-                    _dfp = _results[_sel_idx][_sd]
-                    if "FactSet Economy" not in _dfp.columns or "Index_Weight" not in _dfp.columns:
-                        continue
-                    _secv = _dfp["FactSet Economy"].fillna("—").astype(str).str.strip().replace("", "—")
-                    _gp = _dfp.assign(_S=_secv).groupby("_S")["Index_Weight"].sum()
-                    for _s, _w in _gp.items():
-                        _sec_matrix.setdefault(_s, {})[_sd] = round(float(_w), 4)
-
-                if _sec_matrix:
-                    _sec_rows = []
-                    for _s, _wmap in _sec_matrix.items():
-                        _row = {"Sektor": _s}
-                        for _sd in _cb_periods:
-                            _row[_sd] = _wmap.get(_sd)
-                        _sec_rows.append(_row)
-                    _sec_df = pd.DataFrame(_sec_rows).sort_values(
-                        _cb_periods[-1], ascending=False, na_position="last").reset_index(drop=True)
-                    st.caption("Zeile = Sektor (FactSet Economy) | Spalte = Selection Date | Wert = Sektorgewicht in %")
-                    st.dataframe(
-                        _sec_df.style.format(
-                            {sd: (lambda x: f"{x:.2f}%" if pd.notna(x) else "") for sd in _cb_periods},
-                            na_rep=""),
-                        width='stretch', hide_index=True,
-                        height=35 * (len(_sec_df) + 1) + 3)   # alle Sektoren ohne Scroll
-                    st.download_button(
-                        "📥 Sector-Gewichte herunterladen",
-                        data=to_excel_one(_sec_df, "Sector_x_Period"),
-                        file_name=f"{_sel_idx}_sector_weights_by_period.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_sector",
-                    )
-                else:
-                    st.caption("Keine Sektor-Daten für diesen Index verfügbar.")
-
-                # ── Tenure — längste Verweildauer im Index ──────────────────────
-                st.markdown("---")
-                st.markdown(f"### 🏅 Tenure — längste Verweildauer im Index ({_sel_name})")
-                _wdf_t = st.session_state.get("multi_wide", {}).get(_sel_idx)
-                if _wdf_t is not None and not _wdf_t.empty:
-                    _tdate = sorted(c for c in _wdf_t.columns
-                                    if isinstance(c, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", c))
-                    _ntot = len(_tdate)
-
-                    def _streak(vals):
-                        best = cur = 0
-                        for v in vals:
-                            if pd.notna(v):
-                                cur += 1; best = max(best, cur)
-                            else:
-                                cur = 0
-                        return best
-
-                    _present = _wdf_t[_tdate].notna().sum(axis=1)
-                    _longest = _wdf_t[_tdate].apply(lambda r: _streak(r.values), axis=1)
-                    _tcols = [c for c in ["Exchange Ticker", "Name", "ISIN", "Classification", "Mapping Country"]
-                              if c in _wdf_t.columns]
-                    _ten = _wdf_t[_tcols].copy()
-                    _ten["Perioden im Index"] = _present.astype(int).astype(str) + f" / {_ntot}"
-                    _ten["Längste Serie"] = _longest.astype(int)
-                    _ten["Aktuell drin"] = _wdf_t[_tdate[-1]].notna().map({True: "✓", False: ""}) if _tdate else ""
-                    _ten = (_ten.assign(_p=_present.values, _l=_longest.values)
-                                .sort_values(["_p", "_l"], ascending=[False, False])
-                                .drop(columns=["_p", "_l"]))
-                    st.caption(f"Sortiert nach Perioden im Index (von {_ntot}), dann längster ununterbrochener Serie. Top 50.")
-                    st.dataframe(_ten.head(50), width='stretch', hide_index=True)
-                    if len(_ten) > 50:
-                        st.caption(f"… {len(_ten)-50} weitere — alle im Excel-Export.")
-                    st.download_button(
-                        "📥 Tenure herunterladen (alle Titel)",
-                        data=to_excel_one(_ten.reset_index(drop=True), "Tenure"),
-                        file_name=f"{_sel_idx}_tenure.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_tenure",
-                    )
-                else:
-                    st.caption("Keine Matrix-Daten für diesen Index verfügbar.")
+                # Kompletter Ergebnisblock, identisch zum Multi-Period-Tab:
+                # Detail-Ansicht, Country-/Sektor-Breakdown, Index Characteristics,
+                # lazy Excel-Exporte, Gewichts-/Segment-/Country-/Sector-Matrizen,
+                # Tenure. Eigene Session-State-Keys (Prefix eupool), damit der
+                # Multi-Period-Lauf davon unberuehrt bleibt.
+                render_mp_results(
+                    "eupool", file_tag="EuropePooled_",
+                    extra_cols=["Country_Floor_Promoted"],
+                    caption_extra=lambda _p: ", Pool-Cutoff: " + format_bn(
+                        st.session_state.get("eupool_cutoffs", {}).get(_p, 0)))
