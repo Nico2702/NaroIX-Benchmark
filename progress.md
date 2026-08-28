@@ -20,6 +20,21 @@ Auswertungs- und Exportblock wie der Multi-Period-Tab bekommen.
 
 ## Entscheidungen
 
+- **2026-08-28, Kriterien-Box in allen drei MP-Tabs, Perioden-Range bei Helvetica.**
+  `_criteria_box(variant)` rendert die "Selektionskriterien"-Infobox aus den AKTIVEN
+  Sidebar-Werten (nicht aus SETTINGS_NOW: die Box zeigt, womit der naechste Lauf rechnen
+  WUERDE; was ein gelaufener Lauf benutzt hat, steht im Settings-Blatt des Exports).
+  Zwei Auspraegungen: `serie` fuer Multi-Period und Europe MP (EUMSS, ATVR-Screen, Buffer,
+  MSCI Logic, Size Integrity, Capping), `helvetica` fuer die eigene Pipeline (kein EUMSS,
+  kein ATVR-Screen, dafuer Rang-Band, Sleeve-Gewichte und die CHF-ADTV-Schwellen).
+  Steht in allen drei Tabs direkt ueber dem Start-Button.
+  Helvetica bekommt zusaetzlich den **Start-/End-Perioden-Picker** wie die anderen beiden
+  Tabs: die Termine kommen weiter aus dem File, gewaehlt wird nur der Ausschnitt
+  (`_reb_all` -> `_reb`). Keine Frequenz- oder Jahresauswahl — die war am 2026-08-28
+  bewusst entfallen, weil der Turnus Guideline-Sache ist.
+  Dezimaltrenner in der Box auf deutsches Komma vereinheitlicht (7,5 % statt 7.5 %).
+
+
 - **2026-08-28, Helvetica-Testabdeckung geschlossen: 231 -> 251 Assertions.**
   Vier neue Tests fuer genau die Regeln, die heute geaendert wurden und bis dahin KEINEN Test
   hatten: `test_helvetica_adtv_maintenance` (Entry gegen Maintenance je Titel, plus der Fall

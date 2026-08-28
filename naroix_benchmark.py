@@ -2277,6 +2277,73 @@ with st.sidebar:
 # Ein Backtest ohne die Parameter, die ihn erzeugt haben, ist nicht reproduzierbar.
 # Der Snapshot wird beim LAUF eingefroren (nicht beim Export), landet als Sheet
 # "Settings" in jeder Export-Datei und speist den Stale-Guard in render_mp_results.
+def _criteria_box(variant="serie"):
+    """Selektionskriterien als Info-Box, gespeist aus den AKTIVEN Sidebar-Werten.
+
+    Zwei Auspraegungen, weil die Laeufe verschiedene Regelwerke fahren:
+      * "serie"     — Multi-Period und Europe MP (EUMSS, ATVR-Screen, Coverage je Land)
+      * "helvetica" — eigene Pipeline ohne EUMSS und ohne ATVR-Screen, dafuer Rang-Band
+                      und feste Sleeves
+
+    Bewusst aus den Live-Werten gerendert und nicht aus SETTINGS_NOW: die Box soll zeigen,
+    womit der naechste Lauf rechnen WUERDE. Was ein bereits gelaufener Lauf benutzt hat,
+    steht im Settings-Blatt des Exports.
+    """
+    _sep = " &nbsp;|&nbsp; "
+    _b = lambda v: "aktiv" if v else "inaktiv"
+    _de = lambda x: ("%g" % x).replace(".", ",")      # deutsches Dezimalkomma
+    _hp = (f"ATVR-Bedingung ab {max_closing_price:,.0f} ({_de(max_price_atvr*100)} % neu / "
+           f"{_de((m_max_price_atvr or max_price_atvr)*100)} % Bestand)"
+           if (max_closing_price and max_price_atvr is not None)
+           else (f"harter Cut ab {max_closing_price:,.0f}" if max_closing_price else "aus"))
+
+    if variant == "helvetica":
+        r = _helv_rules_from_sidebar()
+        rows = [
+            f"Universe: Exchange Country = Schweiz{_sep}alle Share Lines, Dedup auf die "
+            f"liquideste Linie je Firma{_sep}<b>kein EUMSS-Floor</b>",
+            f"Coverage-Cuts: Large {r['large']:g} %{_sep}Mid {r['std']:g} %{_sep}"
+            f"Small {r['small']:g} %{_sep}Halt bis "
+            f"{r['large']+r['hold_large_pp']:g} / {r['std']+r['hold_std_pp']:g} / "
+            f"{_de(r['small']+r['hold_small_pp'])} %",
+            f"Min FF: {_de(r['min_ff']*100)} % neu{_sep}{_de(r['min_ff_maint']*100)} % Bestand"
+            f"{_sep}3M-ADTV: {_helv_mio(new_adtv_dm)} neu{_sep}{_helv_mio(buffer_adtv_dm)} Bestand",
+            f"Sleeves: Top {HELVETICA_TOPN} je Segment, gleichgewichtet (10 / 15 / 15 %)"
+            f"{_sep}Real Estate alle qualifizierten inkl. Micro (15 %){_sep}45 % statisch",
+            f"Bestandsschutz: Rang-Band {HELVETICA_BUFFER_HARD} / {HELVETICA_BUFFER_EXIT}"
+            f"{_sep}Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)}"
+            f"{_sep}Variante: {'Aufstieg am Cut-off' if entry_at_cutoff else ('Asymmetrisch' if asym_buffer else 'Symmetrisch')}",
+            f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
+            f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}",
+        ]
+    else:
+        _sb = ("Aufstieg am Cut-off" if entry_at_cutoff
+               else "Asymmetrisch" if asym_buffer else "Symmetrisch")
+        _ms = ("= Bandbreite" if size_buffer_pp_ms is None else f"{_de(size_buffer_pp_ms)} pp")
+        rows = [
+            f"Listing: Primary + Secondary{_sep}Reihenfolge: "
+            f"{'Coverage vor Liquiditaet' if label_before_liquidity else 'Liquiditaet vor Coverage'}"
+            f"{_sep}IF: {if_selection_mode}",
+            f"ADTV DM/EM: {new_adtv_dm:,.0f} / {new_adtv_em:,.0f} USD{_sep}"
+            f"Maintenance: {buffer_adtv_dm:,.0f} / {buffer_adtv_em:,.0f}{_sep}"
+            f"ATVR DM/EM: {_de(new_atvr_dm*100)} % / {_de(new_atvr_em*100)} %",
+            f"Large: {large_thr} %{_sep}Mid: {mid_thr} %{_sep}Small: {small_thr} %{_sep}"
+            f"Min FF: {_de(min_ff_pct*100)} % neu / {_de(buffer_min_ff*100)} % Bestand{_sep}"
+            f"EUMSS FF-Ratio: {new_eumss_ff_ratio*100:g} %",
+            f"Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)} "
+            f"({_de(size_buffer_pp)} pp, Mid/Small {_ms}, {_sb}){_sep}"
+            f"Small-Cut 99/{_de(99+small_buffer_pp)} {_b(apply_small_buffer)}",
+            f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
+            f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}{_sep}"
+            f"Capping {_b(apply_cap)}",
+            f"China IF: {china_inclusion_factor*100:.1f} %{_sep}FOL Matrix: "
+            f"{('aktiv, YAML ' + str(fol_version)) if (apply_fol and fol_matrix) else 'inaktiv'}"
+            f"{_sep}MSCI Logic {_b(msci_logic)}{_sep}Size Integrity {_b(apply_size_integrity)}",
+        ]
+    st.markdown('<div class="info-box"><b>Selektionskriterien</b><br>' + "<br>".join(rows)
+                + "</div>", unsafe_allow_html=True)
+
+
 def _settings_snapshot():
     """Alle laufrelevanten Sidebar-Parameter als {Gruppe, Parameter, Wert}-Tabelle."""
     _sb_var = ("Aufstieg am Cut-off" if entry_at_cutoff
@@ -3894,13 +3961,29 @@ with tab_helvetica_mp:
         # Presets hatten zudem stille Kanten: "Jaehrlich" nahm die hoechste Monatsnummer,
         # "Halbjaehrlich" war auf Mai+Nov verdrahtet und fiel sonst kommentarlos auf alle
         # Monate zurueck. Wer einen kuerzeren Lauf braucht, laedt ein kuerzeres File.
-        _reb = sorted(master_data["detected_dates"])
-        _months_avail = sorted({int(d.split("-")[1]) for d in _reb})
+        _reb_all = sorted(master_data["detected_dates"])
+        _months_avail = sorted({int(d.split("-")[1]) for d in _reb_all})
 
         st.markdown("### 📅 Rebalancing-Termine")
-        st.caption(f"**{len(_reb)} Termine** aus dem geladenen File: {_reb[0]} bis {_reb[-1]} "
-                   f"({', '.join(_MON[m] for m in _months_avail)}). Der Turnus folgt dem File, "
-                   "die Guideline sieht quartalsweise vor.")
+        # Range-Picker wie in Multi-Period und Europe MP: die Termine kommen aus dem File,
+        # gewaehlt wird nur der Ausschnitt. Keine Frequenz- oder Jahresauswahl — den Turnus
+        # legt die Guideline fest (quartalsweise), er ist keine Bedienentscheidung.
+        _hr1, _hr2 = st.columns(2)
+        with _hr1:
+            _h_start = st.selectbox(
+                "Start-Periode (Seed)", options=_reb_all, index=0, key="helv_mp_start",
+                help="Erste Periode des Laufs. Hier gibt es noch keine Inkumbenten — alle "
+                     "Titel durchlaufen die Entry-Schwellen.")
+        with _hr2:
+            _h_end = st.selectbox(
+                "End-Periode", options=_reb_all, index=len(_reb_all) - 1, key="helv_mp_end",
+                help="Letzte Periode des Laufs.")
+        _reb = [d for d in _reb_all if _h_start <= d <= _h_end]
+        if _reb:
+            _mon_sel = sorted({int(d.split("-")[1]) for d in _reb})
+            st.caption(f"📅 Geplante Periods im Lauf: **{len(_reb)}** "
+                       f"({_reb[0]} → {_reb[-1]}, {', '.join(_MON[m] for m in _mon_sel)}). "
+                       "Der Turnus folgt dem File, die Guideline sieht quartalsweise vor.")
 
         # Bestandsschutz kommt aus der Sidebar, wie in Multi-Period und Europe MP. Die beiden
         # Schalter treffen unterschiedliche Schichten und werden deshalb NICHT zusammengefasst:
@@ -3960,6 +4043,8 @@ with tab_helvetica_mp:
                     bool(apply_spinoffs), bool(apply_ineligible),
                     None if max_price_atvr is None else (max_closing_price, max_price_atvr,
                                                          m_max_price_atvr))
+            _criteria_box("helvetica")
+
             if st.button("▶️ Helvetica Multi-Period starten", type="primary", key="helv_mp_run"):
                 _RE = HELVETICA_RE_INDUSTRIES
                 _prev = set(); _prev_seg = {}; _prev_ent = set()
@@ -4241,6 +4326,8 @@ with tab_multi:
                 help="Option Y: pro Periode läuft die Pipeline EINMAL (globaler Buffer-State); "
                      "die gewählten Produkte sind konsistente Slices davon (build_index)."
             )
+
+            _criteria_box("serie")
 
             run_btn = st.button("▶️ Multi-Period Run starten", type="primary", key="multi_run_btn",
                                  disabled=(len(indices_to_run) == 0))
@@ -4570,6 +4657,8 @@ with tab_europe_mp:
 
             st.caption(f"📅 Geplante Periods: **{len(_ep_periods)}** "
                        f"({_ep_periods[0]} → {_ep_periods[-1]})")
+
+            _criteria_box("serie")
 
             _ep_run = st.button("▶️ Europe-Pooled Run starten", type="primary",
                                 key="eupool_run_btn", disabled=(len(_ep_sel) == 0))
