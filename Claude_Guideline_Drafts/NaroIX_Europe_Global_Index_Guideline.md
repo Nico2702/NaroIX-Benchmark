@@ -94,11 +94,15 @@ Each step is detailed below.
   - Closing Price ≥ **20,000** (price filter, configurable)
   - Hong-Kong-listed line trading in CNY (HK-CNY)
   - Country of Risk = `@NA`
-  - NAICS = open-end investment fund
   - Exchange = `Euro MTF` / `@NA`
   - Name contains `ETF`, `SICAV`, or `%`
   - Listing Status = 1 (delisted) — *disable for historical snapshots where the name was still
     trading at that date.*
+
+  *Until 2026-08-23 a NAICS "open-end investment fund" exclusion was applied as well. It has been
+  removed because the FactSet field flags operating asset managers as funds (WisdomTree, Jupiter
+  Fund Management, IntegraFin, Groww). Genuine fund vehicles stay out of the index through the
+  size floor: every one of them falls into Micro Cap.*
 
 ### Step 2 — Classification (DM / EM / FM)
 - **Mapping Country rule:** if `Exchange Country == Country of Incorporation` → use Country of
@@ -163,6 +167,53 @@ Applied to the EUMSS-passing set, differentiated by classification:
   entirely** — it is **not** demoted to Small/Micro and is in **no** index. The single liquidity
   bar therefore applies to **all** size tiers.
 
+#### High-priced securities (changed 2026-08-25)
+
+A security whose trading price is at or above **USD 20,000** is **no longer excluded outright**.
+It stays, but must clear a relative liquidity condition, measured as **min(ATVR 3M, ATVR 6M)**:
+
+| Trading price | New constituents | Current constituents |
+|---|---|---|
+| below USD 20,000 | no ATVR requirement | no ATVR requirement |
+| at or above USD 20,000 | **10.0 %** | **5.0 %** |
+
+(`Closing Price` is delivered in USD by the data provider, so the ceiling is a USD figure. The
+ATVR is the annualised ratio ADTV × 252 ÷ free-float market cap. Solactive's equivalent
+"LIQUIDITY RATIO" is the same quantity un-annualised, so their thresholds are ours ÷ 252.)
+
+The **absolute** liquidity screen is unchanged and still applies to every security regardless of
+price: average daily value traded of at least USD 1.0m for new and USD 0.75m for current
+constituents, over both the 3-month and the 6-month window.
+
+Rationale: a high nominal price says nothing about tradability. On 2026-08-19 the old ceiling
+removed 3 securities: Berkshire Hathaway A (ATVR 14.1 %, USD 242bn free float) and the Lindt &
+Sprüngli registered share (32.1 %, USD 12.7bn), both highly liquid, plus one effectively untraded
+line at 0.0 %. The condition separates these cleanly. Under the rule no security is removed for
+its price alone; only a security that also fails the elevated ATVR is removed.
+
+The test sits at the **liquidity stage**, not in the universe exclusions, because the ATVR does
+not exist before then. Measured over 48 periods: NX-EU-LM 372 → 373 (the Lindt registered share
+enters, which MSCI Europe also holds), NX-DM-LM 1,442 → 1,443 and NX-GM-LM 2,822 → 2,823
+(Berkshire A and Lindt enter, Dollar Tree is displaced from Mid to Small because Berkshire A's
+free float shifts the coverage curve), turnover unchanged.
+
+Both share classes of a company can now be constituents (Lindt registered share and participation
+certificate; Berkshire A and B). For Lindt this matches MSCI Europe, which holds both lines
+(0.08 % and 0.07 %).
+
+**No ATVR requirement below the price ceiling — and why.** Solactive's GBS methodology (v3.05,
+30 June 2026) requires a liquidity ratio of every constituent, not only of high-priced ones. That
+requirement is deliberately **not** adopted here, because on the current data it would not measure
+liquidity but a data defect: Indian securities are sourced almost exclusively as their BSE line,
+and the BSE carries roughly a tenth of the NSE turnover, so Indian ATVR is understated by an order
+of magnitude. Measured over the 48 periods, a threshold of 2.0 % for new and 1.5 % for current
+constituents would remove 13 distinct Indian securities across 28 of the 48 periods — HDFC Bank in
+20 periods, plus ICICI Bank, ITC, Reliance Industries, Axis Bank, Kotak Mahindra, Hindustan
+Unilever, Infosys and others. India's minimum sinks to 0.45 % (2023-05-17), so a threshold that
+survives the history would have to sit below that, at which point it removes nothing anywhere.
+The requirement should be introduced once Indian securities are sourced via the NSE; the
+parameters exist in the tool and default to zero until then.
+
 ### Step 7 — Per-country size segmentation (coverage waterfall)
 Computed **per Mapping Country over that country's entire investable, liquid universe**
 (all sectors) — *not* relative to Europe or to any sub-index.
@@ -208,20 +259,26 @@ normalized to sum to exactly 100.0000 % (rounding remainder assigned to the larg
 | EUMSS calibration coverage | **99 %** | Step 5 |
 | EUMSS FF ratio | **50 %** | Step 5 |
 | Minimum Free Float % | **10 %** | Step 5 |
-| Liquidity ADTV — DM (3M & 6M) | **$2,000,000** | Step 6 |
-| Liquidity ADTV — EM (3M & 6M) | **$1,000,000** | Step 6 |
+| Liquidity ADTV — DM and EM (3M & 6M) | **$1,000,000** | Step 6 |
 | Liquidity ATVR — DM / EM | 0 % / 0 % (off) | Step 6 |
 | China Inclusion Factor | **≈ 20 %** (per date) | Step 3 |
-| Max closing price | **20,000** | Step 1 |
+| High-price line (USD) | **20,000** | Step 6 — no longer an exclusion, see below |
+| High-price ATVR — new / current | **10 % / 5 %** | Step 6 |
 
 ### Optional buffers (turnover control — applied across rebalancings)
 | Buffer | Default | Effect |
 |---|---|---|
-| **Maintenance buffer** (membership) | Min FF **7.5 %**, ADTV DM **$1.0M** / EM **$0.5M**, coverage **90 %** | Current constituents face *softer* Step-5/6/7 thresholds, so they aren't dropped on marginal misses. |
+| **Maintenance buffer** (membership) | Min FF **7.5 %**, ADTV **$750,000** (DM and EM alike), coverage **90 %** | Current constituents face *softer* Step-5/6/7 thresholds, so they aren't dropped on marginal misses. |
 | **Size buffer** (segment hysteresis) | **±5 pp** around the 70 % and 85 % cuts | Incumbents keep their size segment within the band instead of flipping each rebalance. The Small↔Micro lower bound stays governed by EUMSS. |
 
 Both are optional and, when enabled, apply only from the **second** rebalancing onward (they need
 a prior-period membership). The seed period uses plain cut-offs.
+
+Incumbency is matched on **Perm ID with an ISIN fallback**, so the buffers survive an ISIN or
+ticker change. (Until 2026-08-25 the ADTV/ATVR part of the membership buffer matched on the plain
+ISIN while the incumbent set held Perm IDs, so it never applied: measured 0 of 28,580 rows on
+2026-08-19. Corrected; measured effect on the 48-period Europe-pooled backtest was NX-EU-LM
+371 → 373, NX-DM-LM 1,440 → 1,443, NX-GM-LM 2,800 → 2,823, with turnover falling in all three.)
 
 ---
 
@@ -232,6 +289,60 @@ a prior-period membership). The seed period uses plain cut-offs.
   consistent **slices** of that one run, so a security has exactly **one** size class across all
   NaroIX products, and `NX-GM-* = NX-DM-* + NX-EM-*` holds by construction.
 - **Incumbents** for the buffers = the prior period's investable universe (Large + Mid + Small).
+
+### Spin-offs (early inclusion, 2026-08-25)
+A security that is **spun off from an index constituent** is treated as an **incumbent from its
+first selection date**, not as a newcomer. It therefore never has to clear the *entry* thresholds
+(Step 5 EUMSS/float, Step 6 liquidity, Step 7 plain coverage cut). It inherits the **size segment
+of its parent** and is, from that same date, subject to the ordinary maintenance rules: the
+membership buffer (float, ADTV, coverage) and the size hysteresis.
+
+The inclusion is a **one-time seed**. There is no ongoing privilege and no expiry date: after the
+seed the security is an ordinary constituent whose MCap, free float and liquidity are tested at
+every rebalancing like everyone else's.
+
+**A liquidity horizon that cannot yet exist is not tested.** The liquidity screen requires both a
+3-month and a 6-month average daily traded value. A security that has traded for a few weeks
+cannot have either. The carve-out is therefore tied to the **ex-date**, not to the seeding event:
+a horizon is skipped while `selection date < ex-date + N months`, and only where the value is
+absent (N = 3 for the 3M leg, 6 for the 6M leg, 12 for the 12M ATVR leg).
+
+On a quarterly calendar this means the 3M leg is usually open only at the first rebalancing after
+the event, and the **6M leg at the first two**. Tying the carve-out to the seeding event alone
+would leave the child to fail the 6M hurdle one rebalancing later, which is not a one-period
+setback: it would drop out of the segmented universe, thereby lose its inherited incumbency, and
+return as a plain newcomer against the un-buffered coverage cut. Verified on Magnum Ice Cream
+(ex-date 2025-12-08): with its ADTV blanked it ends up in Small Cap permanently, instead of
+entering and staying as Mid Cap.
+
+Entitlement is limited to a child that is being seeded at that rebalancing or is already a
+constituent, so a rejected seed cannot obtain a liquidity concession. A value that exists but
+falls short of the threshold still excludes. Note that "absent" must be read as *missing or
+zero*, because the universe builder coerces missing ADTV to 0 and the two are indistinguishable
+downstream.
+
+**No separate minimum-size condition applies.** The seed is evaluated against the maintenance
+thresholds in the very same period, so a spun-off stub that is too small becomes Small Cap
+immediately and never reaches the Standard index. The rule is self-limiting.
+
+Rationale: the pipeline reconstructs each period point-in-time and matches incumbents on Perm ID
+with an ISIN fallback. A spun-off entity carries a *new* identifier, so without this rule it would
+be indistinguishable from an IPO and would have to enter through the newcomer door. That is neither
+economically sensible (the parent's index membership is being divided, not created) nor consistent
+with MSCI, which adds a spun-off entity to the parent's indexes at the event and applies the regular
+criteria only at the following Index Review.
+
+**Source of record** is a curated file, `Spin-Off Data.xlsx`, not an algorithm. FactSet exposes no
+parent-child link across a spin-off (the child receives its own `Entity ID (Company)`), and at index
+providers corporate events are analyst work. Each row carries the event date (`Ex-Date`) and a
+`Quelle` reference. Both are mandatory: an entry derived from *today's* benchmark composition rather
+than from the event history would introduce look-ahead bias into every backtest that uses it.
+
+Per row: `Selection Date` (the first rebalancing at which the child is seeded, which must be the
+first selection date on or after `Ex-Date`), `Child ISIN`, `Parent ISIN`, `Ex-Date`, `Quelle`, plus
+an optional `Segment Override` for cases where the parent's segment cannot be inherited. An entry is
+rejected at run time if the child has no data at that date, if the child is already a constituent,
+or if the parent was not in the prior period's investable universe.
 
 ---
 

@@ -64,8 +64,9 @@ Helvetica setzt auf dem **Pipeline-Universum** auf = Output von `build_new_unive
 (vor EUMSS-Größen-Floor — der EUMSS-Floor wird für Helvetica **NICHT** angewandt):
 
 1. **Investability-Exclusions** (`apply_universe_exclusions`): FF MCap > 0, Max Price,
-   HK(CNY), LON(USD)-Secondary, Country-of-Risk=@NA, NAICS-Fonds, Euro-MTF, ETF/SICAV,
-   Listing-Status.
+   HK(CNY), LON(USD)-Secondary, Country-of-Risk=@NA, Euro-MTF, ETF/SICAV,
+   Listing-Status. (Der NAICS-Fondsausschluss ist am 2026-08-23 entfallen, Begründung in
+   `PIPELINE_IST.md`.)
 2. **Mapping Country + Classification** (DM/EM/FM) — für Helvetica selbst irrelevant, da
    es später über **Exchange Country = SWITZERLAND** filtert (nicht über Mapping Country).
 3. **FOL/FIF + China-IF** → `IF`, und daraus:
