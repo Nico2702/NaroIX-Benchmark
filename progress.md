@@ -20,6 +20,14 @@ Auswertungs- und Exportblock wie der Multi-Period-Tab bekommen.
 
 ## Entscheidungen
 
+- **2026-08-28, doppelte Captions im Helvetica-MP-Tab entfernt.**
+  Mit der Kriterien-Box waren zwei der drei Hinweiszeilen redundant (Bestandsschutz-Zustand,
+  ADTV/Coverage/FF-Schwellen) und die dritte zur Haelfte. Geblieben sind nur die Aussagen,
+  die aus der Box NICHT ableitbar sind: die Kaskaden-Warnung (ein Aufsteiger nach Large kann
+  bei Rang > 10 ganz aus dem Index fallen, weil der Ueberschuss nicht nach unten
+  zurueckgegeben wird) und eine st.warning, wenn der Bestandsschutz teilweise abgeschaltet
+  ist. Faustregel dabei: Werte gehoeren in die Box, Verhaltenswarnungen in den Flowtext.
+
 - **2026-08-28, Kriterien-Box in allen drei MP-Tabs, Perioden-Range bei Helvetica.**
   `_criteria_box(variant)` rendert die "Selektionskriterien"-Infobox aus den AKTIVEN
   Sidebar-Werten (nicht aus SETTINGS_NOW: die Box zeigt, womit der naechste Lauf rechnen

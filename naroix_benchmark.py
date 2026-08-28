@@ -3985,53 +3985,26 @@ with tab_helvetica_mp:
                        f"({_reb[0]} → {_reb[-1]}, {', '.join(_MON[m] for m in _mon_sel)}). "
                        "Der Turnus folgt dem File, die Guideline sieht quartalsweise vor.")
 
-        # Bestandsschutz kommt aus der Sidebar, wie in Multi-Period und Europe MP. Die beiden
-        # Schalter treffen unterschiedliche Schichten und werden deshalb NICHT zusammengefasst:
-        #   Buffer Rules -> Maintenance-Schwellen (FF, ADTV) + Rang-Band 8/13 der Sleeves
-        #   Size Buffer  -> Coverage-Hysterese der Segmente (braucht das Vorperioden-Segment)
-        st.caption(
-            "→ Bestandsschutz (Sidebar): **Buffer Rules "
-            + ("an" if apply_buffer else "aus")
-            + "** (Maintenance-Schwellen FF/ADTV + Rang-Band 8/13) · **Size Buffer "
-            + ("an" if apply_size_buffer else "aus")
-            + "** (Coverage-Hysterese der Segmente)."
-            + ("" if (apply_buffer and apply_size_buffer) else
-               "  ⚠️ Mit abgeschaltetem Buffer ist der Lauf **nicht guideline-konform**, "
-               "er dient dem Vergleich."))
         # Schwellen aus der Sidebar; HELVETICA_RULES bleibt der Fallback fuer Tests/Headless.
+        # Die konkreten Werte (Schwellen, Baender, Buffer-Zustand) zeigt die
+        # Selektionskriterien-Box weiter unten — hier stehen nur noch Hinweise, die dort
+        # NICHT ableitbar sind.
         _helv_rules = _helv_rules_from_sidebar()
         _mp_adtv, _mp_adtv_maint = new_adtv_dm, buffer_adtv_dm
-        st.caption(f"→ 3M-ADTV (Sidebar): Neuzugang ≥ {_helv_mio(_mp_adtv)}, Bestandstitel ≥ "
-                   f"{_helv_mio(_mp_adtv_maint)} (nur mit Buffer Rules).  ·  "
-                   f"Coverage {_helv_rules['large']:g} / {_helv_rules['std']:g} / "
-                   f"{_helv_rules['small']:g} %, Halt bis "
-                   f"{_helv_rules['large']+_helv_rules['hold_large_pp']:g} / "
-                   f"{_helv_rules['std']+_helv_rules['hold_std_pp']:g} / "
-                   f"{_helv_rules['small']+_helv_rules['hold_small_pp']:g} %  ·  "
-                   f"FF {_helv_rules['min_ff']*100:g} / {_helv_rules['min_ff_maint']*100:g} %")
         # Die Coverage-Hysterese folgt dem globalen Sidebar-Schalter "Size-Buffer-Variante",
         # damit beide Produktfamilien dieselbe Logik fahren (ein Schalter für alle Tabs).
-        # Wirkt nur mit aktivem Maintenance Buffer, weil das Vorperioden-Segment gebraucht wird.
+        # Wirkt nur mit aktivem Size Buffer, weil das Vorperioden-Segment gebraucht wird.
         _mp_entry_cut = bool(entry_at_cutoff)
-        # Die Kanten aus den Sidebar-Schwellen ableiten, nicht hart schreiben — sonst zeigt die
-        # Caption 70/85, waehrend der Lauf laengst gegen andere Werte rechnet.
-        _hL, _hS = _helv_rules["large"], _helv_rules["std"]
-        _hLu = _hL + _helv_rules["hold_large_pp"]
-        _hSu = _hS + _helv_rules["hold_std_pp"]
-        _hMu = _helv_rules["small"] + _helv_rules["hold_small_pp"]
+
+        if not (apply_buffer and apply_size_buffer):
+            st.warning(
+                "⚠️ Bestandsschutz teilweise abgeschaltet — dieser Lauf ist **nicht "
+                "guideline-konform** und dient dem Vergleich. Zustand siehe Kriterien unten.")
         st.caption(
-            (f"→ **Aufstieg am Cut-off** (Sidebar): Aufstieg für alle bei {_hL:g} % / {_hS:g} %, "
-             f"Verbleib bis {_hLu:g} % / {_hSu:g} % / {_hMu:g} %. Die Auswahlgröße bleibt "
-             "10/10/10 + Real Estate. Achtung Kaskade: ein Aufsteiger nach Large tritt dort gegen "
-             "Nestlé/Roche/Novartis an und fällt bei Rang > 10 ganz aus dem Index, weil der "
-             "Überschuss nicht nach unten zurückgegeben wird (gemessen 2026-05-20: Alcon und "
-             "Swisscom raus, Lindt PS und Helvetia Baloise rein).")
-            if _mp_entry_cut else
-            (f"→ **Symmetrische Hysterese** (Sidebar): Bänder Large < {_hLu:g} %, Mid "
-             f"{_hL - _helv_rules['hold_large_pp']:g}–{_hSu:g} %, Small "
-             f"{_hS - _helv_rules['hold_small_pp']:g}–{_hMu:g} %. "
-             "Umschalten über *Size-Buffer-Variante* in der Sidebar.")
-        )
+            "→ Achtung Kaskade: ein Aufsteiger nach Large tritt dort gegen "
+            "Nestlé/Roche/Novartis an und fällt bei Rang > 10 ganz aus dem Index, weil der "
+            "Überschuss nicht nach unten zurückgegeben wird (gemessen 2026-05-20: Alcon und "
+            "Swisscom raus, Lindt PS und Helvetia Baloise rein).")
 
         if not _reb:
             st.warning("Keine Selection Dates im geladenen File erkannt.")
