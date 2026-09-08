@@ -2,7 +2,7 @@
 
 **Typ:** Kundenspezifischer Schweizer Multi-Asset-Index
 **Basiswährung der Anzeige:** CHF (die Datenwährung wird nicht zusätzlich umgerechnet)
-**Stand:** 2026-06-16
+**Stand:** 2026-08-29
 
 ---
 
@@ -118,18 +118,36 @@ Pro Titel, abhängig vom Status (gleiche Inkumbenten-Definition wie Schritt 2):
 - Kumulative Coverage `_c_before` = vorlaufende Summe Adj_FF_MCap / Gesamt-Adj_FF_MCap (in %).
 - Zuordnung nach Coverage-Schwellen:
 
-| Segment | Entry (neue Firma) | Maintenance-Band (Bestands-Firma) |
-|---------|--------------------|-----------------------------------|
+| Segment | Aufnahme und Aufstieg (alle Firmen) | Verbleib (Bestands-Firma) |
+|---------|--------------------------------------|---------------------------|
 | Large Cap | _c_before < 70 % | bleibt Large bis < **75 %** (+5 pp) |
-| Mid Cap | 70 – 85 % | bleibt Mid **65 – 90 %** (±5 pp) |
-| Small Cap | 85 – 99 % | bleibt Small **84,5 – 99,5 %** (±0,5 pp) |
+| Mid Cap | 70 – 85 % | bleibt Mid bis < **90 %** (+5 pp) |
+| Small Cap | 85 – 99 % | bleibt Small bis < **99,5 %** (+0,5 pp) |
 | Micro Cap (nur für RE-Pool relevant) | ≥ 99 % | — |
 
-**Firmen-interne ±5/±0,5-Hysterese (Multi-Period):** Eine **Bestands-Firma** (Segment der Vorperiode)
-bleibt in ihrem Segment, solange ihre Coverage im Band liegt; **neue Firmen** werden hart geschnitten
-(70/85/99 %). Der Cut läuft über **Total MCap** (firmenweit → pro Firma einmal). Damit sind Helveticas
+**Hysterese-Variante „Aufstieg am Cut-off" (Multi-Period):** Die Bandbreite wirkt
+**ausschließlich auf der Halteseite**. Aufnahme und Aufstieg laufen für **alle** Firmen an den
+glatten Schwellen (Large < 70 %, Mid < 85 %); eine **Bestands-Firma** verbleibt in ihrem Segment,
+bis sie die obere Bandkante durchschreitet (75 / 90 / 99,5 %). Damit wird kein Bestandstitel an
+derselben Coverage-Position schlechter behandelt als ein Neuzugang. Vorbild ist FTSE GEIS
+§7.6.1/§7.6.4; es ist dieselbe Variante wie in der NaroIX-Serie.
+
+Der Cut läuft über **Total MCap** (firmenweit → pro Firma einmal). Damit sind Helveticas
 Größenklassen **deckungsgleich mit den Swiss-Size-Sub-Indizes** (siehe „Swiss Size Sub-Indizes"). Der
 zusätzliche **Top-10-Bestandsschutz** läuft über den Rang-Band-Buffer (Schritt 5).
+
+> **Änderung zum 29.08.2026 (Entscheidung Nico).** Bis dahin beschrieb die Guideline eine
+> symmetrische Hysterese (Mid 65 – 90 %, Small 84,5 – 99,5 %), und der Live-Index rechnete auch so.
+> Umgestellt auf „Aufstieg am Cut-off", damit Helvetica dieselbe Variante fährt wie die
+> NaroIX-Serie. Zum Umstellungstermin 19.08.2026 ist die Wirkung **null**: beide Varianten liefern
+> dieselben 37 Konstituenten in denselben Sleeves, weil kein Titel in einer der beiden
+> entscheidenden Zonen liegt (Vorsegment Mid mit Coverage 65 – 70 %, Vorsegment Small mit
+> 84,5 – 85 %).
+>
+> Wie die Selektionsschwellen (Schritt 3) liest das Tool auch die Variante aus der **Sidebar**;
+> der dortige Default „Aufstieg am Cut-off" ist die hier dokumentierte Guideline-Variante. Wer
+> auf „Symmetrisch" stellt, rechnet einen Vergleichslauf und nicht die publizierte Methodik. Was
+> ein konkreter Lauf benutzt hat, steht im Blatt **„Settings"** des jeweiligen Exports.
 
 ### Schritt 5 — Sleeve-Zusammenstellung (feste 10/10/10, sequenzielle Kaskade)
 - **Equity als Top-down-Kaskade (Large → Mid → Small):** Die Sleeves werden **nacheinander** aus
@@ -238,12 +256,15 @@ Inkumbenten-Buffer gedämpft:
 | **Real Estate** | **FF-Inkumbenten-Buffer**: Bestands-RE-Titel bleiben mit **FF % ≥ 7,5 %** drin. |
 | **Liquidität (alle Sleeves)** | **ADTV-Inkumbenten-Buffer**: Bestandstitel laufen gegen **75 % der Entry-Schwelle** (Schritt 3). |
 | **Spin-off-Kinder** | Ein aus einem Helvetica-Konstituenten abgespaltener Titel wird beim Ereignis als **Bestandstitel** aufgenommen und erbt das Segment der Mutter. |
-| **Coverage-Cuts (Segment)** | **±5/±0,5-Hysterese pro Firma**: eine Bestands-Firma bleibt in ihrem Segment (Large < 75 %, Mid 65–90 %, Small 84,5–99,5 %); neue Firmen werden hart geschnitten (70/85/99 %). |
+| **Coverage-Cuts (Segment)** | **Hysterese „Aufstieg am Cut-off" pro Firma**: Aufnahme und Aufstieg für alle an den glatten Schwellen (70/85/99 %), eine Bestands-Firma verbleibt in ihrem Segment bis zur oberen Bandkante (Large < 75 %, Mid < 90 %, Small < 99,5 %). |
 
 - Inkumbenten = die selektierten Konstituenten (55 %) der **Vorperiode**.
 - Die vier Mechanismen hängen an zwei Schaltern: *Buffer Rules* steuert die
   Maintenance-Schwellen (FF, ADTV) und das Rang-Band, *Size Buffer* die Coverage-Hysterese.
   Beide sind im Regelbetrieb an; abgeschaltet ist der Lauf nicht guideline-konform.
+- Die **Variante** der Coverage-Hysterese kommt aus dem Varianten-Schalter der Sidebar, den
+  sich Helvetica mit der NaroIX-Serie teilt. Guideline-konform ist der Default
+  „Aufstieg am Cut-off" (Schritt 4); jede andere Stellung ist ein Vergleichslauf.
 
 ### Spin-off-Aufnahme
 - Quelle ist die kuratierte Liste `Spin-Off Data.xlsx` (dieselbe wie in der NaroIX-Serie).
