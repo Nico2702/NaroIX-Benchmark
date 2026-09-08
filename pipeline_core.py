@@ -370,6 +370,79 @@ def _match_key(df):
     return perm.where(perm != "", isin)
 
 
+SEGMENT_ORDER = ("Large Cap", "Mid Cap", "Small Cap", "Micro Cap")
+
+
+def segment_edges(large_thr=70.0, mid_thr=85.0, small_thr=99.0,
+                  bw_lm=5.0, bw_ms=None, bw_sm=0.0,
+                  variant="entry", size_buffer=True):
+    """Alle Segmentkanten aus den aktiven Schwellen und Bandbreiten.
+
+    EINE Quelle der Wahrheit fuer Sidebar-Tabelle, Kriterienbox, Coverage-Grafik und
+    Settings-Blatt. Bisher formatierte jede dieser Stellen ihre eigenen Zahlen, teils
+    mit hartkodierten Werten (Small-Cut 99/99,5), und der Helvetica-Zweig noch einmal
+    getrennt. Die Kanten hier muessen exakt zu _size_segment_entry / _size_segment /
+    _size_segment_asym passen; die Tests sperren das ab.
+
+    variant: "entry" (Aufstieg am Cut-off) | "sym" (Symmetrisch) | "asym" (Asymmetrisch)
+    bw_ms:   None = wie bw_lm. Wirkt getrennt NUR im entry-Ast, sonst nutzen alle
+             Kanten dieselbe Bandbreite (so rechnen _size_segment/_size_segment_asym).
+    bw_sm:   Bandbreite der Small/Micro-Kante (0 = Small-Cut aus, laeuft bis EUMSS durch).
+    size_buffer: False = keine Hysterese, Aufstieg = Aufnahme, kein Verbleib.
+
+    Rueckgabe-Dict:
+      thresholds  {large, mid, small}                      Aufnahmeschwellen
+      rise        {large, mid}                             ab wann ein Bestandstitel aufsteigt
+      hold        {large, mid, small}                      bis wohin er verbleibt (None = keine)
+      bands       {lm, ms, sm}                             effektive Bandbreiten in pp
+      rows        Liste von Dicts fuer die Anzeige         Segment/Aufnahme/Aufstieg/Verbleib
+    """
+    lt, mt, st_ = float(large_thr), float(mid_thr), float(small_thr)
+    _lm = float(bw_lm)
+    _ms = _lm if bw_ms is None else float(bw_ms)
+    _sm = float(bw_sm or 0.0)
+    if variant not in ("entry", "sym", "asym"):
+        raise ValueError("variant muss entry, sym oder asym sein, nicht %r" % (variant,))
+    if not size_buffer:
+        _lm = _ms = _sm = 0.0
+    # Im symmetrischen und asymmetrischen Ast kennt die Engine nur EINE Bandbreite.
+    if variant in ("sym", "asym"):
+        _ms = _lm
+
+    if not size_buffer:
+        rise = {"large": None, "mid": None}
+        hold = {"large": None, "mid": None, "small": None}
+    else:
+        if variant == "entry":
+            rise = {"large": lt, "mid": mt}
+        elif variant == "asym":
+            rise = {"large": lt - _lm, "mid": mt}
+        else:
+            rise = {"large": lt - _lm, "mid": mt - _ms}
+        hold = {"large": lt + _lm, "mid": mt + _ms,
+                "small": (st_ + _sm) if _sm > 0 else None}
+
+    def _f(v):
+        return None if v is None else round(v, 4)
+
+    rows = [
+        {"segment": "Large Cap", "admission_from": None, "admission_to": lt,
+         "rise": _f(rise["large"]), "hold": _f(hold["large"])},
+        {"segment": "Mid Cap", "admission_from": lt, "admission_to": mt,
+         "rise": _f(rise["mid"]), "hold": _f(hold["mid"])},
+        {"segment": "Small Cap", "admission_from": mt, "admission_to": st_,
+         "rise": None, "hold": _f(hold["small"])},
+        {"segment": "Micro Cap", "admission_from": st_, "admission_to": None,
+         "rise": None, "hold": None},
+    ]
+    return {"thresholds": {"large": lt, "mid": mt, "small": st_},
+            "rise": {k: _f(v) for k, v in rise.items()},
+            "hold": {k: _f(v) for k, v in hold.items()},
+            "bands": {"lm": _lm, "ms": _ms, "sm": _sm},
+            "variant": variant, "size_buffer": bool(size_buffer),
+            "rows": rows}
+
+
 def _size_segment(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0):
     """Map (prior segment, _c_before coverage %) → size segment with hysteresis.
 
@@ -483,11 +556,16 @@ def _size_segment_entry(prior, c_before, large_thr=70.0, mid_thr=85.0, bw=5.0, b
 #     GMSR-Floor). GMSR-Floor = 0,5× (Full-MCap am 99%-FF-Coverage des DM-Universums),
 #     EM = ½ DM (§2.3.2).
 #   • Zuordnung: Full-MCap ≥ Cutoff.
-_GMSR_LO = 0.5                       # Untergrenze der Global Minimum Size Range (= IMI-Floor-Faktor)
-_MIG_DOWN, _MIG_UP = 2.0 / 3.0, 1.5  # Migrations-Buffer: −33% (halten) / +50% (eintreten)
-# EM-Größenschwellen = ½ DM (GIMI §2.3.2). EINE Quelle für beide Stellen, die das brauchen:
-# den GMSR-IMI-Floor (MSCI Logic) und die Size-Integrity-Auffüllung.
+# ── Ebene 2: Global Minimum Size Range (wirkt auf die CUTOFF-FIRMA eines Marktes) ──
+_GMSR_LO, _GMSR_HI = 0.5, 1.15
+# ── Ebene 3: Buffer-Zonen (wirken auf JEDEN EINZELNEN TITEL, bezogen auf den Segment-Cutoff)
+_MIG_DOWN, _MIG_UP = 2.0 / 3.0, 1.5   # ⅔ halten / 1,5× aufsteigen
+# Die beiden Faktorenpaare werden haeufig verwechselt, sind aber verschiedene Ebenen:
+# 0,5/1,15 prueft EINMAL den Cutoff eines Marktes, ⅔/1,5 prueft JEDEN Titel gegen den
+# fertigen Cutoff. Siehe MSCI_Size_Segmentierung.md Abschnitt 7.
+# EM-Größenschwellen = ½ DM (GIMI §2.3.2 / Abschnitt 8 des Referenzdokuments).
 _EM_SIZE_FACTOR = 0.5
+_SEG_ORDER = {"Large Cap": 0, "Mid Cap": 1, "Small Cap": 2, "Micro Cap": 3}
 
 
 def _coverage_cutoffs(pool_df, if_col, large_thr, mid_thr, small_thr):
@@ -514,49 +592,106 @@ def _coverage_cutoffs(pool_df, if_col, large_thr, mid_thr, small_thr):
     return {"large": _cut(large_thr), "standard": _cut(mid_thr), "imi": _cut(small_thr)}
 
 
-def _imi_floor(gmsr_dm, classification):
-    """Absoluter Mindest-Size-Floor (Full-MCap) für die IMI/Micro-Grenze.
-    = 0,5× (Full-MCap am 99%-FF-Coverage des DM-Universums), EM = ½ DM. 0.0 ohne DM-Basis."""
-    if not gmsr_dm or gmsr_dm.get("imi", 0) <= 0:
-        return 0.0
-    f = _EM_SIZE_FACTOR if classification == "EM" else 1.0
-    return _GMSR_LO * f * gmsr_dm["imi"]
+def _gmsr_band(gmsr_dm, seg_key, classification):
+    """Global Minimum Size Range fuer EIN Segment: (Untergrenze, Obergrenze) in Full-MCap.
+
+    Die GMSR wird global auf dem Developed-Markets-Universum kalibriert (§4.1) und gilt fuer
+    alle Maerkte, DM wie EM; EM-Schwellen sind die Haelfte. Band = 0,5x bis 1,15x.
+    None, wenn keine DM-Basis vorliegt — dann entfaellt Ebene 2 ersatzlos.
+    """
+    if not gmsr_dm or gmsr_dm.get(seg_key, 0) <= 0:
+        return None
+    ref = (_EM_SIZE_FACTOR if classification == "EM" else 1.0) * gmsr_dm[seg_key]
+    return _GMSR_LO * ref, _GMSR_HI * ref
 
 
-def _msci_segments_for_market(grp, if_col, imi_floor, large_thr, mid_thr, small_thr,
-                              incumbent_segments=None, apply_migration_buffer=False):
-    """Weise einem Markt-Grp (eine Mapping Country) die Size-Segmente nach MSCI zu.
+def _apply_gmsr(cut_raw, band):
+    """Ebene 2: die CUTOFF-FIRMA eines Marktes gegen die Size Range pruefen (bidirektional).
 
-    1) per-Markt Full-MCap-Cutoffs an den FF-Coverage-Punkten (large/mid/small_thr),
-    2) Large/Standard rein per Coverage; IMI-Cutoff = max(Coverage-99%, GMSR-IMI-Floor),
-    3) Zuordnung per Full-MCap ≥ Cutoff (Large ⊃ Standard ⊃ IMI),
-    4) optional Migrations-Buffer −33%/+50% (nur Incumbents, nur MP).
+      Fall A — Cutoff im Band            -> unveraendert, Coverage bleibt im Zielband
+      Fall B — Cutoff UEBER 1,15x        -> additiv: Schwelle auf die Obergrenze senken,
+                                            alle Firmen darueber kommen dazu, Coverage steigt
+      Fall C — Cutoff UNTER 0,5x         -> subtraktiv: Schwelle auf die Untergrenze heben,
+                                            Titelzahl sinkt, Coverage faellt unter das Band
+
+    Fall B und C sind der Grund, warum MSCI-Marktindizes bei 82 % oder 92 % Coverage landen
+    koennen: Groessenintegritaet hat Vorrang vor Marktabdeckung (§1).
+    Gibt (effektive Schwelle, Fall) zurueck.
+    """
+    if not band or cut_raw <= 0:
+        return cut_raw, "A"
+    lo, hi = band
+    if cut_raw > hi:
+        return hi, "B"
+    if cut_raw < lo:
+        return lo, "C"
+    return cut_raw, "A"
+
+
+def _msci_edge(cut, prior, target_rank):
+    """Ebene 3: die fuer EINEN Titel geltende Schwelle an einer Segmentgrenze.
+
+    Drei Faelle, nicht zwei (§5):
+      * Vorperiode im Segment oder darueber -> ⅔ x Cutoff  (halten ist leichter)
+      * Vorperiode in einem KLEINEREN Segment -> 1,5 x Cutoff  (aufsteigen ist schwerer)
+      * kein Vorperioden-Segment (Neuzugang) -> glatter Cutoff, OHNE Buffer
+    """
+    if prior is None:
+        return cut
+    return (_MIG_DOWN if _SEG_ORDER.get(prior, 9) <= target_rank else _MIG_UP) * cut
+
+
+def _msci_segments_for_market(grp, if_col, gmsr_dm, classification, large_thr, mid_thr, small_thr,
+                              incumbent_segments=None, apply_migration_buffer=False,
+                              audit=None):
+    """Size-Segmente eines Marktes nach MSCI GIMI (MSCI_Size_Segmentierung.md).
+
+    Drei Ebenen, die auf verschiedene Objekte wirken:
+
+      Ebene 1 — Market Coverage Target Range (wirkt auf den MARKT)
+          Sortierung nach Full-MCap, Kumulation der free-float-adjustierten MCap bis
+          70 / 85 / 99 %. Der Cutoff ist die FULL-MCap der Grenzfirma, ab hier wird nur
+          noch mit diesem USD-Betrag gerechnet.
+
+      Ebene 2 — Global Minimum Size Range (wirkt auf den CUTOFF)
+          Die Cutoff-Firma wird gegen 0,5x bis 1,15x der global kalibrierten GMSR geprueft
+          und der Cutoff bidirektional korrigiert (siehe _apply_gmsr). Verhindert die
+          Groessen-Inversion zwischen flachen und konzentrierten Maerkten (§4.3).
+
+      Ebene 3 — Buffer-Zonen (wirken auf JEDEN TITEL)
+          ⅔ x Cutoff zum Halten, 1,5 x Cutoff zum Aufsteigen, Neuzugaenge ohne Buffer
+          direkt am Cutoff (siehe _msci_edge).
+
+    `audit`: optionales dict, in das die effektiven Cutoffs und die GMSR-Faelle je Markt
+    geschrieben werden (Diagnose im UI).
     Returns eine Liste der Segment-Labels in grp-Reihenfolge.
     """
     cand = _coverage_cutoffs(grp, if_col, large_thr, mid_thr, small_thr)
     if cand is None:
         return ["Micro Cap"] * len(grp)
-    cut_large = cand["large"]
-    cut_std = cand["standard"]
-    # GMSR nur als absoluter Mindest-Size-Floor auf der IMI/Micro-Grenze (Investability).
-    cut_imi = max(cand["imi"], imi_floor)
+
+    # Ebene 2 je Segmentgrenze
+    cut_large, case_l = _apply_gmsr(cand["large"], _gmsr_band(gmsr_dm, "large", classification))
+    cut_std, case_s = _apply_gmsr(cand["standard"], _gmsr_band(gmsr_dm, "standard", classification))
+    cut_imi, case_i = _apply_gmsr(cand["imi"], _gmsr_band(gmsr_dm, "imi", classification))
+    if audit is not None:
+        audit.update({"cut_large_raw": cand["large"], "cut_std_raw": cand["standard"],
+                      "cut_imi_raw": cand["imi"], "cut_large": cut_large, "cut_std": cut_std,
+                      "cut_imi": cut_imi, "gmsr_case_large": case_l,
+                      "gmsr_case_std": case_s, "gmsr_case_imi": case_i})
 
     mcap = pd.to_numeric(grp["Total MCap Y2025"], errors="coerce").fillna(0.0).values
-    _STD = {"Large Cap", "Mid Cap"}
-    _IMI = {"Large Cap", "Mid Cap", "Small Cap"}
-    isin = _match_key(grp).values if apply_migration_buffer else None
+    keys = _match_key(grp).values if apply_migration_buffer else None
+    _segs = incumbent_segments or {}
 
     out = []
     for i in range(len(grp)):
         m = mcap[i]
-        if apply_migration_buffer and incumbent_segments:
-            prior = incumbent_segments.get(isin[i])
-            # Incumbents im Segment: −33%-Halteschwelle; Nicht-Mitglieder: +50%-Eintritt.
-            le = _MIG_DOWN * cut_large if prior == "Large Cap" else _MIG_UP * cut_large
-            se = _MIG_DOWN * cut_std if prior in _STD else _MIG_UP * cut_std
-            ie = _MIG_DOWN * cut_imi if prior in _IMI else _MIG_UP * cut_imi
-        else:
-            le, se, ie = cut_large, cut_std, cut_imi
+        # Ebene 3: nur im Multi-Period, wo es ein Vorperioden-Segment gibt.
+        prior = _segs.get(keys[i]) if apply_migration_buffer else None
+        le = _msci_edge(cut_large, prior, 0)
+        se = _msci_edge(cut_std, prior, 1)
+        ie = _msci_edge(cut_imi, prior, 2)
         if m >= le:
             out.append("Large Cap")
         elif m >= se:
@@ -1939,8 +2074,12 @@ def build_new_universe(df_raw_orig, country_cls, thailand_mode, max_price,
     # und 12M). Es existiert fuer die Hochpreis-Regel, die auf 3M und 6M abstellt.
     df["ATVR_6M"]  = np.where(_mc > 0, _adtv6  * 252 / _mc, 0.0)
     df["ATVR_12M"] = np.where(_mc > 0, _adtv12 * 252 / _mc, 0.0)
-    # Combined value kept for display / back-compat = the stricter (min) of the two horizons.
-    df["ATVR"] = np.minimum(df["ATVR_3M"], df["ATVR_12M"])
+    # Sammelspalte fuer Export und Diagnostik = GENAU das, was der Screen prueft, also
+    # min(3M, 6M). Bis 09/2026 stand hier min(3M, 12M), waehrend der Screen laengst auf
+    # 3M/6M lief: wer im Export nachsah, warum ein Titel durchfiel, las eine Zahl, die mit
+    # der Pruefung nichts zu tun hatte. Solange die Schwellen auf 0 standen, fiel das nicht
+    # auf. ATVR_12M bleibt als eigene Spalte erhalten.
+    df["ATVR"] = np.minimum(df["ATVR_3M"], df["ATVR_6M"])
     return df
 
 def apply_liquidity_new(df, adtv_dm, adtv_em, atvr_dm, atvr_em,
@@ -2142,6 +2281,32 @@ def run_selection_pipeline(
     # Europa ist bei MSCI laut Fussnote 1 EIN Markt — dort schuetzt sie also die einzelnen
     # europaeischen Laender NICHT. Verifiziert gegen GIMI Nov-2019 und Mai-2026.
     europe_pool=False, min_per_country=0,
+    # Coverage-Punkt, an dem der EUMSS-Boden kalibriert wird. None = small_thr, also
+    # das bisherige Verhalten. Getrennt setzbar, weil es eine ANDERE Frage beantwortet als
+    # die Small/Micro-Kante: der Boden ist global auf DM-Primary und rohem Free Float,
+    # die Kante je Markt auf Adj_FF. Dass beide ueblicherweise auf 99 stehen, ist Konvention
+    # (MSCI EUMSR und IMI-Coverage, STOXX EUMSC, Morningstar) und keine Kopplung.
+    eumss_coverage=None,
+    # Größen-Waiver auf den Mindest-Free-Float: ein Titel, der die FF-%-Hürde reißt, bleibt
+    # eligible, wenn seine Free Float MCap mindestens ff_waiver_k × EUMSS-Boden erreicht.
+    # 0 = aus. Die beiden Größenbeine (Total ≥ Boden, Float ≥ eumss_ff_ratio × Boden) und
+    # der Liquiditätsscreen bleiben UND-verknüpft, der Waiver hebt NUR das FF-%-Bein auf.
+    # Alle fünf Anbieter mit Waiver ankern ihn am Float: Solactive absolut (1,0 Mrd neu /
+    # 0,75 Mrd Bestand), MSCI 1,8 × Mindestgröße, STOXX 1,8 × halber Country-Cutoff,
+    # Bloomberg 0,5 × 70er-Perzentil des Landes. Ein relativer Anker skaliert mit dem Boden.
+    ff_waiver_k=0.0,
+    # Bestandsschutz am Größenboden: Incumbents werden gegen ratio × Boden geprüft statt
+    # gegen den vollen Boden (analog zu buffer_min_ff und den Maintenance-ADTVs). Wirkt auf
+    # BEIDE Größenbeine. None oder 1.0 = aus. MSCI 3.1.2.2/3.1.2.3 und STOXX 3.3.1.2 nehmen
+    # Bestandstitel komplett aus (entspräche ratio=0), FTSE fährt 150 Mio neu / 30 Mio Bestand.
+    # Greift nur mit apply_buffer, sonst gibt es keine Incumbent-Menge.
+    eumss_maint_ratio=None,
+    # Rang-Mitnahme am Größenboden (MSCI 3.1.2.2, STOXX 3.3.1.2). eumss_carry_rank ist der
+    # Rang aus `eumss_rank_used` der Vorperiode, eumss_carry_band die Breite des Haltebands
+    # oberhalb des Kalibrierpunkts (MSCI und STOXX: 0,25 pp). Band 0 = aus, also kalter
+    # Schnitt am Kalibrierpunkt wie bisher. Braucht Zustand über Perioden, ist im
+    # Einzelperioden-Lauf also nicht definiert und fällt dort auf den kalten Schnitt zurück.
+    eumss_carry_rank=None, eumss_carry_band=0.0,
     # Performance: vorgebautes Universe wiederverwenden (überspringt build_new_universe)
     prebuilt_universe=None,
 ):
@@ -2211,7 +2376,8 @@ def run_selection_pipeline(
             fol_year=fol_year, fol_enabled=fol_enabled,
         )
 
-    # 2) EUMSS calibration on DM **Primary-only** (top small_thr% coverage point).
+    # 2) EUMSS calibration on DM **Primary-only** (top _eumss_cov% coverage point).
+    _eumss_cov = float(small_thr if eumss_coverage is None else eumss_coverage)
     # Wichtig: Auf Primary-only kalibrieren, um Doppelzählung von Companies mit
     # mehreren Listings (z.B. Common + Pref) zu vermeiden. Die kalibrierten Schwellen
     # werden anschließend auf das volle Listing-Universe (inkl. Secondaries) angewendet.
@@ -2226,12 +2392,36 @@ def run_selection_pipeline(
         eumss_calib_fallback = True
     # Sekundärer Sort-Key: bei gleichem Total MCap (Multi-Class derselben Company)
     # kommt das liquidere Listing (höheres Adj_FF_MCap) zuerst → deterministisches Ranking.
-    dm_only = dm_only.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False])
+    dm_only = (dm_only.sort_values(["Total MCap Y2025", "Adj_FF_MCap"], ascending=[False, False])
+                      .reset_index(drop=True))
     dm_total_ff = dm_only["Free Float MCap Y2025"].sum()
+    _carry_band = float(eumss_carry_band or 0.0)
+    eumss_rank_used = None
     if dm_total_ff > 0:
-        dm_only["_cum_ff_pct"] = dm_only["Free Float MCap Y2025"].cumsum() / dm_total_ff * 100
-        eumss_pos = dm_only[dm_only["_cum_ff_pct"] >= small_thr].index
-        eumss_full = float(dm_only.loc[eumss_pos[0], "Total MCap Y2025"]) if len(eumss_pos) > 0 else 0
+        _cum = dm_only["Free Float MCap Y2025"].cumsum() / dm_total_ff * 100
+        dm_only["_cum_ff_pct"] = _cum
+        _cum_np = _cum.to_numpy()
+
+        def _first_at(cov):
+            _hit = np.flatnonzero(_cum_np >= cov)
+            return int(_hit[0]) if len(_hit) else None
+
+        _pos = _first_at(_eumss_cov)
+        # Rang-Mitnahme (MSCI 3.1.2.2, STOXX 3.3.1.2): der Rang, der den Boden zuletzt
+        # definiert hat, bleibt der Boden, solange seine Coverage im Band
+        # [_eumss_cov, _eumss_cov + _carry_band] liegt. Darunter Reset auf die untere Kante,
+        # darüber auf die obere. Ohne Band (0) oder ohne gemerkten Rang bleibt es beim
+        # kalten Schnitt am Kalibrierpunkt — verhaltensneutral.
+        if (_carry_band > 0 and eumss_carry_rank is not None
+                and 0 <= int(eumss_carry_rank) < len(dm_only)):
+            _r = int(eumss_carry_rank)
+            _cov_r = float(_cum_np[_r])
+            if _eumss_cov <= _cov_r <= _eumss_cov + _carry_band:
+                _pos = _r
+            elif _cov_r > _eumss_cov + _carry_band:
+                _pos = _first_at(_eumss_cov + _carry_band)
+        eumss_rank_used = _pos
+        eumss_full = float(dm_only.loc[_pos, "Total MCap Y2025"]) if _pos is not None else 0
     else:
         eumss_full = 0
     eumss_ff = eumss_full * eumss_ff_ratio
@@ -2245,10 +2435,24 @@ def run_selection_pipeline(
     gm_isin = _match_key(gm_u)
     gm_is_inc = gm_isin.isin(incumbents_isin) if apply_buffer else pd.Series(False, index=gm_u.index)
     gm_min_ff_thr = np.where(gm_is_inc, buffer_min_ff, min_ff_pct)
-    eumss_mask = ((gm_u["Total MCap Y2025"] >= eumss_full) &
-                  (gm_u["Free Float MCap Y2025"] >= eumss_ff) &
-                  (gm_u["Free Float Percent"] >= gm_min_ff_thr))
+    # Bestandsschutz am Boden: Incumbents gegen _maint × Boden statt gegen den vollen Boden.
+    _maint = 1.0 if eumss_maint_ratio is None else float(eumss_maint_ratio)
+    if _maint != 1.0 and bool(gm_is_inc.any()):
+        _floor_full = np.where(gm_is_inc, eumss_full * _maint, eumss_full)
+        _floor_ff = np.where(gm_is_inc, eumss_ff * _maint, eumss_ff)
+    else:
+        _floor_full, _floor_ff = eumss_full, eumss_ff
+    _gm_ff_mcap = pd.to_numeric(gm_u["Free Float MCap Y2025"], errors="coerce").fillna(0)
+    size_ok = ((gm_u["Total MCap Y2025"] >= _floor_full) & (_gm_ff_mcap >= _floor_ff))
+    ff_ok = (gm_u["Free Float Percent"] >= gm_min_ff_thr)
+    # Größen-Waiver: die FF-%-Hürde entfällt ab ff_waiver_k × Boden Float-MCap. Die
+    # Größenbeine bleiben, ein Titel mit winzigem Absolut-Float kommt so nicht herein.
+    _wk = float(ff_waiver_k or 0.0)
+    ff_waived = (pd.Series(False, index=gm_u.index) if (_wk <= 0 or eumss_full <= 0)
+                 else (~ff_ok) & (_gm_ff_mcap >= _wk * eumss_full))
+    eumss_mask = size_ok & (ff_ok | ff_waived)
     gm_eumss = gm_u[eumss_mask].copy()
+    n_ff_waived = int((ff_waived & size_ok).sum())
 
     # 4) Liquidity filter — buffer-aware
     gm_liq = apply_liquidity_new(
@@ -2284,13 +2488,16 @@ def run_selection_pipeline(
 
     use_size_buffer = bool(apply_size_buffer and incumbent_segments)
 
-    # MSCI Logic: Global Minimum Size Range auf dem DM-Teil des gescreenten Pools
-    # (EM=½ DM, §2.3.2). Einmal pro Periode bestimmt, liefert den IMI-Mindest-Size-Floor
-    # für alle Märkte. Fehlt DM (z.B. reiner EM-Lauf), bleibt gmsr_dm None → _imi_floor
-    # gibt dann 0.0 (kein Floor). Migrations-Buffer (−33/+50) nur, wenn Incumbents
-    # vorliegen (= Multi-Period ab Periode 2).
+    # MSCI Logic Ebene 2: die Global Minimum Size Reference wird global auf dem
+    # Developed-Markets-Universum kalibriert (§4.1) und gilt fuer ALLE Maerkte, DM wie EM
+    # (EM = ½). Einmal je Periode bestimmt, je Segment ein eigener Referenzwert.
+    # Bewusst je Periode aus den Daten DIESER Periode abgeleitet, nie aus einer Konstante:
+    # ein publizierter Stichtagswert wuerde sonst in die Historie zurueckgeschrieben.
+    # Fehlt DM (reiner EM-Lauf), bleibt gmsr_dm None und Ebene 2 entfaellt ersatzlos.
+    # Die Buffer-Zonen (Ebene 3) greifen nur mit Vorperioden-Segmenten, also ab Periode 2.
     gmsr_dm = None
     msci_mig_buffer = False
+    msci_audit = []
     if msci_logic:
         _dm_pool = gm_liq_cov[gm_liq_cov["Classification"] == "DM"]
         gmsr_dm = _coverage_cutoffs(_dm_pool, if_cum_col, large_thr, mid_thr, small_thr)
@@ -2348,16 +2555,18 @@ def run_selection_pipeline(
         else:
             _seg_fn = _size_segment_asym if asym_buffer else _size_segment
         if msci_logic:
-            # MSCI GIMI: Full-MCap-Cutoffs (Large/Standard rein per-Markt-Coverage,
-            # IMI mit GMSR-Mindest-Size-Floor EM=½), Zuordnung per Full-MCap ≥ Cutoff,
-            # optional Migrations-Buffer (MP).
+            # MSCI GIMI, drei Ebenen: Coverage-Cutoff (Full-MCap), GMSR-Bandpruefung der
+            # Cutoff-Firma (bidirektional, EM = ½), Buffer-Zonen ⅔/1,5 je Titel mit
+            # Neuzugaengen direkt am Cutoff. Siehe MSCI_Size_Segmentierung.md.
             _region = grp["Classification"].iloc[0] if len(grp) else "DM"
-            _floor = _imi_floor(gmsr_dm, _region)
+            _aud = {"Markt": ctry, "Region": _region, "Titel": len(grp)}
             grp["Segment_New"] = _msci_segments_for_market(
-                grp, if_cum_col, _floor, large_thr, mid_thr, small_thr,
+                grp, if_cum_col, gmsr_dm, _region, large_thr, mid_thr, small_thr,
                 incumbent_segments=incumbent_segments,
                 apply_migration_buffer=msci_mig_buffer,
+                audit=_aud,
             )
+            msci_audit.append(_aud)
         elif use_size_buffer:
             # Pro-Segment-Hysterese: Vorsegment je Titel → Übergangsfunktion (auf _c_before).
             _isin = _match_key(grp)
@@ -2618,8 +2827,20 @@ def run_selection_pipeline(
         "eumss_full":       eumss_full,
         "eumss_ff":         eumss_ff,
         "eumss_calib_fallback": eumss_calib_fallback,
+        "eumss_coverage_used": _eumss_cov,
+        "ff_waiver_k":      _wk,
+        "n_ff_waived":      n_ff_waived,
+        "eumss_maint_ratio_used": _maint,
+        # Rang, der den Boden dieser Periode definiert hat. Der Aufrufer reicht ihn als
+        # eumss_carry_rank in die naechste Periode weiter, wenn die Rang-Mitnahme laeuft.
+        "eumss_rank_used":  eumss_rank_used,
+        "eumss_carry_band_used": _carry_band,
         "buffer_breakdown": buffer_breakdown,
         "europe_pool_cutoff": europe_pool_cutoff,
+        # MSCI Logic: je Markt die rohen und die GMSR-korrigierten Cutoffs plus den
+        # Fall (A/B/C). Leer, wenn msci_logic aus ist.
+        "msci_audit":       msci_audit,
+        "gmsr_dm":          gmsr_dm,
         # Size-Integrity: R85 und T (DM) je Periode, EM-Schwelle = _EM_SIZE_FACTOR × T.
         "si_r85":           si_r85,
         "si_threshold":     si_threshold,
@@ -2629,4 +2850,4 @@ def run_selection_pipeline(
         "si_max_coverage":  si_max_coverage,
     }
 
-__all__ = ['EUROPE_COUNTRIES', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'load_spinoff_list', 'seed_spinoff_incumbents', 'SPINOFF_COLS', 'spinoff_liquidity_exemptions', 'SPINOFF_HORIZON_MONTHS', 'with_fol_breakdown', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']
+__all__ = ['EUROPE_COUNTRIES', 'SEGMENT_ORDER', 'segment_edges', 'EXPORT_COL_RENAME', 'FOL_COUNTRY_CODE_MAP', 'INDEX_BY_CODE', 'INDEX_BY_NAME', 'INDEX_SERIES', 'MASTER_DYNAMIC_PREFIXES', 'MASTER_STATIC_REQUIRED', 'apply_fol_matrix', 'apply_ineligible_filter', 'apply_liquidity_new', 'build_index', 'build_new_universe', 'build_segment_matrix', 'build_snapshot_from_master', 'build_wide_matrix', 'clean_export_cols', 'load_spinoff_list', 'seed_spinoff_incumbents', 'SPINOFF_COLS', 'spinoff_liquidity_exemptions', 'SPINOFF_HORIZON_MONTHS', 'with_fol_breakdown', 'format_bn', 'get_classification_dict', 'get_selection_date_for_snapshot', 'normalize_index_weight', 'run_selection_pipeline', 'to_excel_multi', 'validate_factset_data']

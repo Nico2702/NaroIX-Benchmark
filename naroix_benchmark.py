@@ -114,6 +114,39 @@ _IU_KEEP_COLS = [
 ]
 
 
+def _pct(v, dash="—"):
+    """Coverage-Wert deutsch formatiert, None -> Gedankenstrich."""
+    if v is None:
+        return dash
+    return ("%g" % round(float(v), 4)).replace(".", ",") + " %"
+
+
+def _edges_table_rows(edges):
+    """segment_edges() -> anzeigefertige Zeilen.
+
+    EINE Formatierung fuer Sidebar, Kriterienbox und Settings-Blatt. Vorher formatierte
+    jede Stelle ihre eigenen Zahlen, teils hartkodiert (Small-Cut 99/99,5), weshalb die
+    Anzeige bei abweichenden Schwellen falsche Werte zeigte, waehrend die Engine richtig
+    rechnete.
+    """
+    out = []
+    for r in edges["rows"]:
+        lo, hi = r["admission_from"], r["admission_to"]
+        if lo is None:
+            adm = "< " + _pct(hi)
+        elif hi is None:
+            adm = "≥ " + _pct(lo)
+        else:
+            adm = _pct(lo).replace(" %", "") + " – " + _pct(hi)
+        out.append({
+            "Segment": r["segment"],
+            "Aufnahme neu": adm,
+            "Aufstieg Bestand": ("< " + _pct(r["rise"])) if r["rise"] is not None else "—",
+            "Verbleib bis": _pct(r["hold"]),
+        })
+    return out
+
+
 def _iu_with_status(gm_complete, ix, cons, prev_index_isin, prev_segments, mid_thr,
                     pool_symbols=None):
     """Investable Universe eines Produkt-Scopes, angereichert um Index-Status und Begruendung.
@@ -1778,23 +1811,141 @@ with st.sidebar:
     _sa, _sb = st.columns([3,4])
     with _sa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Small Cap (%)</div>", unsafe_allow_html=True)
     with _sb: _small_raw = st.text_input("Small", value="99", key="small_thr_input", label_visibility="collapsed")
+    st.markdown("<div style='font-size:11px;font-weight:700;letter-spacing:.09em;"
+                "text-transform:uppercase;color:#7f8bb0;padding-top:8px;'>"
+                "Größenboden (EUMSS)</div>", unsafe_allow_html=True)
+    EUMSS_MODES = ["Fest am Kalibrierpunkt", "Mit Rang-Mitnahme", "Kein Boden"]
+    eumss_mode = st.radio(
+        "Bodenregel", EUMSS_MODES, index=1, key="eumss_mode", label_visibility="collapsed",
+        captions=[
+            "jede Periode kalt auf den Kalibrierpunkt geschnitten",
+            "gemerkter Rang haelt, solange er im Band bleibt (MSCI 3.1.2.2, STOXX 3.3.1.2)",
+            "kein absoluter Groessenboden, alles laeuft in den Waterfall (Solactive-Ansatz)",
+        ],
+        help="Der Groessenboden ist die Total MCap am Kalibrierpunkt der DM-Primary-Kurve. "
+             "Er entscheidet, wer ueberhaupt in den Waterfall kommt, und damit auch ueber "
+             "den Coverage-Nenner aller anderen.\n\n"
+             "FEST: Stand bis 09/2026. Der Boden wandert stark mit den Daten, Median 4,6 % "
+             "je Periode, groesster Sprung 125 %.\n\n"
+             "RANG-MITNAHME (Default seit 08.09.2026): der Rang, der den Boden zuletzt "
+             "definiert hat, bleibt der Boden, solange seine Coverage im Band Kalibrierpunkt "
+             "bis Kalibrierpunkt+0,25 liegt. Darunter Reset auf die untere Kante, darueber auf "
+             "die obere. Braucht Zustand ueber Perioden, im Einzelperioden-Tab faellt sie "
+             "deshalb auf den kalten Schnitt zurueck. Gemessen ueber 48 Perioden: Boden 557 "
+             "statt 759 Mio, NX-EU-LM 405 statt 394 Titel, Overlap mit MSCI Europe 98,59 statt "
+             "98,27 %, Turnover 3,40 statt 3,47 %.\n\n"
+             "KEIN BODEN: Research-Option. Bester Match in Europa (99,02 %), aber am Global "
+             "All Cap +3.843 Titel im Median und schlechterer relativer Turnover als "
+             "Rang-Mitnahme plus Bestandsschutz. Solactive kann sich das leisten, weil ihre "
+             "Liquidity Ratio scharf steht, unsere ATVR-Schwellen stehen auf 0.\n\n"
+             "Der Total-Markets-Index NX-GM-TM laeuft unabhaengig von dieser Wahl immer ohne "
+             "Boden, das ist seine Definition.")
+    _no_floor = (eumss_mode == "Kein Boden")
+    eumss_enabled_ui = not _no_floor
+    eumss_carry_band = 0.25 if eumss_mode == "Mit Rang-Mitnahme" else 0.0
+    _eca, _ecb = st.columns([3,4])
+    with _eca: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Kalibrierpunkt (%)</div>", unsafe_allow_html=True)
+    with _ecb: _eumss_cov_raw = st.text_input(
+        "EUMSS Kalibrierpunkt", value="99", key="eumss_coverage_input", label_visibility="collapsed",
+        disabled=_no_floor,
+        help="Coverage-Punkt, an dem der Groessenboden bestimmt wird: GLOBAL ueber alle "
+             "DM-Primary-Titel, kumuliert auf dem ROHEN Free Float. Das ist eine andere "
+             "Frage als die Small/Micro-Kante oben, die je Markt auf Adj_FF laeuft. Beide "
+             "stehen ueblicherweise auf 99 (MSCI EUMSR, STOXX EUMSC, Morningstar), muessen "
+             "es aber nicht. Bis 09/2026 war dieser Punkt fest an die Small-Cap-Schwelle "
+             "gekoppelt: wer Small auf 98 stellte, verdoppelte unbemerkt den Boden von 759 "
+             "auf 1.574 Mio USD. Bei Rang-Mitnahme ist dies die UNTERE Bandkante, die obere "
+             "liegt 0,25 pp darueber. Wer gar keinen Boden will, nimmt oben die Option "
+             "'Kein Boden' statt hier 100 einzutragen.")
     _ffa, _ffb = st.columns([3,4])
-    with _ffa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min FF% (%)</div>", unsafe_allow_html=True)
-    with _ffb: _ff_raw = st.text_input("Min FF", value="10", key="min_ff_input", label_visibility="collapsed")
+    with _ffa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EUMSS FF Ratio (%)</div>", unsafe_allow_html=True)
+    with _ffb: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio",
+                                             label_visibility="collapsed", disabled=_no_floor)
+    _mra, _mrb = st.columns([3,4])
+    with _mra: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Bestandsschutz (x Boden)</div>", unsafe_allow_html=True)
+    with _mrb: _eumss_maint_raw = st.text_input(
+        "EUMSS Bestandsschutz", value="0,75", key="eumss_maint_ratio_input",
+        label_visibility="collapsed", disabled=_no_floor,
+        help="Bestandstitel werden gegen dieses Vielfache des Bodens geprueft statt gegen den "
+             "vollen Boden, auf BEIDEN Groessenbeinen (Total MCap und Float MCap). "
+             "1 = aus, jeder Titel jede Periode gegen den vollen Boden; das war der Stand bis "
+             "09/2026. Default ist seit der Entscheidung vom 08.09.2026 0,75.\n\n"
+             "Analog zu Min FF % (10 neu / 7,5 Bestand) und ADTV (1,0 neu / 0,75 Bestand). "
+             "MSCI 3.1.2.2 und 3.1.2.3 sowie STOXX 3.3.1.2 nehmen Bestandstitel komplett aus "
+             "(entspraeche 0), FTSE faehrt 150 Mio Aufnahme gegen 30 Mio Ausschluss.\n\n"
+             "Wirkung ist stark produktabhaengig. Bei NX-EU-LM fast null, europaeische Large "
+             "und Mid Caps kommen dem Boden nie nahe. Am relativen Turnover gemessen ueber 48 "
+             "Perioden, zusammen mit der Rang-Mitnahme: NX-GM-AC 9,48 auf 7,55 %, NX-EM-AC "
+             "13,11 auf 9,46 %, NX-EM-S 21,42 auf 14,57 %, NX-GM-S 15,74 auf 12,39 %.\n\n"
+             "Greift nur mit aktiven Buffer Rules, sonst gibt es keine Bestandsmenge.")
     _eua, _eub = st.columns([3,4])
-    with _eua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EUMSS FF Ratio (%)</div>", unsafe_allow_html=True)
-    with _eub: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio", label_visibility="collapsed")
+    with _eua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min Free Float (%)</div>", unsafe_allow_html=True)
+    with _eub: _ff_raw = st.text_input("Min FF", value="10", key="min_ff_input", label_visibility="collapsed")
+    _wva, _wvb = st.columns([3,4])
+    with _wva: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>FF-Waiver (x Boden)</div>", unsafe_allow_html=True)
+    with _wvb: _ff_waiver_raw = st.text_input(
+        "FF-Waiver", value="2,0", key="ff_waiver_k", label_visibility="collapsed",
+        help="Groessen-Waiver auf den Mindest-Free-Float: ein Titel, der die FF-%-Huerde "
+             "reisst, bleibt drin, wenn seine Free Float MCap mindestens dieses Vielfache "
+             "des Groessenbodens erreicht. 0 = aus.\n\n"
+             "Die beiden Groessenbeine (Total >= Boden, Float >= FF-Ratio x Boden) und die "
+             "Liquiditaet gelten weiter, der Waiver hebt NUR das FF-%-Bein auf.\n\n"
+             "Alle fuenf Anbieter mit Waiver ankern ihn am FLOAT, keiner an der Total MCap: "
+             "Solactive 1,0 Mrd USD (Bestand 0,75), MSCI 1,8 x Mindestgroesse, STOXX 1,8 x "
+             "halber Country-Cutoff, Bloomberg 0,5 x 70er-Perzentil des Landes. FTSE hat "
+             "keinen Waiver, dafuer nur 5 % Huerde.\n\n"
+             "Gemessen 19.08.2026 (Boden 759 Mio): 2,0 x trifft dieselben 11 Titel wie "
+             "Solactives fester 1-Mrd-Anker und wie MSCIs 1,8 x. Erst ab 2,5 x faellt der "
+             "erste weg. Der relative Anker skaliert mit dem Boden, der ueber die Historie "
+             "von 152 auf 759 Mio gelaufen ist.\n\n"
+             "ACHTUNG: ohne Mindesthistorie holt der Waiver auch Titel mit einer einzigen "
+             "Datenperiode herein (SpaceX). Die Mindesthistorie fehlt uns noch.")
 
-    try:    large_thr  = int(_large_raw)
-    except (ValueError, TypeError): large_thr  = 70
-    try:    mid_thr    = int(_mid_raw)
-    except (ValueError, TypeError): mid_thr    = 85
-    try:    small_thr  = int(_small_raw)
-    except (ValueError, TypeError): small_thr  = 99
-    try:    min_ff_pct = float(_ff_raw) / 100
-    except (ValueError, TypeError): min_ff_pct = 0.15
-    try:    new_eumss_ff_ratio = float(_eumss_ff_raw) / 100
-    except (ValueError, TypeError): new_eumss_ff_ratio = 0.50
+    # Schwellen als float parsen (frueher int): 99,5 fiel damit still auf 99 zurueck,
+    # ohne dass die Oberflaeche es anzeigte. Jetzt Komma erlaubt und Fallback sichtbar.
+    _thr_bad = []
+
+    def _num(raw, default, label):
+        try:
+            return float(str(raw).replace(",", "."))
+        except (ValueError, TypeError):
+            _thr_bad.append(f"{label} = „{raw}“ → {default:g}")
+            return float(default)
+
+    large_thr = _num(_large_raw, 70, "Large Cap")
+    mid_thr   = _num(_mid_raw,   85, "Mid Cap")
+    small_thr = _num(_small_raw, 99, "Small Cap")
+    min_ff_pct = _num(_ff_raw, 10, "Min FF%") / 100
+    new_eumss_ff_ratio = _num(_eumss_ff_raw, 50, "EUMSS FF Ratio") / 100
+    eumss_coverage = _num(_eumss_cov_raw, 99, "EUMSS Kalibrierpunkt")
+    ff_waiver_k = _num(_ff_waiver_raw, 2.0, "FF-Waiver")
+    if ff_waiver_k < 0:
+        st.error(f"FF-Waiver darf nicht negativ sein ({ff_waiver_k:g}). 0 schaltet ihn ab.")
+        ff_waiver_k = 0.0
+    elif 0 < ff_waiver_k < 1:
+        st.warning(f"FF-Waiver {ff_waiver_k:g} x Boden liegt UNTER dem Boden selbst. Die "
+                   f"Mindest-Float-Huerde waere damit fuer fast jeden grossen Titel offen.")
+    if _thr_bad:
+        st.warning("Unlesbare Eingabe, Standardwert verwendet: " + " · ".join(_thr_bad))
+    if not (0 < large_thr < mid_thr < small_thr <= 100):
+        st.error(f"Schwellen muessen aufsteigend und <= 100 sein "
+                 f"(Large {large_thr:g} < Mid {mid_thr:g} < Small {small_thr:g}).")
+    if not (0 < eumss_coverage <= 100):
+        st.error(f"EUMSS-Kalibrierpunkt muss zwischen 0 und 100 liegen, nicht {eumss_coverage:g}.")
+    elif eumss_coverage >= 100:
+        st.warning("Kalibrierpunkt 100 % ergibt praktisch keinen Groessenboden. Wer das will, "
+                   "nimmt oben die Bodenregel „Kein Boden“ oder den Total-Markets-Index "
+                   "NX-GM-TM, der ist dafuer gebaut.")
+    eumss_maint_ratio = _num(_eumss_maint_raw, 0.75, "EUMSS Bestandsschutz")
+    if not (0 <= eumss_maint_ratio <= 1):
+        st.error(f"Bestandsschutz muss zwischen 0 und 1 liegen, nicht {eumss_maint_ratio:g}. "
+                 f"1 = aus, 0 = Bestand komplett vom Boden ausgenommen (MSCI/STOXX).")
+        eumss_maint_ratio = 1.0
+    if _no_floor:
+        # Ohne Boden sind Kalibrierpunkt, FF-Ratio und Bestandsschutz gegenstandslos. Die
+        # Felder sind ausgegraut, die Werte werden hier zusaetzlich neutralisiert, damit
+        # kein stehengebliebener Eingabewert im Settings-Stempel Verwirrung stiftet.
+        eumss_maint_ratio = 1.0
 
     st.markdown("---")
     st.markdown("### 💧 Liquidität")
@@ -1807,21 +1958,32 @@ with st.sidebar:
     with _adtv_d: _adtv_em_raw = st.text_input("EM ADTV", value="1000000", key="adtv_em_new", label_visibility="collapsed")
     _atvr_a, _atvr_b = st.columns([3,4])
     with _atvr_a: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>DM ATVR Min. (%)</div>", unsafe_allow_html=True)
-    with _atvr_b: _atvr_dm_raw = st.text_input("DM ATVR", value="0", key="atvr_dm_new", label_visibility="collapsed")
+    with _atvr_b: _atvr_dm_raw = st.text_input("DM ATVR", value="5", key="atvr_dm_new", label_visibility="collapsed")
     _atvr_c, _atvr_d = st.columns([3,4])
     with _atvr_c: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EM ATVR Min. (%)</div>", unsafe_allow_html=True)
-    with _atvr_d: _atvr_em_raw = st.text_input("EM ATVR", value="0", key="atvr_em_new", label_visibility="collapsed")
-    st.caption("ATVR = annualisierter Handelsumsatz / MCap (1.0 = 100% Umschlag). Screen MSCI-Stil "
-               "auf 3M UND 12M: beide Horizonte müssen die Schwelle erreichen. 0 = aus.")
+    with _atvr_d: _atvr_em_raw = st.text_input("EM ATVR", value="5", key="atvr_em_new", label_visibility="collapsed")
+    st.caption("ATVR = annualisierter Handelsumsatz / Float MCap (1,0 = 100 % Umschlag). "
+               "Geprüft werden 3M UND 6M, beide Horizonte müssen die Schwelle erreichen — "
+               "gleichbedeutend mit min(ATVR 3M, ATVR 6M) ≥ Schwelle. 0 = aus. "
+               "Bewusste Abweichung: MSCI und STOXX prüfen 3M und 12M; unsere 3M/6M laufen "
+               "auf denselben Fenstern wie die ADTV-Beine und entsprechen Solactive.")
+    st.caption("Default 5 / 5 mit Maintenance 2,5 / 2,5, bewusst OHNE DM-EM-Unterschied: "
+               "unser absoluter ADTV-Screen ist ebenfalls symmetrisch, und Solactive fährt "
+               "beide Beine symmetrisch (ADTV 1,0 / 0,75 Mio, Liquidity Ratio annualisiert "
+               "7,6 / 3,8 %). MSCI und STOXX trennen DM und EM (20 / 15 %), führen dafür aber "
+               "gar keinen absoluten Umsatzscreen. Das Niveau liegt bewusst unter Solactive, "
+               "solange die indischen Volumina von der BSE statt der NSE kommen und der ATVR "
+               "dort 10- bis 20-fach zu niedrig ausfällt. Gemessen 19.08.2026: 26 Titel "
+               "weniger global, davon 25 indische, DM völlig unberührt, Turnover unverändert.")
 
     try:    new_adtv_dm = float(_adtv_dm_raw.replace(",",""))
     except (ValueError, TypeError): new_adtv_dm = 1_000_000.0
     try:    new_adtv_em = float(_adtv_em_raw.replace(",",""))
     except (ValueError, TypeError): new_adtv_em = 1_000_000.0
-    try:    new_atvr_dm = float(_atvr_dm_raw) / 100
-    except (ValueError, TypeError): new_atvr_dm = 0.0
-    try:    new_atvr_em = float(_atvr_em_raw) / 100
-    except (ValueError, TypeError): new_atvr_em = 0.0
+    try:    new_atvr_dm = float(str(_atvr_dm_raw).replace(",", ".")) / 100
+    except (ValueError, TypeError): new_atvr_dm = 0.05
+    try:    new_atvr_em = float(str(_atvr_em_raw).replace(",", ".")) / 100
+    except (ValueError, TypeError): new_atvr_em = 0.05
 
     st.caption("ATVR Nenner")
     atvr_denominator = st.radio(
@@ -1835,14 +1997,20 @@ with st.sidebar:
     atvr_mcap_col = "Free Float MCap Y2025" if atvr_denominator == "Free Float MCap" else "Total MCap Y2025"
 
     st.caption("Coverage-Reihenfolge")
-    label_before_liquidity = st.toggle(
+    label_before_liquidity = st.checkbox(
         "Labeling vor Liquidität (Markt-Coverage)",
-        value=False,
+        value=True,
         key="label_before_liquidity",
-        help="Aus (Default): Liquidität zuerst, Coverage auf dem liquiden Pool (bisheriges Verhalten).\n"
-             "An: Large/Mid/Small-Labeling auf dem vollen post-EUMSS-Pool VOR der Liquidität — "
-             "der Markt definiert die Größengrenzen, Liquidität wirkt nur noch als Mitgliedschafts-Gate. "
-             "EUMSS-Floor und alle anderen Parameter (inkl. ATVR) bleiben aus der Sidebar unverändert."
+        help="An (Default seit 08.09.2026): Large/Mid/Small-Labeling laeuft auf dem vollen "
+             "post-EUMSS-Pool VOR der Liquiditaet. Der Markt definiert die Groessengrenzen, "
+             "die Liquiditaet wirkt danach nur noch als Mitgliedschafts-Gate.\n\n"
+             "Aus: Liquiditaet zuerst, Coverage auf dem bereits gefilterten Pool. Das war der "
+             "Stand bis 09/2026.\n\n"
+             "Gemessen ueber 48 Perioden (NX-EU-LM, Europe Pooled): 431 statt 394 Titel, "
+             "MSCI-Treffer 360 statt 343, gewichteter Overlap 98,27 statt 97,54 %, Turnover "
+             "3,47 statt 3,55 %. Fuenf von sechs Anbietern segmentieren ebenfalls das fertig "
+             "gescreente Universum, nur FTSE bildet sein Index Universe vor den Screens.\n\n"
+             "EUMSS-Floor und alle anderen Parameter (inkl. ATVR) bleiben unveraendert."
     )
 
     st.markdown("---")
@@ -1953,14 +2121,15 @@ with st.sidebar:
         with _bea: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ADTV EM Maint.</div>", unsafe_allow_html=True)
         with _beb: _bf_adtv_em_raw = st.text_input("ADTV EM Maint.", value="750000", key="buffer_adtv_em", label_visibility="collapsed")
 
-        # ATVR Maintenance DM / EM — Default 0 (identisch mit Entry; bei 0 ist ATVR-Filter deaktiviert)
+        # ATVR Maintenance DM / EM — Default 2,5 = die Haelfte der Entry-Schwelle.
+        # 0 schaltet das Bein fuer Bestandstitel ab.
         _bta, _btb = st.columns([3,4])
         with _bta: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR DM Maint. (%)</div>", unsafe_allow_html=True)
-        with _btb: _bf_atvr_dm_raw = st.text_input("ATVR DM Maint.", value="0", key="buffer_atvr_dm", label_visibility="collapsed")
+        with _btb: _bf_atvr_dm_raw = st.text_input("ATVR DM Maint.", value="2,5", key="buffer_atvr_dm", label_visibility="collapsed")
 
         _bua, _bub = st.columns([3,4])
         with _bua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>ATVR EM Maint. (%)</div>", unsafe_allow_html=True)
-        with _bub: _bf_atvr_em_raw = st.text_input("ATVR EM Maint.", value="0", key="buffer_atvr_em", label_visibility="collapsed")
+        with _bub: _bf_atvr_em_raw = st.text_input("ATVR EM Maint.", value="2,5", key="buffer_atvr_em", label_visibility="collapsed")
 
         # Parse
         try:    buffer_min_ff = float(_bf_ff_raw) / 100
@@ -1971,10 +2140,10 @@ with st.sidebar:
         except (ValueError, TypeError): buffer_adtv_dm = 750_000
         try:    buffer_adtv_em = float(_bf_adtv_em_raw)
         except (ValueError, TypeError): buffer_adtv_em = 750_000
-        try:    buffer_atvr_dm = float(_bf_atvr_dm_raw) / 100
-        except (ValueError, TypeError): buffer_atvr_dm = 0.0
-        try:    buffer_atvr_em = float(_bf_atvr_em_raw) / 100
-        except (ValueError, TypeError): buffer_atvr_em = 0.0
+        try:    buffer_atvr_dm = float(str(_bf_atvr_dm_raw).replace(",", ".")) / 100
+        except (ValueError, TypeError): buffer_atvr_dm = 0.025
+        try:    buffer_atvr_em = float(str(_bf_atvr_em_raw).replace(",", ".")) / 100
+        except (ValueError, TypeError): buffer_atvr_em = 0.025
     else:
         # Buffer inaktiv → Maintenance = Entry (keine Unterscheidung)
         buffer_min_ff = min_ff_pct
@@ -1988,36 +2157,16 @@ with st.sidebar:
     # ── Size Buffer (Segment-Hysterese, nur Multi-Period) ──────────────────────
     st.markdown("---")
     apply_size_buffer = st.checkbox(
-        "Size Buffer aktivieren",
+        "Hysterese für Bestandstitel (Size Buffer)",
         value=True,
         key="apply_size_buffer",
         disabled=st.session_state.get("msci_logic", False),
-        help="Hysterese an den Segment-Grenzen Large↔Mid (70%) und Mid↔Small (85%): "
-             "Bestandstitel wechseln das Size-Segment erst beim Durchschreiten der "
-             "Pufferkante, statt bei jeder kleinen Coverage-Schwankung hin- und "
-             "herzuspringen. Greift nur im Multi-Period-Lauf (braucht das Segment "
-             "der Vorperiode) ab Periode 2. Untergrenze (Small↔Micro) bleibt über EUMSS. "
-             "(Deaktiviert, solange MSCI Logic aktiv ist.)"
+        help="Bestandstitel werden an den Segment-Grenzen gehalten, statt bei jedem Rebalancing "
+             "neu am Cut-off eingeordnet zu werden. Ohne Hysterese springen Titel an der Kante "
+             "hin und her. Nur im Multi-Period-Lauf relevant, der Seed-Termin hat keinen Bestand."
     )
-    if apply_size_buffer:
-        _sba, _sbb = st.columns([3, 4])
-        with _sba:
-            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Buffer-Breite (pp)</div>", unsafe_allow_html=True)
-        with _sbb:
-            _sb_pp_raw = st.text_input("Size Buffer pp", value="5", key="size_buffer_pp_raw", label_visibility="collapsed")
-        try:    size_buffer_pp = float(_sb_pp_raw)
-        except (ValueError, TypeError): size_buffer_pp = 5.0
-        # Bewusst OHNE "±": ob die Bandbreite ein- oder zweiseitig wirkt, entscheidet
-        # erst die Variante. Im Modus "Aufstieg am Cut-off" wirkt sie NUR auf der
-        # Halteseite, ein "±" waere dort schlicht falsch.
-        st.caption(f"Bandbreite **{size_buffer_pp:g} pp**. Auf welche Seite der Grenzen sie "
-                   "wirkt, bestimmt die Variante darunter.")
-    else:
-        size_buffer_pp = 5.0
-        st.caption("→ Size Buffer inaktiv — Segmente werden bei jedem Rebalancing neu am Cut-off bestimmt.")
 
-    # Anbieternamen bewusst NICHT im Label — sie stehen im Hilfetext, wo sie
-    # Dokumentation sind und nicht Etikett. Reihenfolge: Default zuerst.
+    # Die Bezeichner sind die publizierte Dokumentation und nicht bloss Etikett.
     _SB_ENTRY = "Aufstieg am Cut-off"
     _SB_SYM = "Symmetrisch"
     _SB_ASYM = "Asymmetrisch (nur Mid/Small-Kante)"
@@ -2026,143 +2175,83 @@ with st.sidebar:
         options=[_SB_ENTRY, _SB_SYM, _SB_ASYM],
         index=0,   # Default: Aufstieg am Cut-off
         key="size_buffer_mode",
-        disabled=st.session_state.get("msci_logic", False),
-        help="Wie die Hysterese an den Segment-Grenzen wirkt. Nur mit aktivem Size Buffer "
-             "(oben) und im Multi-Period-Lauf relevant.\n\n"
-             "• Aufstieg am Cut-off (Default): Aufnahme UND Aufstieg an den glatten Schwellen "
-             "70% und 85% für alle, die Bandbreite wirkt nur auf der Halteseite (Large bleibt "
-             "bis 70+pp, Mid bis 85+pp). Kein Bestandstitel wird schlechter behandelt als ein "
-             "Neuzugang. Nur diese Variante erlaubt eine getrennte Bandbreite für die "
-             "Mid/Small-Kante. Vorbild FTSE GEIS §7.6.1/§7.6.4 (Inclusion 68/86, Exclusion 72/92).\n\n"
-             "• Symmetrisch: Bandbreite auf beiden Seiten jeder Grenze, Vorbild Solactive "
-             "GBS. Nachteil: ein Small-Bestandstitel steigt erst unter 80% auf, ein Neuzugang "
-             "kommt schon unter 85% ins Mid — Bestandstitel sind damit schlechter gestellt "
-             "(gemessen 166,7 blockierte Titel je Periode).\n\n"
-             "• Asymmetrisch: nur die Mid/Small-Kante wird geöffnet (Small steigt unter 85% "
-             "auf), die Large/Mid-Kante bleibt symmetrisch. Für ein Large+Mid-Produkt "
-             "identisch zu 'Aufstieg am Cut-off'.\n\n"
-             "Gilt für ALLE Tabs: Single-Snapshot, Multi-Period, Europe MP (gepoolt) und "
-             "Helvetica. Bei Helvetica schaltet 'Aufstieg am Cut-off' die dortigen Bänder von "
-             "65 / 84,5 auf 70 / 85; 'Asymmetrisch' wirkt dort wie 'Symmetrisch', weil Helvetica "
-             "keine asymmetrische Variante kennt."
+        disabled=(st.session_state.get("msci_logic", False) or not apply_size_buffer),
+        captions=[
+            "Band nur auf der Halteseite, Bestand nie schlechter als ein Neuzugang",
+            "Band um beide Grenzen, Bestand steigt erst unterhalb der Kante auf",
+            "wie symmetrisch, nur die Mid/Small-Kante einseitig",
+        ],
+        help="Auf welche Seite der Grenzen die Bandbreite wirkt.\n\n"
+             "• **Aufstieg am Cut-off** (Default): Aufnahme UND Aufstieg an den glatten "
+             "Schwellen, die Bandbreite wirkt ausschliesslich auf der Halteseite. Damit wird "
+             "kein Bestandstitel an derselben Coverage-Position schlechter behandelt als ein "
+             "Neuzugang. Vorbild FTSE GEIS §7.6.1/§7.6.4.\n\n"
+             "• **Symmetrisch**: Band um beide Grenzen. Ein Bestands-Small steigt erst unter "
+             "mid_thr − Bandbreite auf, ein Neuzugang schon unter mid_thr. Entspricht "
+             "Solactive GBS.\n\n"
+             "• **Asymmetrisch**: wie symmetrisch, aber der Aufstieg Small→Mid laeuft "
+             "ungepuffert an der glatten Schwelle.\n\n"
+             "Asymmetrisch und Aufstieg am Cut-off unterscheiden sich **ausschliesslich** an der "
+             "Large/Mid-Kante und liefern fuer ein Large+Mid-Produkt deshalb identische "
+             "Konstituenten — verifiziert ueber 48 Perioden, kein einziger Titel Unterschied. "
+             "Sie verschieben nur die Aufteilung zwischen Large- und Mid-Sleeve."
     )
     asym_buffer = (_sb_mode == _SB_ASYM)
     entry_at_cutoff = (_sb_mode == _SB_ENTRY)
+    _sb_variant = "entry" if entry_at_cutoff else ("asym" if asym_buffer else "sym")
 
-    # Getrennte Bandbreite für die Mid/Small-Kante — nur im FTSE-Modus, weil nur
-    # _size_segment_entry() sie auswertet. Die beiden Kanten haben verschiedene
-    # Funktionen: Mid/Small entscheidet über die INDEX-ZUGEHÖRIGKEIT (Standard =
-    # Large+Mid), Large/Mid nur über die Zuordnung zu den Size-Sub-Indizes. Wer die
-    # Mid-Kante testen will, muss die Large-Kante deshalb nicht mitziehen.
-    size_buffer_pp_ms = None
-    if apply_size_buffer and entry_at_cutoff and not st.session_state.get("msci_logic", False):
-        _msa, _msb = st.columns([3, 4])
-        with _msa:
-            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>"
-                        "Mid/Small abweichend (pp)</div>", unsafe_allow_html=True)
-        with _msb:
-            # BEWUSST leer als Default, nicht mit der Buffer-Breite vorbelegt: Streamlit
-            # behaelt bei Widgets mit key den Session-Wert, `value=` greift nur beim ersten
-            # Rendern. Vorbelegt wuerde das Feld auf dem Erstwert einfrieren, und eine
-            # Aenderung der Buffer-Breite oben wuerde die Mid-Kante stillschweigend NICHT
-            # mitziehen. Leer = folgt der Buffer-Breite (Engine: bw_ms=None -> bw).
-            _sb_ms_raw = st.text_input(
-                "Mid/Small Buffer pp", value="", key="size_buffer_pp_ms_raw",
-                placeholder=f"leer = {size_buffer_pp:g} (wie oben)",
-                label_visibility="collapsed",
-                help="Bandbreite NUR für die Mid/Small-Kante (85 %). **Leer lassen heißt: sie "
-                     "folgt der Buffer-Breite oben.** Nur ausfüllen, wenn die beiden Kanten "
-                     "auseinandergehen sollen.\n\n"
-                     "Warum getrennt: die Mid/Small-Kante entscheidet über die "
-                     "INDEX-ZUGEHÖRIGKEIT (Standard = Large+Mid), die Large/Mid-Kante nur über "
-                     "die Aufteilung in die Size-Sub-Indizes. Wer die Mid-Kante verschieben "
-                     "will, muss die Large-Kante nicht mitziehen.\n\n"
-                     "Beispiel: oben 5, hier 6 → Large hält bis 75 %, Mid hält bis 91 %. "
-                     "FTSE GEIS v14.2 §7.6.4 nutzt genau solche ungleichen Bänder "
-                     "(Exclusion 72 / 92, also 2 pp an der Large- und 7 pp an der Mid-Kante).")
+    # Drei Bandbreiten, jede mit echtem Default. Frueher war das ein Feld, ein optionales
+    # Feld mit Platzhalter "leer = wie oben" und eine Checkbox mit angehaengtem Feld —
+    # dass die drei Zahlen dasselbe Konzept sind, sah man nur im Code. 0 schaltet ab.
+    _bw_disabled = (not apply_size_buffer) or st.session_state.get("msci_logic", False)
+
+    def _band(label, default, key, disabled, note=""):
+        _a, _b = st.columns([3, 4])
+        with _a:
+            st.markdown(f"<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>{label}</div>",
+                        unsafe_allow_html=True)
+        with _b:
+            _raw = st.text_input(label, value=default, key=key, label_visibility="collapsed",
+                                 disabled=disabled)
         try:
-            size_buffer_pp_ms = (float(str(_sb_ms_raw).replace(",", "."))
-                                 if str(_sb_ms_raw).strip() else None)
+            return max(0.0, float(str(_raw).replace(",", ".")))
         except (ValueError, TypeError):
-            size_buffer_pp_ms = None
+            return float(default.replace(",", "."))
 
-    # Eine einzige Caption mit den TATSAECHLICHEN Kanten der gewaehlten Variante.
-    # Sie steht absichtlich hier, nach dem Mid/Small-Feld, weil sie dessen Wert braucht.
     if apply_size_buffer and not st.session_state.get("msci_logic", False):
-        _bw = size_buffer_pp
-        _bms = _bw if size_buffer_pp_ms is None else size_buffer_pp_ms
-        if entry_at_cutoff:
-            st.caption(
-                f"→ Bandbreite wirkt **nur auf der Halteseite**. Aufstieg für alle an den "
-                f"glatten Schwellen (<{large_thr:g} % / <{mid_thr:g} %), Verbleib bis "
-                f"**{large_thr+_bw:g} %** (Large) bzw. **{mid_thr+_bms:g} %** (Mid)."
-                + ("  Kanten getrennt gesetzt." if size_buffer_pp_ms is not None else ""))
-        elif asym_buffer:
-            st.caption(
-                f"→ Large/Mid **beidseitig** ({large_thr-_bw:g}–{large_thr+_bw:g} %), "
-                f"Mid/Small **nur nach oben**: hält bis {mid_thr+_bw:g} %, Aufstieg aber "
-                f"schon unter {mid_thr:g} %. Small bleibt Residual {mid_thr:g}–{small_thr:g} %.")
-        else:
-            st.caption(
-                f"→ **Beidseitig** um beide Grenzen: Large {large_thr-_bw:g}–{large_thr+_bw:g} %, "
-                f"Mid hält bis {mid_thr+_bw:g} %, Aufstieg Small→Mid aber erst unter "
-                f"{mid_thr-_bw:g} % — Bestandstitel sind damit schlechter gestellt als Neuzugänge.")
-
-    # Resultierende Schwellen der GEWÄHLTEN Variante — macht sichtbar, dass sich
-    # Asymmetrisch und Aufstieg-am-Cut-off ausschliesslich an der Large/Mid-Kante
-    # unterscheiden und für ein Large+Mid-Produkt damit dasselbe Ergebnis liefern.
+        st.markdown("<div style='font-size:11px;font-weight:700;letter-spacing:.09em;"
+                    "text-transform:uppercase;color:#7f8bb0;padding-top:6px;'>"
+                    "Bandbreiten (pp)</div>", unsafe_allow_html=True)
+    size_buffer_pp    = _band("Large / Mid",  "5",   "size_buffer_pp_raw",    _bw_disabled)
+    size_buffer_pp_ms = _band("Mid / Small",  "5",   "size_buffer_pp_ms_raw", _bw_disabled)
+    small_buffer_pp   = _band("Small / Micro", "0,5", "small_buffer_pp_raw",  _bw_disabled)
+    if not apply_size_buffer:
+        size_buffer_pp, size_buffer_pp_ms, small_buffer_pp = 5.0, 5.0, 0.5
+    # Der Small/Micro-Cut ist keine eigene Regel mehr, sondern die dritte Bandbreite.
+    # 0 = aus, dann laeuft Small bis zum EUMSS-Floor durch (frueher: Checkbox).
+    apply_small_buffer = bool(apply_size_buffer and small_buffer_pp > 0
+                              and not st.session_state.get("msci_logic", False))
     if apply_size_buffer and not st.session_state.get("msci_logic", False):
-        _bw = size_buffer_pp
-        _bms = _bw if size_buffer_pp_ms is None else size_buffer_pp_ms
-        if entry_at_cutoff:
-            _up_lm, _hold_mid = f"< {large_thr:g} %", f"≤ {mid_thr+_bms:g} %"
-        elif asym_buffer:
-            _up_lm, _hold_mid = f"< {large_thr-_bw:g} %", f"≤ {mid_thr+_bw:g} %"
-        else:
-            _up_lm, _hold_mid = f"< {large_thr-_bw:g} %", f"≤ {mid_thr+_bw:g} %"
-        _up_ms = f"< {mid_thr:g} %" if (entry_at_cutoff or asym_buffer) else f"< {mid_thr-_bw:g} %"
-        with st.expander("Resultierende Schwellen dieser Variante", expanded=False):
-            st.dataframe(pd.DataFrame([
-                {"Übergang": "Large bleibt Large", "Schwelle": f"≤ {large_thr+_bw:g} %",
-                 "wirkt auf": "Sub-Index-Zuordnung"},
-                {"Übergang": "Mid steigt zu Large", "Schwelle": _up_lm,
-                 "wirkt auf": "Sub-Index-Zuordnung"},
-                {"Übergang": "Mid bleibt Mid (Halteseite)", "Schwelle": _hold_mid,
-                 "wirkt auf": "INDEX-ZUGEHÖRIGKEIT"},
-                {"Übergang": "Small steigt zu Mid", "Schwelle": _up_ms,
-                 "wirkt auf": "INDEX-ZUGEHÖRIGKEIT"},
-            ]), width='stretch', hide_index=True)
-            st.caption(
-                "Nur die beiden unteren Zeilen entscheiden, ob ein Titel im Standard-Index "
-                "(Large+Mid) landet. **Asymmetrisch und Aufstieg am Cut-off unterscheiden "
-                "sich ausschliesslich in der Zeile 'Mid steigt zu Large'** (65 % gegen 70 %) "
-                "und liefern für ein Large+Mid-Produkt deshalb identische Konstituenten — "
-                "verifiziert über 48 Perioden, kein einziger Titel Unterschied. Sie "
-                "verschieben nur die Aufteilung zwischen Large- und Mid-Sleeve.")
-
-    # Solactive-Style Small↔Micro-Coverage-Cut (per-Land-99%, Buffer 99,5% für Incumbents)
-    apply_small_buffer = st.checkbox(
-        "Small-Cap Coverage-Cut (Solactive-Style 99/99,5)",
-        value=True,
-        key="apply_small_buffer",
-        disabled=st.session_state.get("msci_logic", False),
-        help="Kappt Small bei 99% per-Land-Coverage (statt bis zum EUMSS-Floor durchlaufen zu lassen): "
-             "ein als Small gelabelter Titel jenseits 99% → Micro. Incumbent (war im IMI) wird bis "
-             "99,5% gehalten (Bottom-Buffer wie Solactive), Newcomer am glatten 99% geschnitten. "
-             "Betrifft NUR Small/All-Cap — Standard (L+M) bleibt unverändert. Macht das Small-/All-Cap-"
-             "Universum Solactive-konform enger (~−12–16%). Greift nicht in MSCI-Logic."
-    )
-    if apply_small_buffer:
-        _sb2a, _sb2b = st.columns([3, 4])
-        with _sb2a:
-            st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Small-Buffer (pp)</div>", unsafe_allow_html=True)
-        with _sb2b:
-            _smb_pp_raw = st.text_input("Small Buffer pp", value="0.5", key="small_buffer_pp_raw", label_visibility="collapsed")
-        try:    small_buffer_pp = float(_smb_pp_raw.replace(",", "."))
-        except (ValueError, TypeError): small_buffer_pp = 0.5
-        st.caption(f"→ Small endet bei 99 % (Newcomer) bzw. {99+small_buffer_pp:g} % (Incumbent) per-Land-Coverage; darüber Micro.")
+        st.caption("Jede Kante frei setzbar, **0 schaltet die jeweilige Hysterese ab**. "
+                   "Small/Micro auf 0 laesst Small bis zum EUMSS-Floor durchlaufen.")
     else:
-        small_buffer_pp = 0.5
+        st.caption("→ Size Buffer inaktiv — Segmente werden bei jedem Rebalancing neu am "
+                   "Cut-off bestimmt.")
+
+    # ── Resultierende Segmentgrenzen ────────────────────────────────────────
+    # Frueher: drei Prosa-Captions plus ein eingeklappter Expander, die alle dieselben
+    # vier Zahlen beschrieben. Jetzt eine sichtbare Tabelle aus segment_edges(), also
+    # derselben Quelle, aus der auch Kriterienbox und Settings-Blatt lesen.
+    _edges = segment_edges(
+        large_thr, mid_thr, small_thr,
+        bw_lm=size_buffer_pp, bw_ms=size_buffer_pp_ms, bw_sm=small_buffer_pp,
+        variant=_sb_variant,
+        size_buffer=(apply_size_buffer and not st.session_state.get("msci_logic", False)))
+    st.markdown("<div style='font-size:11px;font-weight:700;letter-spacing:.09em;"
+                "text-transform:uppercase;color:#7f8bb0;padding-top:8px;'>"
+                "Resultierende Segmentgrenzen</div>", unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(_edges_table_rows(_edges)), width='stretch', hide_index=True)
+    st.caption("Coverage je Segmentierungsmarkt, nicht Indexgewicht.")
 
     # Weight-Cap (UCITS 5/10/40): optionaler Overlay, per Default AUS.
     # Der Index wird ungecappt publiziert (wie der Standard-Nasdaq-100); UCITS-Konformität
@@ -2303,23 +2392,47 @@ def _criteria_box(variant="serie"):
             f"Universe: Exchange Country = Schweiz{_sep}alle Share Lines, Dedup auf die "
             f"liquideste Linie je Firma{_sep}<b>kein EUMSS-Floor</b>",
             f"Coverage-Cuts: Large {r['large']:g} %{_sep}Mid {r['std']:g} %{_sep}"
-            f"Small {r['small']:g} %{_sep}Halt bis "
-            f"{r['large']+r['hold_large_pp']:g} / {r['std']+r['hold_std_pp']:g} / "
-            f"{_de(r['small']+r['hold_small_pp'])} %",
+            f"Small {r['small']:g} %{_sep}Halt bis siehe Tabelle unten",
             f"Min FF: {_de(r['min_ff']*100)} % neu{_sep}{_de(r['min_ff_maint']*100)} % Bestand"
             f"{_sep}3M-ADTV: {_helv_mio(new_adtv_dm)} neu{_sep}{_helv_mio(buffer_adtv_dm)} Bestand",
             f"Sleeves: Top {HELVETICA_TOPN} je Segment, gleichgewichtet (10 / 15 / 15 %)"
             f"{_sep}Real Estate alle qualifizierten inkl. Micro (15 %){_sep}45 % statisch",
             f"Bestandsschutz: Rang-Band {HELVETICA_BUFFER_HARD} / {HELVETICA_BUFFER_EXIT}"
             f"{_sep}Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)}"
-            f"{_sep}Variante: {'Aufstieg am Cut-off' if entry_at_cutoff else ('Asymmetrisch' if asym_buffer else 'Symmetrisch')}",
+            f"{_sep}Variante: {'Aufstieg am Cut-off' if entry_at_cutoff else ('Asymmetrisch' if asym_buffer else 'Symmetrisch')}"
+            f"{'' if entry_at_cutoff else ' ⚠ nicht die Guideline-Variante'}",
             f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
             f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}",
         ]
     else:
         _sb = ("Aufstieg am Cut-off" if entry_at_cutoff
                else "Asymmetrisch" if asym_buffer else "Symmetrisch")
-        _ms = ("= Bandbreite" if size_buffer_pp_ms is None else f"{_de(size_buffer_pp_ms)} pp")
+        # Der EUMSS-Boden wird erst im Lauf bestimmt. Liegt ein Ergebnis vor, zeigt die Box
+        # den tatsaechlichen Wert; vorher nur die Einstellung. Frueher stand er nirgends.
+        _eumss_floor_txt = ""
+        _ff_now = st.session_state.get("_last_eumss_full")
+        if _ff_now:
+            _eumss_floor_txt = (f", Boden {_ff_now/1e6:,.0f} / "
+                                f"{_ff_now*new_eumss_ff_ratio/1e6:,.0f} Mio USD")
+        # Bodenregel: bei "Kein Boden" sind Kalibrierpunkt und FF-Ratio gegenstandslos.
+        if _no_floor:
+            _eumss_txt = "EUMSS: kein Groessenboden (Solactive-Ansatz)"
+        else:
+            _band = (f" (Band bis {_de(eumss_coverage + eumss_carry_band)} %)"
+                     if eumss_carry_band > 0 else "")
+            _mnt = ("" if eumss_maint_ratio >= 1
+                    else f", Bestand {_de(eumss_maint_ratio)} x Boden")
+            _eumss_txt = (f"EUMSS: {eumss_mode}, Kalibrierung bei "
+                          f"{_de(eumss_coverage)} %{_band}, FF-Ratio "
+                          f"{new_eumss_ff_ratio*100:g} %{_mnt}{_eumss_floor_txt}")
+        # Groessen-Waiver auf den Mindest-Free-Float: Vielfaches und, wenn ein Lauf
+        # vorliegt, die daraus folgende absolute Float-Schwelle.
+        if ff_waiver_k > 0:
+            _ff_waiver_txt = f", Waiver ab {_de(ff_waiver_k)} x Boden"
+            if _ff_now:
+                _ff_waiver_txt += f" = {_ff_now*ff_waiver_k/1e6:,.0f} Mio USD Float"
+        else:
+            _ff_waiver_txt = ", ohne Groessen-Waiver"
         rows = [
             f"Listing: Primary + Secondary{_sep}Reihenfolge: "
             f"{'Coverage vor Liquiditaet' if label_before_liquidity else 'Liquiditaet vor Coverage'}"
@@ -2327,12 +2440,13 @@ def _criteria_box(variant="serie"):
             f"ADTV DM/EM: {new_adtv_dm:,.0f} / {new_adtv_em:,.0f} USD{_sep}"
             f"Maintenance: {buffer_adtv_dm:,.0f} / {buffer_adtv_em:,.0f}{_sep}"
             f"ATVR DM/EM: {_de(new_atvr_dm*100)} % / {_de(new_atvr_em*100)} %",
-            f"Large: {large_thr} %{_sep}Mid: {mid_thr} %{_sep}Small: {small_thr} %{_sep}"
-            f"Min FF: {_de(min_ff_pct*100)} % neu / {_de(buffer_min_ff*100)} % Bestand{_sep}"
-            f"EUMSS FF-Ratio: {new_eumss_ff_ratio*100:g} %",
-            f"Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)} "
-            f"({_de(size_buffer_pp)} pp, Mid/Small {_ms}, {_sb}){_sep}"
-            f"Small-Cut 99/{_de(99+small_buffer_pp)} {_b(apply_small_buffer)}",
+            f"Min FF: {_de(min_ff_pct*100)} % neu / {_de(buffer_min_ff*100)} % Bestand"
+            f"{_ff_waiver_txt}{_sep}"
+            f"{_eumss_txt}{_sep}"
+            f"Coverage-Basis: {if_cum_col}",
+            f"Buffer Rules {_b(apply_buffer)}{_sep}Size Buffer {_b(apply_size_buffer)}{_sep}"
+            f"Variante: {_sb}{_sep}Baender {_de(size_buffer_pp)} / {_de(size_buffer_pp_ms)} / "
+            f"{_de(small_buffer_pp)} pp",
             f"Hochpreis: {_hp}{_sep}Spin-offs {_b(apply_spinoffs)}{_sep}"
             f"In-Eligible {_b(apply_ineligible and not ineligible_df.empty)}{_sep}"
             f"Capping {_b(apply_cap)}",
@@ -2342,6 +2456,25 @@ def _criteria_box(variant="serie"):
         ]
     st.markdown('<div class="info-box"><b>Selektionskriterien</b><br>' + "<br>".join(rows)
                 + "</div>", unsafe_allow_html=True)
+    # Resultierende Segmentgrenzen aus derselben Quelle wie Sidebar und Settings-Blatt.
+    if variant == "helvetica":
+        _r = _helv_rules_from_sidebar()
+        _e = segment_edges(_r["large"], _r["std"], _r["small"],
+                           bw_lm=_r["hold_large_pp"], bw_ms=_r["hold_std_pp"],
+                           bw_sm=_r["hold_small_pp"],
+                           variant=("entry" if entry_at_cutoff else
+                                    ("asym" if asym_buffer else "sym")),
+                           size_buffer=apply_size_buffer)
+    else:
+        _e = segment_edges(large_thr, mid_thr, small_thr,
+                           bw_lm=size_buffer_pp, bw_ms=size_buffer_pp_ms,
+                           bw_sm=small_buffer_pp,
+                           variant=("entry" if entry_at_cutoff else
+                                    ("asym" if asym_buffer else "sym")),
+                           size_buffer=(apply_size_buffer and not msci_logic))
+    st.caption("**Resultierende Segmentgrenzen** — Coverage je Segmentierungsmarkt, "
+               "nicht Indexgewicht.")
+    st.dataframe(pd.DataFrame(_edges_table_rows(_e)), width='stretch', hide_index=True)
 
 
 def _settings_snapshot():
@@ -2377,15 +2510,37 @@ def _settings_snapshot():
         ("Buffer", "Maint. ATVR DM / EM (%)", f"{buffer_atvr_dm*100:g} / {buffer_atvr_em*100:g}"),
         ("Size Buffer", "Size Buffer aktiv", apply_size_buffer),
         ("Size Buffer", "Variante", _sb_var),
-        ("Size Buffer", "Bandbreite (pp)", f"{size_buffer_pp:g}"),
-        ("Size Buffer", "davon Mid/Small (pp)",
-         "= Bandbreite" if size_buffer_pp_ms is None else f"{size_buffer_pp_ms:g}"),
-        ("Size Buffer", "Small-Cap Coverage-Cut 99/99,5", apply_small_buffer),
-        ("Size Buffer", "Small-Buffer (pp)", f"{small_buffer_pp:g}"),
+        ("Size Buffer", "Bandbreite Large/Mid (pp)", f"{size_buffer_pp:g}"),
+        ("Size Buffer", "Bandbreite Mid/Small (pp)", f"{size_buffer_pp_ms:g}"),
+        ("Size Buffer", "Bandbreite Small/Micro (pp)", f"{small_buffer_pp:g}"),
+        ("Size Buffer", "Small/Micro-Cut aktiv", apply_small_buffer),
         ("Size Buffer", "MSCI Logic (GIMI)", msci_logic),
+    ]
+    # Resultierende Kanten mitschreiben, nicht nur die Parameter, aus denen sie entstehen.
+    # Wer einen Lauf spaeter nachvollzieht, braucht die Schwellen, nicht die Bandbreiten.
+    _e_snap = segment_edges(large_thr, mid_thr, small_thr,
+                            bw_lm=size_buffer_pp, bw_ms=size_buffer_pp_ms,
+                            bw_sm=small_buffer_pp,
+                            variant=("entry" if entry_at_cutoff else
+                                     ("asym" if asym_buffer else "sym")),
+                            size_buffer=(apply_size_buffer and not msci_logic))
+    for _row in _edges_table_rows(_e_snap):
+        _rows.append(("Segmentgrenzen", _row["Segment"],
+                      f"Aufnahme {_row['Aufnahme neu']} | Aufstieg {_row['Aufstieg Bestand']} "
+                      f"| Verbleib {_row['Verbleib bis']}"))
+    _rows += [
         ("Size Integrity", "aktiv", apply_size_integrity),
         ("Size Integrity", "k", f"{si_k:g}"),
         ("Size Integrity", "Kanten-Schutz (pp)", si_edge_pp),
+        ("Size Segmentation", "EUMSS-Bodenregel", eumss_mode),
+        ("Size Segmentation", "EUMSS-Kalibrierpunkt (%)",
+         "—" if _no_floor else f"{eumss_coverage:g}"),
+        ("Size Segmentation", "EUMSS-Halteband (pp)",
+         f"{eumss_carry_band:g}" if eumss_carry_band > 0 else "aus"),
+        ("Size Segmentation", "EUMSS-Bestandsschutz (x Boden)",
+         "aus" if (_no_floor or eumss_maint_ratio >= 1) else f"{eumss_maint_ratio:g}"),
+        ("Size Segmentation", "FF-Waiver (x Boden)",
+         f"{ff_waiver_k:g}" if ff_waiver_k > 0 else "aus"),
         ("Gewichtung", "FOL/IF anwenden", apply_fol),
         ("Gewichtung", "IF-Modus", if_selection_mode),
         ("Gewichtung", "Kumulations-Basis", if_cum_col),
@@ -2879,6 +3034,8 @@ with tab_gimi:
         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
         selection_date=_active_selection_date,
         label_before_liquidity=label_before_liquidity,
+        eumss_coverage=eumss_coverage, ff_waiver_k=ff_waiver_k,
+        eumss_enabled=eumss_enabled_ui, eumss_maint_ratio=eumss_maint_ratio,
         prebuilt_universe=_gm_u_global,  # identische Universe-Params → Rebuild sparen (~1s/Rerun)
     )
     # Zweiter Lauf für „Total Markets" (eumss_off-Produkte): identische Settings, aber EUMSS-Floor
@@ -2909,6 +3066,7 @@ with tab_gimi:
             ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
             selection_date=_active_selection_date,
             label_before_liquidity=label_before_liquidity,
+            eumss_coverage=eumss_coverage, ff_waiver_k=ff_waiver_k,
             prebuilt_universe=_gm_u_global,
         )
         _gm_complete_tm = _res_tm.get("gm_complete")
@@ -2923,6 +3081,7 @@ with tab_gimi:
         _gm_std        = _res["gm_std"]
         _gm_final      = _res["gm_final"]
         _gm_eumss_full = _res["eumss_full"]
+        st.session_state["_last_eumss_full"] = float(_res["eumss_full"] or 0)
         _gm_eumss_ff   = _res["eumss_ff"]
         _gm_ie_removed = _res["gm_ie_removed"]
         _buffer_breakdown = _res["buffer_breakdown"]
@@ -3403,10 +3562,12 @@ def build_helvetica_pipeline(gm_universe, use_buffer=False, adtv_thr=None, incum
                 np.where(cb < _cut["small"], "Small Cap", "Micro Cap")))
     if prior_segments:
         _L, _M, _S = ENTRY["large"], ENTRY["std"], ENTRY["small"]  # 70 / 85 / 99
-        # entry_at_cutoff (FTSE-Prinzip, wie neu in der NaroIX-Serie): die Untergrenzen der
+        # entry_at_cutoff (FTSE-Prinzip, wie in der NaroIX-Serie): die Untergrenzen der
         # Halte-Bänder rücken auf den glatten Cut-off. Ein Bestandstitel steigt dann an
         # derselben Schwelle auf wie ein Neuzugang (Large ab <70, Mid ab <85) statt erst bei
         # 65 bzw. 84,5. Die Halteseiten (75 / 90 / 99,5) bleiben in beiden Varianten gleich.
+        # Fuer Helvetica ist "Aufstieg am Cut-off" seit dem 2026-08-29 die Guideline-Variante
+        # und zugleich der Sidebar-Default; der symmetrische Ast bleibt als Vergleichslauf.
         # ACHTUNG Kaskade: ein Aufsteiger nach Large tritt im Large-Sleeve gegen Nestlé/Roche/
         # Novartis an und fällt bei Rang > 10 ganz heraus (kein Overflow nach unten). Gemessen
         # 2026-05-20: Alcon und Swisscom raus, Lindt PS und Helvetia Baloise rein.
@@ -3688,6 +3849,7 @@ def build_swiss_size_subindices(gm_universe, adtv_thr=None, prior_segments=None,
         _, full, _ = build_helvetica_pipeline(gm_universe, use_buffer=use_buffer, adtv_thr=adtv_thr,
                                               incumbents_isin=incumbents_isin, prior_segments=prior_segments,
                                               label_before_liquidity=label_before_liquidity,
+                                              eumss_coverage=eumss_coverage,
                                               entry_at_cutoff=entry_at_cutoff,
                                               adtv_maint_thr=adtv_maint_thr,
                                               max_price=max_price, max_price_atvr=max_price_atvr,
@@ -3993,6 +4155,8 @@ with tab_helvetica_mp:
         _mp_adtv, _mp_adtv_maint = new_adtv_dm, buffer_adtv_dm
         # Die Coverage-Hysterese folgt dem globalen Sidebar-Schalter "Size-Buffer-Variante",
         # damit beide Produktfamilien dieselbe Logik fahren (ein Schalter für alle Tabs).
+        # Der Default "Aufstieg am Cut-off" ist die Guideline-Variante (§4); wer ihn umstellt,
+        # rechnet Helvetica bewusst gegen eine andere Methodik als die publizierte.
         # Wirkt nur mit aktivem Size Buffer, weil das Vorperioden-Segment gebraucht wird.
         _mp_entry_cut = bool(entry_at_cutoff)
 
@@ -4319,6 +4483,9 @@ with tab_multi:
                 _has_tm = any(INDEX_BY_CODE[c].get("eumss_off") for c in indices_to_run)  # Total-Markets-Produkt gewählt?
                 prev_isin_tm = set(); prev_seg_tm = {}   # eigener Incumbent-State für den EUMSS-losen TM-Lauf
                 _eumss_by_period = {}
+                # Rang-Mitnahme am Groessenboden: der Rang, der den Boden zuletzt
+                # definiert hat. None = kalter Schnitt (erste Periode oder Regel aus).
+                _eumss_rank = None
                 _si_by_period = {}    # {sd_iso: (R85, T_DM, T_EM, fills, blocked, max_cov)}
                 _so_logs = []         # Spin-off-Protokoll je Periode
                 summary_rows = []
@@ -4378,7 +4545,13 @@ with tab_multi:
                         apply_ineligible=apply_ineligible,
                         selection_date=sd_dt,
                         label_before_liquidity=label_before_liquidity,
+                        eumss_coverage=eumss_coverage, ff_waiver_k=ff_waiver_k,
+                        eumss_enabled=eumss_enabled_ui,
+                        eumss_maint_ratio=eumss_maint_ratio,
+                        eumss_carry_rank=_eumss_rank, eumss_carry_band=eumss_carry_band,
                     )
+                    # Rang-Mitnahme: den Rang dieser Periode in die naechste tragen.
+                    _eumss_rank = result.get("eumss_rank_used")
                     _gmc = result["gm_complete"]
                     if len(_so_log):
                         _so_logs[-1] = _spinoff_outcome(
@@ -4438,6 +4611,7 @@ with tab_multi:
                             apply_ineligible=apply_ineligible,
                             selection_date=sd_dt,
                             label_before_liquidity=label_before_liquidity,
+                            eumss_coverage=eumss_coverage, ff_waiver_k=ff_waiver_k,
                         )
                         _gmc_tm = _res_tm_mp["gm_complete"]
 
@@ -4573,15 +4747,20 @@ with tab_multi:
 with tab_europe_mp:
     st.markdown("## 🇪🇺 Europe MP — Developed Europe als ein Markt")
     st.caption(
-        "Research-Variante: der Coverage-Waterfall läuft für alle DM-Europa-Titel unter EINEM "
-        "gemeinsamen Nenner statt je Land (MSCI §2.2). Ein einziger Größen-Cutoff für ganz Europa. "
-        "Eigener Pipeline-Lauf, eigener Incumbent-State — GIMI-Tab und Multi-Period-Tab bleiben "
-        "unverändert auf der Baseline (je Land)."
+        "**Das ist die MSCI-konforme Segmentierung.** GIMI behandelt Developed Europe als EINEN "
+        "Markt (Methodik §2.2, Fussnote 1), der Coverage-Waterfall läuft hier also für alle "
+        "DM-Europa-Titel unter einem gemeinsamen Nenner mit einem einzigen Größen-Cutoff. "
+        "Eigener Pipeline-Lauf, eigener Incumbent-State — GIMI-Tab und Multi-Period-Tab rechnen "
+        "unverändert je Land weiter."
     )
     st.info(
-        "⚠️ **Nicht die publizierte Methodik.** Die Index Guideline segmentiert je Land. "
-        "Pooling verschiebt außerdem NX-DM-LM und NX-GM-LM mit, weil NX-EU-LM ⊆ NX-DM-LM ⊆ NX-GM-LM "
-        "gilt: was Europa hier verliert, fehlt dort ebenfalls."
+        "ℹ️ **MSCI-konform, aber nicht unsere publizierte Methodik.** Die NaroIX Index Guideline "
+        "segmentiert je Land; MSCI poolt Europa. Dieser Tab folgt MSCI, die anderen Tabs folgen "
+        "unserer Guideline — die Abweichung ist also hier bewusst und liegt auf unserer Seite.\n\n"
+        "Zwei Folgen, die man mitdenken muss: Pooling verschiebt auch NX-DM-LM und NX-GM-LM, weil "
+        "NX-EU-LM ⊆ NX-DM-LM ⊆ NX-GM-LM gilt — was Europa hier verliert, fehlt dort ebenfalls. "
+        "Und die Länder-Mindestbesetzung unten ist deshalb **keine** MSCI-Regel: GIMIs Index "
+        "Continuity Rule (§2.4) greift pro MARKT, und der ist hier ganz Europa."
     )
 
     if data_mode != "Master File (Multi-Period)":
@@ -4648,6 +4827,7 @@ with tab_europe_mp:
                 _ep_country = {}
                 _so_logs = []     # Spin-off-Protokoll je Periode
                 _ep_eumss = {}    # {sd_iso: (EUMSS Full, EUMSS FF)}  -> Index Characteristics
+                _eumss_rank_ep = None   # Rang-Mitnahme, eigener Zustand fuer den Pooled-Lauf
                 _ep_si = {}       # {sd_iso: (R85, T_DM, T_EM, fills, blocked, max_cov)}
 
                 _ep_prog = st.progress(0, text="Starte Europe-Pooled-Lauf...")
@@ -4699,8 +4879,13 @@ with tab_europe_mp:
                         ineligible_df=ineligible_df, apply_ineligible=apply_ineligible,
                         selection_date=sd_dt,
                         label_before_liquidity=label_before_liquidity,
+                        eumss_coverage=eumss_coverage, ff_waiver_k=ff_waiver_k,
+                        eumss_enabled=eumss_enabled_ui,
+                        eumss_maint_ratio=eumss_maint_ratio,
+                        eumss_carry_rank=_eumss_rank_ep, eumss_carry_band=eumss_carry_band,
                         europe_pool=True, min_per_country=int(_ep_floor),
                     )
+                    _eumss_rank_ep = _res.get("eumss_rank_used")
                     _gmc = _res["gm_complete"]
                     if len(_so_log):
                         _so_logs[-1] = _spinoff_outcome(

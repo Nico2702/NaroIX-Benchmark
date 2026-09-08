@@ -13,6 +13,7 @@ Exit code 0 = all run tests passed; 1 = at least one failure.
 """
 import sys
 import os
+import re
 import datetime as _dt
 import glob
 
@@ -247,6 +248,132 @@ def test_helvetica_entry_at_cutoff():
         seg = dict(zip(res["Entity ID"], res["Segment_New"]))
         check(f"helvetica: Halteseite unveraendert ({tag}), Mid bei 88 %",
               seg.get("E1") == "Mid Cap", str(seg))
+
+
+def test_helvetica_variante_default():
+    """Helvetica folgt dem Sidebar-Schalter, dessen Default die Guideline-Variante ist.
+
+    Entscheidung Nico 2026-08-29: Helvetica nimmt, was in der Sidebar steht, und der Default
+    dort ist "Aufstieg am Cut-off" (Guideline §4). Weil Helveticas publizierte Methodik damit
+    an einem UI-Default haengt, nagelt dieser Test genau den fest: Reihenfolge der Optionen
+    und index=0. Kippt jemand den Default, faellt es hier auf, nicht erst im naechsten
+    Rebalancing.
+    """
+    src = open(os.path.join(_ROOT, "naroix_benchmark.py"), encoding="utf-8").read()
+    check("helvetica variante: _SB_ENTRY ist 'Aufstieg am Cut-off'",
+          '_SB_ENTRY = "Aufstieg am Cut-off"' in src)
+    m = re.search(r"options=\[_SB_ENTRY, _SB_SYM, _SB_ASYM\],\s*index=(\d+)", src)
+    check("helvetica variante: Radio-Default steht auf der ersten Option",
+          m is not None and m.group(1) == "0", f"index={m.group(1) if m else 'nicht gefunden'}")
+    check("helvetica variante: MP-Tab nimmt den Sidebar-Wert",
+          "_mp_entry_cut = bool(entry_at_cutoff)" in src)
+    check("helvetica variante: Single-Tab nimmt den Sidebar-Wert",
+          "render_helvetica_tab(_gm_u_global, label_before_liquidity, "
+          "entry_at_cutoff=entry_at_cutoff)" in src)
+
+    # Verhaltensprobe fuer die Guideline-Variante: ein Mid-Incumbent bei _c_before = 67 %
+    # steigt nach Large auf. Coverage-Annahme wird mitgeprueft, sonst ist die Zusicherung
+    # wertlos, falls das Test-Frame spaeter andere Werte erzeugt.
+    ns = _load_helvetica()
+    f = ns["build_helvetica_pipeline"]
+    df = _ch_frame([67e9, 33e9])
+    kw = dict(adtv_thr=1.0, incumbents_isin={"CH0000000000", "CH0000000001"},
+              prior_segments={"E0": "Large Cap", "E1": "Mid Cap"})
+    out = f(df, entry_at_cutoff=True, **kw)[0]
+    cb = float(out[out["Entity ID"] == "E1"]["_c_before"].iloc[0])
+    check("helvetica variante: Testaufbau trifft 65-70 %", 65.0 <= cb < 70.0,
+          f"_c_before={cb:.2f}")
+    seg = dict(zip(out["Entity ID"], out["Segment_New"]))
+    check("helvetica variante: Guideline-Variante laesst Mid-Incumbent bei 67 % nach Large auf",
+          seg.get("E1") == "Large Cap", f"E1={seg.get('E1')}, _c_before={cb:.2f}")
+
+
+def test_msci_gmsr_band():
+    """Ebene 2: die Size Range prueft die CUTOFF-FIRMA und korrigiert bidirektional."""
+    gm = {"large": 60e9, "standard": 15.75e9, "imi": 1.7e9}
+    lo, hi = C._gmsr_band(gm, "standard", "DM")
+    check("msci gmsr: Band 0,5x bis 1,15x", abs(lo - 7.875e9) < 1 and abs(hi - 18.1125e9) < 1,
+          f"{lo/1e9:.3f} .. {hi/1e9:.3f}")
+    lo_em, hi_em = C._gmsr_band(gm, "standard", "EM")
+    check("msci gmsr: EM ist die Haelfte", abs(lo_em - lo / 2) < 1 and abs(hi_em - hi / 2) < 1,
+          f"{lo_em/1e9:.3f} .. {hi_em/1e9:.3f}")
+
+    band = (lo, hi)
+    for raw, exp_cut, exp_case, tag in [
+        (14.2e9, 14.2e9, "A", "im Band bleibt unveraendert"),
+        (25.0e9, hi, "B", "ueber der Obergrenze -> additiv auf 1,15x"),
+        (4.0e9, lo, "C", "unter der Untergrenze -> subtraktiv auf 0,5x"),
+    ]:
+        cut, case = C._apply_gmsr(raw, band)
+        check(f"msci gmsr: {tag}", abs(cut - exp_cut) < 1 and case == exp_case,
+              f"cut={cut/1e9:.3f} Fall={case}")
+    check("msci gmsr: ohne DM-Basis entfaellt Ebene 2",
+          C._gmsr_band(None, "standard", "DM") is None
+          and C._apply_gmsr(14.2e9, None) == (14.2e9, "A"), "Ebene 2 nicht neutral")
+
+
+def test_msci_buffer_zones():
+    """Ebene 3: das durchgerechnete Beispiel aus MSCI_Size_Segmentierung.md Abschnitt 6.
+
+    Cutoff 14,20 Mrd -> Halten ab 2/3 = 9,47 Mrd, Aufsteigen ab 1,5x = 21,30 Mrd.
+    Neuzugaenge werden OHNE Buffer direkt am Cutoff gemessen.
+    """
+    C_ = 14.2e9
+    # (MCap, Vorperiode, erwartet Standard?) — Zeilen A bis G des Dokuments
+    cases = [
+        (25.0e9, "Mid Cap",   True,  "A: ueber 1,5x, war drin"),
+        (25.0e9, "Small Cap", True,  "B: ueber 1,5x, steigt auf"),
+        (16.0e9, "Mid Cap",   True,  "C: Grauzone, war drin -> bleibt"),
+        (16.0e9, "Small Cap", False, "D: Grauzone, war draussen -> bleibt draussen"),
+        (10.0e9, "Mid Cap",   True,  "E: unter Cutoff, aber ueber 2/3 -> gehalten"),
+        (8.0e9,  "Mid Cap",   False, "F: unter 2/3 -> faellt heraus"),
+        (16.0e9, None,        True,  "G: Neuzugang, kein Buffer, direkt am Cutoff"),
+    ]
+    for mcap, prior, exp_std, tag in cases:
+        edge = C._msci_edge(C_, prior, 1)          # 1 = Mid Cap, also die Standard-Kante
+        check(f"msci buffer {tag}", (mcap >= edge) == exp_std,
+              f"MCap={mcap/1e9:.1f} Schwelle={edge/1e9:.2f} -> {'Standard' if mcap>=edge else 'Small'}")
+    check("msci buffer: C und D zeigen die Hysterese",
+          C._msci_edge(C_, "Mid Cap", 1) < C._msci_edge(C_, "Small Cap", 1),
+          "Halten muss leichter sein als Aufsteigen")
+    check("msci buffer: Neuzugang liegt zwischen Halten und Aufsteigen",
+          C._msci_edge(C_, "Mid Cap", 1) < C._msci_edge(C_, None, 1) < C._msci_edge(C_, "Small Cap", 1),
+          "Neuzugang ohne Buffer = glatter Cutoff")
+
+
+def test_msci_segments_end_to_end():
+    """Alle drei Ebenen zusammen auf einem Markt, inkl. Neuzugangsbehandlung."""
+    g = pd.DataFrame({
+        "Total MCap Y2025": [30e9, 16e9, 16e9, 10e9, 8e9],
+        "Adj_FF_MCap":      [15e9,  8e9,  8e9,  5e9, 4e9],
+        "ISIN":    [f"CH000000000{i}" for i in range(5)],
+        "Perm ID": [f"P{i}" for i in range(5)],
+    })
+    prior = {"P0": "Large Cap", "P1": "Mid Cap", "P3": "Mid Cap"}   # P2, P4 = Neuzugaenge
+    seg = C._msci_segments_for_market(g, "Adj_FF_MCap", None, "DM", 70, 85, 99,
+                                      incumbent_segments=prior, apply_migration_buffer=True)
+    got = dict(zip(g["Perm ID"], seg))
+    # P4 liegt exakt auf dem IMI-Cutoff (8,0 Mrd) und ist Neuzugang -> ohne Buffer Small Cap.
+    # Vor der Korrektur bekam er die 1,5x-Huerde und landete faelschlich in Micro Cap.
+    check("msci e2e: Neuzugang am Cutoff wird Small, nicht Micro",
+          got["P4"] == "Small Cap", str(got))
+    check("msci e2e: Bestandstitel unter dem Cutoff wird gehalten",
+          got["P3"] == "Mid Cap", str(got))
+    check("msci e2e: Grossunternehmen bleibt Large", got["P0"] == "Large Cap", str(got))
+
+    # Ohne Vorperiode (Single Snapshot) gibt es keine Buffer — alles am glatten Cutoff.
+    seg0 = C._msci_segments_for_market(g, "Adj_FF_MCap", None, "DM", 70, 85, 99)
+    check("msci e2e: ohne Vorperiode kein Buffer",
+          seg0 == C._msci_segments_for_market(g, "Adj_FF_MCap", None, "DM", 70, 85, 99,
+                                              incumbent_segments={}, apply_migration_buffer=True),
+          str(seg0))
+
+    # Audit-Dict wird befuellt
+    aud = {}
+    C._msci_segments_for_market(g, "Adj_FF_MCap", {"large": 60e9, "standard": 15.75e9,
+                                                   "imi": 1.7e9}, "DM", 70, 85, 99, audit=aud)
+    check("msci e2e: Audit liefert Cutoffs und GMSR-Fall",
+          {"cut_std", "cut_std_raw", "gmsr_case_std"} <= set(aud), sorted(aud))
 
 
 def test_helvetica_adtv_maintenance():
@@ -1378,6 +1505,8 @@ def integration_tests():
                    "FOL normalized match active"]:
             skip("integration: " + nm, "master file / data not available")
         skip("size-integrity: alle Checks", "master file / data not available")
+        skip("ff_waiver / eumss_maint: alle Checks", "master file / data not available")
+        skip("eumss_carry / kein Boden: alle Checks", "master file / data not available")
         return
     snap, cc, china_if, year, fol, fsb = ctx
 
@@ -1429,6 +1558,86 @@ def integration_tests():
     src = pd.Series(gc1.get("IF_Source", pd.Series([], dtype=str)))
     n_norm = int((src == "Industry (normalisiert)").sum())
     check("integration: FOL normalized match active (>0 stocks)", n_norm > 0, f"n={n_norm}")
+
+
+    # ── Groessen-Waiver auf den Mindest-Free-Float ───────────────────────────
+    _base_pool = set(r1["gm_eumss"]["Symbol"].dropna())
+    _w = _run(snap, cc, china_if, year, fol, fsb, ff_waiver_k=2.0)
+    _w_pool = set(_w["gm_eumss"]["Symbol"].dropna())
+    check("ff_waiver: Pool ist echte Obermenge", _base_pool <= _w_pool,
+          f"{len(_base_pool - _w_pool)} Titel verloren")
+    _add = _w_pool - _base_pool
+    check("ff_waiver: Zaehler stimmt mit dem Zuwachs ueberein",
+          _w["n_ff_waived"] == len(_add), f"n_ff_waived={_w['n_ff_waived']} vs {len(_add)}")
+    _fl = float(_w["eumss_full"] or 0)
+    _wd = _w["gm_eumss"][_w["gm_eumss"]["Symbol"].isin(_add)]
+    _ffm = pd.to_numeric(_wd["Free Float MCap Y2025"], errors="coerce").fillna(0)
+    _ffp = pd.to_numeric(_wd["Free Float Percent"], errors="coerce").fillna(0)
+    check("ff_waiver: jeder Zugang reisst wirklich die FF-%-Huerde",
+          bool((_ffp < 0.10).all()) if len(_wd) else True)
+    check("ff_waiver: jeder Zugang erreicht 2,0 x Boden Float",
+          bool((_ffm >= 2.0 * _fl - 1).all()) if len(_wd) else True)
+    check("ff_waiver: Groessenbeine gelten weiter",
+          bool((pd.to_numeric(_wd["Total MCap Y2025"], errors="coerce").fillna(0)
+                >= _fl - 1).all()) if len(_wd) else True)
+    _w0 = _run(snap, cc, china_if, year, fol, fsb, ff_waiver_k=0.0)
+    check("ff_waiver: k=0 ist identisch zum Basislauf",
+          set(_w0["gm_eumss"]["Symbol"].dropna()) == _base_pool)
+
+    # ── Bestandsschutz am Groessenboden ──────────────────────────────────────
+    _inc = set(C._match_key(imi))
+    _m1 = _run(snap, cc, china_if, year, fol, fsb, apply_buffer=True,
+               incumbents_isin=_inc, buffer_min_ff=0.075, eumss_maint_ratio=1.0)
+    _m2 = _run(snap, cc, china_if, year, fol, fsb, apply_buffer=True,
+               incumbents_isin=_inc, buffer_min_ff=0.075, eumss_maint_ratio=0.75)
+    _p1 = set(_m1["gm_eumss"]["Symbol"].dropna()); _p2 = set(_m2["gm_eumss"]["Symbol"].dropna())
+    check("eumss_maint: ratio 1.0 ist verhaltensneutral",
+          _m1["eumss_maint_ratio_used"] == 1.0)
+    check("eumss_maint: 0,75 ist echte Obermenge von 1,0", _p1 <= _p2,
+          f"{len(_p1 - _p2)} Titel verloren")
+    _madd = _m2["gm_eumss"][_m2["gm_eumss"]["Symbol"].isin(_p2 - _p1)]
+    check("eumss_maint: nur Bestandstitel profitieren",
+          bool(C._match_key(_madd).isin(_inc).all()) if len(_madd) else True,
+          f"{0 if not len(_madd) else int((~C._match_key(_madd).isin(_inc)).sum())} Neuzugaenge")
+
+
+    # ── Rang-Mitnahme am Groessenboden ───────────────────────────────────────
+    _r0 = _run(snap, cc, china_if, year, fol, fsb)
+    _rank0 = _r0["eumss_rank_used"]
+    check("eumss_carry: Rang wird zurueckgegeben", isinstance(_rank0, int) and _rank0 > 0,
+          f"rank={_rank0}")
+    _rb0 = _run(snap, cc, china_if, year, fol, fsb, eumss_carry_rank=_rank0,
+                eumss_carry_band=0.0)
+    check("eumss_carry: Band 0 ignoriert den Rang (verhaltensneutral)",
+          _rb0["eumss_full"] == _r0["eumss_full"])
+    # Derselbe Rang, derselbe Snapshot: seine Coverage IST der Kalibrierpunkt, liegt also
+    # im Band -> der Rang haelt, der Boden bleibt unveraendert.
+    _rb1 = _run(snap, cc, china_if, year, fol, fsb, eumss_carry_rank=_rank0,
+                eumss_carry_band=0.25)
+    check("eumss_carry: Rang im Band haelt den Boden",
+          _rb1["eumss_full"] == _r0["eumss_full"] and _rb1["eumss_rank_used"] == _rank0,
+          f"{_rb1['eumss_full']} vs {_r0['eumss_full']}")
+    # Ein Rang weit UNTER der Kante liegt oberhalb des Bands -> Reset auf die obere Kante,
+    # also ein NIEDRIGERER Boden und ein hoeherer Rang als der kalte Schnitt.
+    _rb2 = _run(snap, cc, china_if, year, fol, fsb, eumss_carry_rank=_rank0 + 3000,
+                eumss_carry_band=0.25)
+    check("eumss_carry: Rang ueber dem Band setzt auf die obere Kante zurueck",
+          _rb2["eumss_full"] < _r0["eumss_full"] and _rb2["eumss_rank_used"] > _rank0,
+          f"Boden {_rb2['eumss_full']:.0f} vs {_r0['eumss_full']:.0f}, "
+          f"Rang {_rb2['eumss_rank_used']} vs {_rank0}")
+    check("eumss_carry: obere Kante liegt nicht unter dem 99,25-Punkt",
+          _rb2["eumss_rank_used"] >= _rank0)
+    # Ein Rang WEIT OBEN liegt unter der Kante -> Reset auf den Kalibrierpunkt.
+    _rb3 = _run(snap, cc, china_if, year, fol, fsb, eumss_carry_rank=max(_rank0 - 3000, 0),
+                eumss_carry_band=0.25)
+    check("eumss_carry: Rang unter der Kante setzt auf den Kalibrierpunkt zurueck",
+          _rb3["eumss_full"] == _r0["eumss_full"] and _rb3["eumss_rank_used"] == _rank0)
+    # Ohne Boden darf kein Groessenbein mehr greifen.
+    _rb4 = _run(snap, cc, china_if, year, fol, fsb, eumss_enabled=False)
+    check("kein Boden: eumss_full und eumss_ff sind 0",
+          _rb4["eumss_full"] == 0 and _rb4["eumss_ff"] == 0)
+    check("kein Boden: Pool ist echte Obermenge",
+          set(_r0["gm_eumss"]["Symbol"].dropna()) <= set(_rb4["gm_eumss"]["Symbol"].dropna()))
 
     # Aufstieg am Cut-off gegen symmetrischen Buffer, gleiche Vorperioden-Segmente
     _IMI3 = ["Large Cap", "Mid Cap", "Small Cap"]
@@ -1514,11 +1723,205 @@ def integration_tests():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ── segment_edges: die Anzeige darf nie etwas anderes sagen als die Engine ───
+def test_segment_edges_matches_engine():
+    """segment_edges() gegen _size_segment / _size_segment_asym / _size_segment_entry.
+
+    Die Funktion speist Sidebar-Tabelle, Kriterienbox, Coverage-Grafik und Settings-Blatt.
+    Laeuft sie auseinander, zeigt die Oberflaeche etwas anderes an, als gerechnet wird —
+    genau der Fehler, den die hartkodierte 99 im Small-Cut jahrelang hatte.
+    """
+    eps = 0.01
+    cases = [
+        ("sym",   lambda pr, c, bw: C._size_segment(pr, c, 70, 85, bw)),
+        ("asym",  lambda pr, c, bw: C._size_segment_asym(pr, c, 70, 85, bw)),
+        ("entry", lambda pr, c, bw: C._size_segment_entry(pr, c, 70, 85, bw, None)),
+    ]
+    for variant, fn in cases:
+        for bw in (5.0, 7.0):
+            e = C.segment_edges(70, 85, 99, bw_lm=bw, bw_ms=bw, bw_sm=0.5, variant=variant)
+            r_l, r_m = e["rise"]["large"], e["rise"]["mid"]
+            h_l, h_m = e["hold"]["large"], e["hold"]["mid"]
+            check(f"segment_edges {variant} bw={bw:g}: Aufstieg Mid->Large",
+                  fn("Mid Cap", r_l - eps, bw) == "Large Cap"
+                  and fn("Mid Cap", r_l + eps, bw) != "Large Cap",
+                  f"Kante {r_l}")
+            check(f"segment_edges {variant} bw={bw:g}: Aufstieg Small->Mid",
+                  fn("Small Cap", r_m - eps, bw) == "Mid Cap"
+                  and fn("Small Cap", r_m + eps, bw) != "Mid Cap",
+                  f"Kante {r_m}")
+            check(f"segment_edges {variant} bw={bw:g}: Verbleib Large",
+                  fn("Large Cap", h_l - eps, bw) == "Large Cap"
+                  and fn("Large Cap", h_l + eps, bw) != "Large Cap",
+                  f"Kante {h_l}")
+            check(f"segment_edges {variant} bw={bw:g}: Verbleib Mid",
+                  fn("Mid Cap", h_m - eps, bw) == "Mid Cap"
+                  and fn("Mid Cap", h_m + eps, bw) != "Mid Cap",
+                  f"Kante {h_m}")
+
+
+def test_segment_edges_separate_ms_band():
+    """bw_ms wirkt getrennt NUR im entry-Ast, so wie _size_segment_entry es tut."""
+    e = C.segment_edges(70, 85, 99, bw_lm=5, bw_ms=7, bw_sm=0.5, variant="entry")
+    check("segment_edges entry: getrennte Mid/Small-Bandbreite",
+          e["hold"]["large"] == 75 and e["hold"]["mid"] == 92, str(e["hold"]))
+    check("segment_edges entry: Engine bestaetigt 92",
+          C._size_segment_entry("Mid Cap", 91.9, 70, 85, 5, 7) == "Mid Cap"
+          and C._size_segment_entry("Mid Cap", 92.1, 70, 85, 5, 7) != "Mid Cap")
+    for v in ("sym", "asym"):
+        e2 = C.segment_edges(70, 85, 99, bw_lm=5, bw_ms=7, bw_sm=0.5, variant=v)
+        check(f"segment_edges {v}: bw_ms wird ignoriert (Engine kennt nur eine Bandbreite)",
+              e2["hold"]["mid"] == 90, str(e2["hold"]))
+
+
+def test_segment_edges_small_micro_and_off():
+    """Small/Micro-Kante folgt small_thr, nicht einer hartkodierten 99. Und 0 = aus."""
+    e = C.segment_edges(70, 85, 98, bw_lm=5, bw_ms=5, bw_sm=1.5, variant="entry")
+    check("segment_edges: Small/Micro folgt small_thr", e["hold"]["small"] == 99.5,
+          str(e["hold"]["small"]))
+    check("segment_edges: Small-Aufnahme folgt small_thr",
+          e["rows"][2]["admission_to"] == 98 and e["rows"][3]["admission_from"] == 98)
+    e0 = C.segment_edges(70, 85, 99, bw_lm=5, bw_ms=5, bw_sm=0, variant="entry")
+    check("segment_edges: Bandbreite 0 schaltet die Small/Micro-Hysterese ab",
+          e0["hold"]["small"] is None)
+    eo = C.segment_edges(70, 85, 99, size_buffer=False)
+    check("segment_edges: ohne Size Buffer kein Aufstieg und kein Verbleib",
+          all(v is None for v in eo["rise"].values())
+          and all(v is None for v in eo["hold"].values()))
+    try:
+        C.segment_edges(70, 85, 99, variant="quatsch")
+        check("segment_edges: unbekannte Variante wirft", False)
+    except ValueError:
+        check("segment_edges: unbekannte Variante wirft", True)
+
+
+def test_eumss_coverage_default_neutral():
+    """eumss_coverage=None muss exakt small_thr sein — die Entkopplung darf am
+    Default nichts veraendern."""
+    import inspect
+    sig = inspect.signature(C.run_selection_pipeline)
+    check("eumss_coverage: Parameter existiert", "eumss_coverage" in sig.parameters)
+    check("eumss_coverage: Default None (= small_thr, verhaltensneutral)",
+          sig.parameters["eumss_coverage"].default is None)
+
+
+def test_ff_waiver_and_maint_defaults_neutral():
+    """Beide neuen Parameter muessen am Default exakt nichts tun: ff_waiver_k=0 schaltet
+    den Groessen-Waiver ab, eumss_maint_ratio=None laesst den Boden fuer alle gelten."""
+    import inspect
+    sig = inspect.signature(C.run_selection_pipeline)
+    check("ff_waiver_k: Parameter existiert", "ff_waiver_k" in sig.parameters)
+    check("ff_waiver_k: Default 0.0 (verhaltensneutral)",
+          sig.parameters["ff_waiver_k"].default == 0.0)
+    check("eumss_maint_ratio: Parameter existiert", "eumss_maint_ratio" in sig.parameters)
+    check("eumss_maint_ratio: Default None (= 1.0, verhaltensneutral)",
+          sig.parameters["eumss_maint_ratio"].default is None)
+
+
+def test_ff_waiver_wired_in_app():
+    """Der Waiver muss an JEDER run_selection_pipeline-Aufrufstelle der App ankommen,
+    sonst ignoriert ihn ausgerechnet der Multi-Period-Lauf still. Genau dieser Fehler
+    lag bis 09/2026 bei eumss_coverage vor (2 von 5 Stellen fehlten)."""
+    import re
+    src = open(os.path.join(_ROOT, "naroix_benchmark.py"), encoding="utf-8").read()
+    calls = [m.start() for m in re.finditer(r"run_selection_pipeline\(", src)]
+    check("App: run_selection_pipeline-Aufrufstellen gefunden", len(calls) >= 5,
+          f"n={len(calls)}")
+    _line = lambda c: src[:c].count(chr(10)) + 1
+    miss_w = [_line(c) for c in calls
+              if "ff_waiver_k=ff_waiver_k" not in src[c:c + 5000]]
+    miss_c = [_line(c) for c in calls
+              if "eumss_coverage=eumss_coverage" not in src[c:c + 5000]]
+    check("App: ff_waiver_k an allen Aufrufstellen", not miss_w, f"fehlt in Zeile {miss_w}")
+    check("App: eumss_coverage an allen Aufrufstellen", not miss_c, f"fehlt in Zeile {miss_c}")
+
+
+def test_eumss_floor_rule_defaults_neutral():
+    """Rang-Mitnahme muss am Default aus sein: Band 0 und kein gemerkter Rang."""
+    import inspect
+    sig = inspect.signature(C.run_selection_pipeline)
+    for name, default in (("eumss_carry_rank", None), ("eumss_carry_band", 0.0)):
+        check(f"{name}: Parameter existiert", name in sig.parameters)
+        check(f"{name}: Default {default!r} (verhaltensneutral)",
+              sig.parameters[name].default == default)
+
+
+def test_eumss_floor_rule_wired_in_app():
+    """Die Bodenregel muss an den drei Produktlaeufen ankommen, und die beiden
+    Total-Markets-Laeufe muessen unabhaengig davon hart auf eumss_enabled=False bleiben:
+    NX-GM-TM ist per Definition ohne Boden, das darf kein Sidebar-Radio umkippen."""
+    import re
+    src = open(os.path.join(_ROOT, "naroix_benchmark.py"), encoding="utf-8").read()
+    calls = [m.start() for m in re.finditer(r"run_selection_pipeline\(", src)]
+    _line = lambda c: src[:c].count(chr(10)) + 1
+    ui, tm, neither = [], [], []
+    for c in calls:
+        body = src[c:c + 5000]
+        if "eumss_enabled=eumss_enabled_ui" in body:
+            ui.append(_line(c))
+        elif "eumss_enabled=False" in body:
+            tm.append(_line(c))
+        else:
+            neither.append(_line(c))
+    check("App: 3 Produktlaeufe an der Bodenregel", len(ui) == 3, f"gefunden {ui}")
+    check("App: 2 Total-Markets-Laeufe bleiben ohne Boden", len(tm) == 2, f"gefunden {tm}")
+    check("App: keine Aufrufstelle ohne Bodenregel", not neither, f"offen {neither}")
+    miss_m = [_line(c) for c in calls
+              if "eumss_enabled=eumss_enabled_ui" in src[c:c + 5000]
+              and "eumss_maint_ratio=eumss_maint_ratio" not in src[c:c + 5000]]
+    check("App: Bestandsschutz an allen Produktlaeufen", not miss_m, f"fehlt {miss_m}")
+    carry = [_line(c) for c in calls if "eumss_carry_band=eumss_carry_band" in src[c:c + 5000]]
+    check("App: Rang-Mitnahme an den beiden Multi-Period-Schleifen", len(carry) == 2,
+          f"gefunden {carry}")
+    for var in ("_eumss_rank = None", "_eumss_rank_ep = None",
+                '_eumss_rank = result.get("eumss_rank_used")',
+                '_eumss_rank_ep = _res.get("eumss_rank_used")'):
+        check(f"App: Rang-Zustand vorhanden ({var.split('=')[0].strip()})", var in src)
+
+
+def test_atvr_column_matches_screen():
+    """Die Sammelspalte ATVR muss GENAU das zeigen, was der Screen prueft: min(3M, 6M).
+    Bis 09/2026 stand dort min(3M, 12M), waehrend der Screen laengst 3M/6M testete."""
+    import inspect
+    src = inspect.getsource(C.build_new_universe)
+    check("ATVR-Sammelspalte = min(3M, 6M)",
+          'df["ATVR"] = np.minimum(df["ATVR_3M"], df["ATVR_6M"])' in src)
+    scr = inspect.getsource(C.apply_liquidity_new)
+    check("Screen prueft ATVR_3M", '_atvr3 = df["ATVR_3M"]' in scr)
+    check("Screen prueft ATVR_6M", '_atvr6 = df["ATVR_6M"]' in scr)
+    check("Screen prueft NICHT ATVR_12M", '_atvr12' not in scr)
+
+
+def test_app_defaults_methodik():
+    """Die Methodik-Defaults der Sidebar gegen stille Aenderung sperren. Jeder Eintrag hier
+    ist eine Entscheidung, kein technischer Wert."""
+    src = open(os.path.join(_ROOT, "naroix_benchmark.py"), encoding="utf-8").read()
+    for label, needle in (
+            ("Labeling vor Liquiditaet an", 'key="label_before_liquidity"'),
+            ("Bodenregel Rang-Mitnahme", '"Bodenregel", EUMSS_MODES, index=1'),
+            ("Bestandsschutz 0,75", '"EUMSS Bestandsschutz", value="0,75"'),
+            ("FF-Waiver 2,0", '"FF-Waiver", value="2,0"'),
+            ("ATVR Entry DM 5", '"DM ATVR", value="5"'),
+            ("ATVR Entry EM 5", '"EM ATVR", value="5"'),
+            ("ATVR Maint DM 2,5", '"ATVR DM Maint.", value="2,5"'),
+            ("ATVR Maint EM 2,5", '"ATVR EM Maint.", value="2,5"')):
+        check(f"App-Default: {label}", needle in src, f"nicht gefunden: {needle}")
+    # label_before_liquidity muss checkbox(value=True) sein, nicht toggle(value=False)
+    i = src.find('label_before_liquidity = st.')
+    seg = src[i:i + 200]
+    check("App-Default: Labeling vor Liquiditaet ist eine Checkbox mit value=True",
+          "st.checkbox" in seg and "value=True" in seg, seg[:80])
+    check("Sidebar-Text nennt nicht mehr faelschlich 3M und 12M",
+          "auf 3M UND 12M" not in src)
+
+
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_to_excel_pct_date_cols,
             test_norm_fol_key, test_size_segment, test_normalize_index_weight,
             test_size_segment_entry_at_cut, test_helvetica_entry_at_cutoff, test_helvetica_micro_fillup,
+            test_helvetica_variante_default,
+            test_msci_gmsr_band, test_msci_buffer_zones, test_msci_segments_end_to_end,
             test_helvetica_adtv_maintenance, test_helvetica_high_price_rule,
             test_helvetica_ineligible, test_helvetica_dedup_most_liquid, test_build_index, test_build_index_thematic, test_atvr_dual_horizon, test_rank_band_buffer,
             test_build_index_company_count, test_ucits_cap, test_validate_factset_data, test_delisted_filter_numeric,
@@ -1534,7 +1937,12 @@ def main():
             test_spinoff_horizon_windows, test_spinoff_horizon_entitlement,
             test_liquidity_exempt_per_horizon,
             test_liquidity_exempt_neutral,
-            test_spinoff_loader_validation]
+            test_spinoff_loader_validation,
+            test_segment_edges_matches_engine, test_segment_edges_separate_ms_band,
+            test_segment_edges_small_micro_and_off, test_eumss_coverage_default_neutral,
+            test_ff_waiver_and_maint_defaults_neutral, test_ff_waiver_wired_in_app,
+            test_eumss_floor_rule_defaults_neutral, test_eumss_floor_rule_wired_in_app,
+            test_atvr_column_matches_screen, test_app_defaults_methodik]
     for t in pure:
         try:
             t()
