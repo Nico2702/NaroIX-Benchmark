@@ -2008,8 +2008,12 @@ with st.sidebar:
              "Stand bis 09/2026.\n\n"
              "Gemessen ueber 48 Perioden (NX-EU-LM, Europe Pooled): 431 statt 394 Titel, "
              "MSCI-Treffer 360 statt 343, gewichteter Overlap 98,27 statt 97,54 %, Turnover "
-             "3,47 statt 3,55 %. Fuenf von sechs Anbietern segmentieren ebenfalls das fertig "
-             "gescreente Universum, nur FTSE bildet sein Index Universe vor den Screens.\n\n"
+             "3,47 statt 3,55 %.\n\n"
+             "ACHTUNG, bewusste Abweichung: FUENF von sechs Anbietern segmentieren das fertig "
+             "gescreente Universum, entsprechen also der Stellung AUS. Nur FTSE bildet sein "
+             "Index Universe in Regel 7.3 VOR den Screens aus Abschnitt 6 und entspricht damit "
+             "der Stellung AN. Die Entscheidung fuer AN faellt allein auf den gemessenen Match, "
+             "nicht auf den Marktstandard.\n\n"
              "EUMSS-Floor und alle anderen Parameter (inkl. ATVR) bleiben unveraendert."
     )
 
@@ -3101,12 +3105,12 @@ with tab_gimi:
         _gm_diag = [
             {"Schritt":"0 — Raw (Primary + Secondary, klassifiziert)","DM":(_gm_all["Classification"]=="DM").sum(),"EM":(_gm_all["Classification"]=="EM").sum(),"Total":len(_gm_all),"Δ":"—"},
             {"Schritt":"1 — Universe (nach Exclusions + FOL)","DM":(_gm_u["Classification"]=="DM").sum(),"EM":(_gm_u["Classification"]=="EM").sum(),"Total":len(_gm_u),"Δ":f"-{len(_gm_all)-len(_gm_u):,}"},
+            {"Schritt":f"    └─ 1b — In-Eligible ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_ie_removed["Classification"]=="DM").sum() if len(_gm_ie_removed)>0 else 0,"EM":(_gm_ie_removed["Classification"]=="EM").sum() if len(_gm_ie_removed)>0 else 0,"Total":len(_gm_ie_removed),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
             {"Schritt":f"2 — EUMSS Filter ({_gm_eumss_full/1e6:.0f}M)","DM":(_gm_eumss["Classification"]=="DM").sum(),"EM":(_gm_eumss["Classification"]=="EM").sum(),"Total":len(_gm_eumss),"Δ":f"-{len(_gm_u)-len(_gm_eumss):,}"},
             {"Schritt":"3 — Liquiditätsfilter" + (" (Mitgliedschafts-Gate)" if label_before_liquidity else ""),"DM":(_gm_liq["Classification"]=="DM").sum(),"EM":(_gm_liq["Classification"]=="EM").sum(),"Total":len(_gm_liq),"Δ":f"-{len(_gm_eumss)-len(_gm_liq):,}"},
             {"Schritt":f"4 — {mid_thr}% Coverage → Standard Index" + (" (Markt-Coverage auf vollem Pool vor Liquidität)" if label_before_liquidity else "") + (f" (+ Buffer {buffer_coverage}% für Incumbents)" if apply_buffer and len(incumbents_isin_set)>0 else ""),"DM":(_gm_std["Classification"]=="DM").sum(),"EM":(_gm_std["Classification"]=="EM").sum(),"Total":len(_gm_std),"Δ":f"-{len(_gm_liq)-len(_gm_std):,}"},
             {"Schritt":f"    ├─ Large Cap (_c_before < {large_thr}%)","DM":(_gm_large["Classification"]=="DM").sum() if len(_gm_large)>0 else 0,"EM":(_gm_large["Classification"]=="EM").sum() if len(_gm_large)>0 else 0,"Total":len(_gm_large),"Δ":"—"},
             {"Schritt":f"    └─ Mid Cap   (_c_before ≥ {large_thr}%)","DM":(_gm_mid["Classification"]=="DM").sum() if len(_gm_mid)>0 else 0,"EM":(_gm_mid["Classification"]=="EM").sum() if len(_gm_mid)>0 else 0,"Total":len(_gm_mid),"Δ":"—"},
-            {"Schritt":f"5 — Ineligible-Filter ({'aktiv' if apply_ineligible and not ineligible_df.empty else 'inaktiv'})","DM":(_gm_complete["Classification"]=="DM").sum(),"EM":(_gm_complete["Classification"]=="EM").sum(),"Total":len(_gm_complete),"Δ":f"-{len(_gm_ie_removed):,}" if len(_gm_ie_removed)>0 else "—"},
         ]
         _gm_diag_caption = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}% | Min FF%: {min_ff_pct*100:.0f}% | IF: {if_selection_mode} | FOL Matrix: {'✅ ' + str(fol_version) if apply_fol and fol_matrix else '❌ inaktiv'}"
         _gm_eumss_extra = f"EUMSS_FULL: {format_bn(_gm_eumss_full)} | EUMSS_FF: {format_bn(_gm_eumss_ff)} | FF Ratio: {new_eumss_ff_ratio*100:.0f}%"

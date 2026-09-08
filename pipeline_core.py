@@ -2276,7 +2276,9 @@ def run_selection_pipeline(
     # min_per_country: optionaler Backstop GEGEN die Ausdünnung kleiner Märkte durch den
     # gemeinsamen Cutoff — fällt ein Europa-Land unter diese Zahl Standard-Titel, werden
     # seine größten Small Caps zu Mid Cap hochgezogen. 0 = aus. Greift nur bei europe_pool.
-    # NB: das ist eine EIGENE Konstruktion, keine MSCI-Regel. MSCIs Index Continuity Rule
+    # NB: keine MSCI-Regel, aber auch keine Eigenkonstruktion: Bloomberg faehrt eine
+    # Mindestbesetzung mit 3 Standard-Titeln JE LAND, STOXX mit 5 DM und 3 EM je Land.
+    # Nur MSCIs Index Continuity Rule
     # (GIMI §2.4: min. 5 Konstituenten DM-Standard, 3 EM, 1 FM) gilt pro MARKT, und DM
     # Europa ist bei MSCI laut Fussnote 1 EIN Markt — dort schuetzt sie also die einzelnen
     # europaeischen Laender NICHT. Verifiziert gegen GIMI Nov-2019 und Mai-2026.
@@ -2375,6 +2377,19 @@ def run_selection_pipeline(
             fol_matrix=fol_matrix, fol_sector_fb=fol_sector_fb,
             fol_year=fol_year, fol_enabled=fol_enabled,
         )
+
+    # 1b) Ineligible filter — Exclusion, keine Nachbearbeitung.
+    # Bis 09/2026 lief der Filter als Schritt 7 NACH der Segmentierung. Ein gesperrter Titel
+    # bekam dort zwar kein Gewicht, stand aber weiter im EUMSS-Nenner UND im Coverage-Nenner
+    # seines Marktes und verschob damit die _c_before-Position aller anderen. An der 85er-Kante
+    # konnte das jemanden hinein- oder hinausschieben, der mit der Sperre nichts zu tun hat.
+    # MSCI und STOXX lassen eine nicht eligible Security gar nicht erst ins Market Investable
+    # Equity Universe. Ab jetzt genauso: der Titel existiert nirgends mehr.
+    # gm_ie_removed traegt danach Universe-Felder statt Segmente — bewusst, das Segment
+    # entsteht erst danach und waere fuer einen ausgeschlossenen Titel eine Fiktion.
+    gm_ie_removed = gm_u.iloc[0:0].copy()
+    if apply_ineligible and ineligible_df is not None and not ineligible_df.empty and selection_date is not None:
+        gm_u, gm_ie_removed, _ = apply_ineligible_filter(gm_u, ineligible_df, selection_date)
 
     # 2) EUMSS calibration on DM **Primary-only** (top _eumss_cov% coverage point).
     _eumss_cov = float(small_thr if eumss_coverage is None else eumss_coverage)
@@ -2765,10 +2780,7 @@ def run_selection_pipeline(
         else:
             gm_complete[_flag] = False
 
-    # 7) Ineligible filter
-    gm_ie_removed = gm_complete.iloc[0:0].copy()
-    if apply_ineligible and ineligible_df is not None and not ineligible_df.empty and selection_date is not None:
-        gm_complete, gm_ie_removed, _ = apply_ineligible_filter(gm_complete, ineligible_df, selection_date)
+    # 7) entfaellt — der Ineligible-Filter sitzt seit 09/2026 als Schritt 1b im Universum.
 
     # 8) Index weights (Adj_FF_MCap basis) — use normalize_index_weight for exact 100.0 sum
     gm_complete = normalize_index_weight(gm_complete, adj_col="Adj_FF_MCap")

@@ -1915,6 +1915,22 @@ def test_app_defaults_methodik():
           "auf 3M UND 12M" not in src)
 
 
+def test_ineligible_is_a_universe_exclusion():
+    """Der In-Eligible-Filter muss VOR der EUMSS-Kalibrierung laufen, nicht nach der
+    Segmentierung. Sonst steht ein gesperrter Titel weiter im Coverage-Nenner und
+    verschiebt die _c_before-Position aller anderen in seinem Markt."""
+    import inspect
+    src = inspect.getsource(C.run_selection_pipeline)
+    i_ie = src.find("gm_u, gm_ie_removed, _ = apply_ineligible_filter(gm_u")
+    i_cal = src.find("# 2) EUMSS calibration")
+    i_seg = src.find("# 5) Coverage waterfall")
+    check("In-Eligible: laeuft auf gm_u", i_ie > 0)
+    check("In-Eligible: vor der EUMSS-Kalibrierung", 0 < i_ie < i_cal, f"{i_ie} vs {i_cal}")
+    check("In-Eligible: vor dem Coverage-Waterfall", 0 < i_ie < i_seg, f"{i_ie} vs {i_seg}")
+    check("In-Eligible: laeuft NICHT mehr auf gm_complete",
+          "apply_ineligible_filter(gm_complete" not in src)
+
+
 def main():
     pure = [test_index_series_integrity, test_clean_export_cols, test_excel_no_y2025_leak,
             test_to_excel_pct_date_cols,
@@ -1942,7 +1958,8 @@ def main():
             test_segment_edges_small_micro_and_off, test_eumss_coverage_default_neutral,
             test_ff_waiver_and_maint_defaults_neutral, test_ff_waiver_wired_in_app,
             test_eumss_floor_rule_defaults_neutral, test_eumss_floor_rule_wired_in_app,
-            test_atvr_column_matches_screen, test_app_defaults_methodik]
+            test_atvr_column_matches_screen, test_app_defaults_methodik,
+            test_ineligible_is_a_universe_exclusion]
     for t in pure:
         try:
             t()

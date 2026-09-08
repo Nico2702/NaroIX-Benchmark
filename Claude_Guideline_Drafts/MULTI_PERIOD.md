@@ -247,7 +247,8 @@ je Land.
 | Länder-Mindestbesetzung | **0 (aus)** | Fällt ein Europa-Land unter diese Zahl Standard-Titel, werden seine größten Small Caps zu Mid Cap hochgezogen. Audit-Flag `Country_Floor_Promoted`. |
 | Welche Europe-Produkte | `NX-EU-LM` | Auswahl aus den Produkten mit `region == "EU"` |
 
-> Die Länder-Mindestbesetzung ist eine **eigene Konstruktion, keine MSCI-Regel**. MSCIs Index
+> Die Länder-Mindestbesetzung ist **keine MSCI-Regel, aber auch keine Eigenkonstruktion**:
+> Bloomberg fährt sie mit 3 Standard-Titeln je Land, STOXX mit 5 DM und 3 EM je Land. MSCIs Index
 > Continuity Rule (min. 5 DM / 3 EM / 1 FM) greift pro **Markt**, und DM Europa ist dort ein
 > einziger Markt. Sie schützt europäische Einzelländer also nicht. 0 = reiner Pooling-Effekt.
 

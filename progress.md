@@ -14,6 +14,10 @@ ENTSCHIEDEN 2026-09-08 (Nico), alles bereits Default in der Sidebar:
 - Bodenregel = Rang-Mitnahme (Band 99 bis 99,25) plus Bestandsschutz 0,75 x Boden
 - FF-Waiver 2,0 x Boden
 - ATVR Entry 5 / 5, Maintenance 2,5 / 2,5, symmetrisch wie der ADTV-Screen
+- ADTV Entry 1,0 Mio DM wie EM, Maintenance 0,75 Mio (bestaetigt, unveraendert). Die
+  Serien-Guideline fuehrte faelschlich 2,0 Mio fuer DM, das war veraltet und ist korrigiert.
+- Segment bleibt auf WERTPAPIEREBENE (Solactive 2.1.3), kein Post-Step auf Firmenebene.
+- Kumulationsbasis bleibt Adj_FF_MCap inklusive China-Faktor (Variante A, Solactive).
 Damit weicht jeder Lauf ohne manuelle Umstellung von allen Messungen vor dem 08.09.2026 ab.
 Der Settings-Stempel protokolliert alle Felder, alte Exporte bleiben zuordenbar.
 
@@ -1775,9 +1779,8 @@ WER MACHT WAS (aus den Regelwerken, woertlich geprueft):
 - FTSE = eigene Variante, volle MCap. Die Frage stellt sich dort gar nicht.
 - ROHES FLOAT (C) NUTZT NIEMAND.
 
-FAZIT: die relevante Frage ist nicht A gegen C, sondern A gegen B, und dort stehen wir mit
-Solactive allein gegen vier. Der Schalter fuer C existiert bereits (Sidebar "IF
-Anwendungsmodus" -> "Gewichtung"), fuer B gibt es heute keinen. NICHT ENTSCHIEDEN, nur gemessen.
+ENTSCHEIDUNG Nico 2026-09-08: ES BLEIBT BEI A. Variante B wird nicht gebaut, der Schalter
+fuer C bleibt Research (Sidebar "IF Anwendungsmodus" -> "Gewichtung").
 
 ### Variante B im Detail (2026-09-08, `cmp_variant_b_detail.py`, Endperiode 19.08.2026)
 
@@ -1915,3 +1918,96 @@ ZWEI ALTLASTEN DABEI BEHOBEN
 Tests 349 -> 359+, alle Methodik-Defaults sind jetzt einzeln gesperrt (Labeling-Checkbox mit
 value=True, Bodenregel Rang-Mitnahme, Bestandsschutz 0,75, FF-Waiver 2,0, ATVR 5/5 und 2,5/2,5)
 plus vier Checks auf die ATVR-Spalte und die geprueften Horizonte.
+
+## Kumulationsbasis: Entscheidung fuer A, mit Beleg (2026-09-08)
+
+ENTSCHEIDUNG Nico: der China-Faktor bleibt in der Kumulation. Kein Umbau auf Variante B.
+
+BELEG, dass Solactive es genauso macht (Einschraenkung von vorher zurueckgezogen). Solactive
+definiert EINE Groesse und nutzt sie ueberall. Definition in Abschnitt 4: "The FREE FLOAT MARKET
+CAPITALIZATION ... is calculated as the multiplication of the shares outstanding in FREE FLOAT
+with the CLOSING PRICE. If a company faces foreign investment limitations the FREE FLOAT MARKET
+CAPITALIZATION of a security is adjusted by its FINAL WEIGHTING FACTOR." Derselbe definierte
+Begriff steht an vier Stellen:
+- 2.1.3 Size Buckets: "assigned to a size bucket based on the accumulated FREE FLOAT MARKET
+  CAPITALIZATION"
+- Free-Float-Waiver: "in case the FREE FLOAT MARKET CAPITALIZATION ... is at least USD 1.000.000.000"
+- Liquidity Ratio: "ADTV ... divided by the FREE FLOAT MARKET CAPITALIZATION"
+- 2.4 Weighting: "weighted according to FREE FLOAT MARKET CAPITALIZATION"
+Drei davon sind Selektion. Der Name "Final Weighting Factor" ist irrefuehrend, es ist eine in den
+Begriff eingebaute Bereinigung, kein Schritt am Ende. Solactive faehrt damit eindeutig Variante A,
+mit demselben Faktor 20 % wie wir.
+STOXX nutzt denselben Aufbau (Free Float = FHR x min(TMI Float, FOL) x China Connect Scaling
+Factor), nimmt den China-Faktor aber durch einen ausdruecklichen Zusatz wieder heraus. Ohne diesen
+Satz waere STOXX wie Solactive.
+
+FOL BEI SOLACTIVE, drei Eingriffspunkte (nur Emerging Markets):
+1. Harter Eingangsscreen: FOL mindestens 10 % neu / 7,5 % Bestand, Foreign Ownership Room
+   mindestens 15 % / 7,5 %, mindestens 2 % verfuegbare Auslandsanteile.
+2. Im FWF und damit in der Segmentierung, ueber min(FOL, Free Float %).
+3. Gewichtsabschlag: Room unter 15 % halbiert das Gewicht; unter 7,5 % nur mit handelbarem
+   Depositary Receipt drin, ebenfalls halbes Gewicht. Bei FOL 100 % entfaellt alles.
+BEI UNS geht FOL an genau EINER Stelle ein, `IF = min(1, FOL / FF%)` in pipeline_core.py:1944,
+und wirkt von dort auf Segmentierung UND Gewichtung. Uns fehlen die Ausschluss-Screens (kein
+Mindest-FOL, kein Room-Kriterium, kein Gewichtsabschlag) — bewusste Abweichung, ausserhalb Chinas
+38 Titel.
+
+WARUM B SO AUFBLAEHT (`chk_china_curve.py`, 19.08.2026, Einzelperioden-Rekonstruktion):
+Der 0,20-Faktor schrumpft China nicht gleichmaessig, sondern nur die A-Aktien. Markt CHINA im
+Pool: 2.648 Titel, davon 2.264 A-Aktien und 384 ueber Hongkong.
+
+| | Nenner | A-Aktien | Hongkong |
+|---|---|---|---|
+| A Adj_FF | 3,37 Bio USD | 27,8 % | 72,2 % |
+| B Float x FOL | 7,12 Bio USD | 65,9 % | 34,1 % |
+
+384 Hongkong-Linien tragen unter A fast drei Viertel des Nenners bei 14 % der Namen. Tencent
+allein 11,17 % statt 5,28 %, Alibaba 7,89 statt 3,73 %. Top 10 = 28,1 % des Nenners unter A gegen
+14,7 % unter B, Top 50 = 49,2 gegen 29,0 %. Entsprechend liegt die 85-%-Kante unter A auf Rang
+764 und unter B auf Rang 1.318, die 70-%-Kante auf 265 gegen 651. Daher die rund 900 Titel: die
+Kante wandert 554 Plaetze nach unten, weil die Spitze der Kurve entkonzentriert wird. Deshalb
+gewinnen auch die Hongkong-Linien dazu (Standard 289 -> 369).
+
+Unter A ist der chinesische Teil faktisch ein Hongkong-Index mit A-Aktien-Anhang, weil die
+Segmentgrenzen von 384 Titeln bestimmt werden. Das ist der bewusst akzeptierte Preis dafuer,
+dass die Teilaufnahme konsistent in Selektion und Gewichtung wirkt.
+
+## KORREKTUR: Segment-Ebene ist keine Abweichung ohne Gegenstueck (2026-09-08)
+
+Frueher hier und im Artefakt behauptet: "alle sechs vergeben das Segment firmenweit, wir je
+Wertpapier". Das stimmt nicht. Im Wortlaut nachgelesen:
+
+FIRMENEBENE, vier Anbieter:
+- MSCI: "Since Size-Segment Indexes are based on company full market capitalization, all
+  securities of a company are always classified in the same size-segment. As a result, there may
+  be more securities than companies in a given size-segment."
+- FTSE 7.3.5: "all of a company's eligible securities will remain grouped and companies as a
+  whole, rather than individual securities, are assigned to large, mid or small cap"
+- STOXX: Global Minimum Size Points "based on a company's Full Market Capitalization", EUMSC
+  summiert die Wertpapiere je Firma
+- Morningstar: "the cumulative free float company market cap is calculated"
+
+WERTPAPIEREBENE MIT NACHTRAEGLICHER HARMONISIERUNG, Bloomberg:
+- Schritt 3: "The total market capitalization is sorted from high to low and the cumulative float
+  market capitalization percent is calculated at each security in a descending order."
+- Schritt 5: "Eligible listings of the same company are systematically assigned to the same size
+  segment (largest)."
+
+WERTPAPIEREBENE DURCHGAENGIG, Solactive 2.1.3 — UNSERE KONSTRUKTION:
+- "The securities are first ranked by TOTAL MARKET CAPITALIZATION in descending order and
+  subsequently assigned to a size bucket based on the accumulated FREE FLOAT MARKET CAPITALIZATION
+  of the security in the INDEX UNIVERSE."
+- TOTAL MARKET CAPITALIZATION ist bei Solactive definiert als "the sum of all SHARE CLASS MARKET
+  CAPITALIZATIONs of a company", also firmenweit. Sortierschluessel firmenweit, Kumulation und
+  Zuordnung je Wertpapier. Exakt unser `grp.sort_values(["Total MCap Y2025", "Adj_FF_MCap"])`
+  plus `_c_before` auf Wertpapierebene.
+
+FOLGE FUER DIE STRUKTUR: weil der Sortierschluessel firmenweit ist, liegen alle Gattungen einer
+Firma NEBENEINANDER auf der Kurve. Sie werden nur getrennt, wenn ein Cutoff genau zwischen sie
+faellt. Das erklaert die gemessene Verteilung: 76 Firmen mit Linien in verschiedenen Segmenten,
+aber nur 16 mit einem Teil im Standard und einem ausserhalb, und nur 1 mit einem Split innerhalb
+des IMI.
+
+STATUS geaendert von "abweichend, keiner" auf "Variante, Solactive 2.1.3". Die Optionen bleiben:
+A firmenweiter Waterfall (vier Anbieter, aendert die Kurve global), B Post-Step auf das groesste
+Segment (Bloomberg 1.4.5 woertlich, Kurve unangetastet), C so lassen mit Solactive als Beleg.
