@@ -148,20 +148,55 @@ EUMSS = the global minimum-size standard, **calibrated once** and applied to all
 - **Calibration basis:** Developed-Markets **Primary** listings only (avoids double-counting
   multi-class companies). Sort by Total MCap descending; cumulate Free Float MCap as a % of the
   DM-Primary total. The **Total MCap at the 99 % cumulative-coverage point** = `EUMSS_full`.
+- **Rank carry-over (since 08.09.2026).** The rank that set the floor at the previous rebalance is
+  remembered. While its coverage stays between 99 % and 99.25 %, that rank remains the floor and
+  only its current Total MCap is read off; below the band the floor resets to the 99 % point, above
+  it to the 99.25 % point. This is MSCI 3.1.2.2 / STOXX 3.3.1.2 verbatim. It requires cross-period
+  state and is therefore only defined in multi-period runs. Effect at 19.08.2026: floor 557 m USD
+  instead of 759 m — MSCI's published EUMSR for May 2026 was 537 m.
 - `EUMSS_ff = EUMSS_full × 50 %` (the EUMSS FF ratio).
 - A security **passes EUMSS** (is "investable size") iff:
   ```
   Total MCap ≥ EUMSS_full   AND   Free Float MCap ≥ EUMSS_ff   AND   Free Float % ≥ 10 %
   ```
+- **Maintenance floor (since 08.09.2026).** Existing constituents are measured against
+  **0.75 × EUMSS_full** and **0.75 × EUMSS_ff**, the same two-tier logic already used for the
+  minimum free float and for ADTV. Without it a security that has not shrunk at all leaves the
+  universe purely because the floor moved up. MSCI and STOXX exempt incumbents from the size screen
+  entirely; FTSE runs 150 m for inclusion against 30 m for exclusion.
+- **Size waiver on the minimum free float (since 08.09.2026).** The 10 % free-float requirement is
+  waived when **Free Float MCap ≥ 2.0 × EUMSS_full**. Both size legs and the liquidity screen remain
+  AND-linked, so a security with a small absolute float cannot enter this way. All five providers
+  that operate such a waiver anchor it on the float, none on total market cap (Solactive 1.0 bn USD
+  absolute, MSCI 1.8 × minimum size, STOXX 1.8 × half the country cutoff, Bloomberg 0.5 × the
+  country's 70th percentile). At 19.08.2026 the waiver admits 11 securities, the same set as
+  Solactive's fixed anchor.
 - Securities failing EUMSS are labelled **Micro Cap** and are **not** index-eligible.
 
 ### Step 6 — Liquidity screen (Variante A)
 Applied to the EUMSS-passing set, differentiated by classification:
 
-| | 3-month ADTV | 6-month ADTV | ATVR (annualized traded value ratio) |
-|---|---|---|---|
-| Developed | ≥ **$2,000,000** | ≥ **$2,000,000** | ≥ 0 % (off by default) |
-| Emerging | ≥ **$1,000,000** | ≥ **$1,000,000** | ≥ 0 % (off by default) |
+| | 3-month ADTV | 6-month ADTV | ATVR, new | ATVR, current |
+|---|---|---|---|---|
+| Developed | ≥ **$1,000,000** | ≥ **$1,000,000** | ≥ **5 %** | ≥ **2.5 %** |
+| Emerging | ≥ **$1,000,000** | ≥ **$1,000,000** | ≥ **5 %** | ≥ **2.5 %** |
+
+Current constituents clear ADTV at **$750,000** on both windows.
+
+**ATVR is screened on the 3M and the 6M horizon** — both must clear the threshold, which is the
+same as `min(ATVR 3M, ATVR 6M) ≥ threshold`. MSCI and STOXX screen 3M and 12M; ours runs on the
+same windows as the ADTV legs and follows Solactive. `ATVR_12M` is computed and exported but not
+screened.
+
+**No DM/EM split (decision of 08.09.2026),** because the absolute ADTV screen has none either.
+Solactive is symmetric on both legs (ADTV 1.0 m / 0.75 m, liquidity ratio 0.03 % / 0.015 % daily,
+which annualizes to roughly 7.6 % / 3.8 %); MSCI and STOXX split DM and EM at 20 % / 15 % but carry
+no absolute turnover screen at all. Mixing the two designs would leave the split unexplained.
+
+The level sits deliberately below Solactive's for as long as Indian volumes are sourced from the
+BSE rather than the NSE, which understates Indian ATVR by a factor of 10 to 20. STOXX addresses the
+same issue by rule: *"For India volumes from National Stock Exchange … are added."* Once NSE data is
+available the threshold should be revisited towards market level.
 
 - **Variante A (decisive):** a security that passes EUMSS but **fails liquidity is excluded
   entirely** — it is **not** demoted to Small/Micro and is in **no** index. The single liquidity

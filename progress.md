@@ -4,7 +4,28 @@ Rolling Snapshot des aktuellen Arbeitsstands. Kein Changelog, alte Punkte werden
 
 ## Aktueller Fokus
 
-Kundenrueckfrage zu "Europe Markets Index vs MSCI Europe" beantwortet (siehe Eintrag
+ENTSCHIEDEN 2026-09-08 (Nico): `label_before_liquidity` wird auf TRUE gestellt, die
+Mid/Small-Haltekante bleibt vorerst bei 90. Der Groessen-Waiver auf den Mindest-Free-Float
+kommt mit Anker 2,0 x EUMSS-Boden und ist eingebaut. Die Linienwahl ist geschlossen: echte
+Mehrfachnotierungen werden vorgelagert bei FactSet gefiltert.
+
+ENTSCHIEDEN 2026-09-08 (Nico), alles bereits Default in der Sidebar:
+- Labeling vor Liquiditaet AN (Checkbox statt Toggle)
+- Bodenregel = Rang-Mitnahme (Band 99 bis 99,25) plus Bestandsschutz 0,75 x Boden
+- FF-Waiver 2,0 x Boden
+- ATVR Entry 5 / 5, Maintenance 2,5 / 2,5, symmetrisch wie der ADTV-Screen
+Damit weicht jeder Lauf ohne manuelle Umstellung von allen Messungen vor dem 08.09.2026 ab.
+Der Settings-Stempel protokolliert alle Felder, alte Exporte bleiben zuordenbar.
+
+OFFEN zur Entscheidung, nach Dringlichkeit:
+1. Mindesthistorie (drei Monate). Der Waiver holt sonst SpaceX herein.
+2. In-Eligible-Filter vor die Segmentierung ziehen, Liste befuellen (enthaelt nur Dummys).
+3. Segment auf Firmenebene statt Wertpapierebene.
+Davor: Helvetica-Selection zum 19.08.2026 gerechnet, gegen die Live-Segmente aus dem CLOSING-File
+verifiziert und als Excel abgelegt (siehe Eintrag 2026-08-29). OFFEN zur Abnahme: die Size-Buffer-Variante (der Live-Index folgt
+"Symmetrisch", die App steht per Default auf "Aufstieg am Cut-off") und die Frage, ob
+Galderma als 11. Large Cap wirklich ganz aus dem Index fallen soll.
+Davor: Kundenrueckfrage zu "Europe Markets Index vs MSCI Europe" beantwortet (siehe Eintrag
 2026-08-27), und `..._Fill_Up.xlsx` als Arbeitsmaster auditiert: bestes der vier Files.
 OFFEN: linienbezogene MCap-Spalte beim File-Merger anfordern, dann fallen Mehrlinien-Luecken
 und FF > Total-Anomalie gemeinsam weg. Davor: Diagnose, warum `..._Complete_ohne_BBG.xlsx`
@@ -19,6 +40,127 @@ welches Buffer-Framework wuerde sie halten. Davor: Europe MP (Pooled) hat densel
 Auswertungs- und Exportblock wie der Multi-Period-Tab bekommen.
 
 ## Entscheidungen
+
+- **2026-08-29, ENTSCHEIDUNG Nico: Helvetica faehrt "Aufstieg am Cut-off", und zwar ueber
+  den Sidebar-Schalter wie bisher.**
+  Segmentgrenzen damit: Aufnahme UND Aufstieg fuer alle an den glatten Schwellen 70 / 85 / 99,
+  Verbleib fuer Bestandstitel bis unter 75 / 90 / 99,5. Vorher beschrieb die Guideline
+  symmetrische Baender (Mid 65 bis 90, Small 84,5 bis 99,5) und der Live-Index rechnete auch so
+  (belegt am 20.05.: symmetrisch trifft 36 von 37 Konstituenten, Aufstieg am Cut-off nur 35).
+  Helvetica faehrt jetzt dieselbe Variante wie die NaroIX-Serie.
+  **Der Umstellungstermin ist glatt:** zum 19.08. liefern beide Varianten dieselben 37 Titel in
+  denselben Sleeves, null Segment-Abweichungen im ganzen Pool, weil kein Titel in einer der
+  entscheidenden Zonen liegt (Vorsegment Mid mit Coverage 65 bis 70 %, Vorsegment Small mit
+  84,5 bis 85 %). Der Wechsel kostet nichts und wird erst ab dem naechsten Termin wirksam.
+  **Kein Sonderweg im Code.** Ich hatte zwischenzeitlich eine Konstante
+  `HELVETICA_ENTRY_AT_CUTOFF` eingebaut und den Tab vom Sidebar-Radio entkoppelt; auf Nicos
+  Ansage wieder zurueckgebaut. Helvetica nimmt weiterhin, was in der Sidebar steht, und der
+  Default dort IST die Guideline-Variante. Die Kriterien-Box zeigt die aktive Variante und
+  markiert jede andere Stellung als "nicht die Guideline-Variante".
+  **Folge, die man kennen muss:** ein Varianten-Experiment fuer die Serie verstellt Helvetica
+  mit. Der Settings-Stempel im Export haelt deshalb fest, womit ein Lauf gerechnet hat.
+  Guideline §4 (Tabelle, Erklaertext, Aenderungsvermerk mit Sidebar-Hinweis) und §7
+  (Buffer-Zeile + Schalter-Absatz) nachgezogen, Stand auf 2026-08-29.
+  **Sechs Assertions** (`test_helvetica_variante_default`): weil Helveticas publizierte
+  Methodik jetzt an einem UI-Default haengt, nagelt der Test genau den fest (Options-Reihenfolge
+  und `index=0`), dazu beide Tab-Verdrahtungen und eine Verhaltensprobe.
+  Mutationsgetestet: `index=1` laesst die Default-Assertion anschlagen. Suite 271 -> 277.
+  NB: die Verhaltensprobe war in der ersten Fassung wertlos (Test-Frame erzeugte
+  _c_before = 50 % statt 67 %, der Titel war in beiden Varianten Large). Sie prueft die
+  Coverage-Annahme jetzt mit, wie es `test_helvetica_entry_at_cutoff` schon tat.
+
+- **2026-08-29, OFFENE METHODIKFRAGE mit 2 Positionen Wirkung: wie weit reicht die
+  Coverage-Hysterese?**
+  Auf Nicos Ansage wurde die Selection 19.08. noch einmal aus GENAU ZWEI Files gerechnet
+  (Screener + CLOSING), ohne das historische Master-File. Erstes Ergebnis: **der Pool ist
+  bit-identisch** (112 Titel, Total MCap / Adj_FF_MCap / ADTV / Coverage mit Delta 0). Der
+  Screener allein reproduziert das Universe vollstaendig, das alte File steuerte dazu nichts bei.
+  Der Unterschied liegt AUSSCHLIESSLICH bei den Vorperioden-Segmenten, und zwar bei Titeln, die
+  NICHT im Index sind. Acht Segmente weichen ab, drei davon mit Wirkung:
+  EMS-Chemie (87,09 %), Straumann (87,40 %) und Sonova (88,87 %) fallen ohne Vorperioden-Segment
+  hart auf Small und landen im Small-Sleeve auf den Raengen 7 / 3 / 4, verdraengen dort also
+  Galenica, Barry Callebaut und SIG Group.
+  **Zwei Lesarten, beide vertretbar:**
+  * *Pool-weit* (so rechnet der Code): `_prev_seg` kommt aus `_full`, also jedem Titel des
+    Vorperioden-Pools inkl. Micro. Passt zu MSCI/Solactive, wo Size-Segmente auf dem ganzen
+    Markt definiert sind, und zu unseren eigenen Swiss-Size-Sub-Indizes. Braucht Pool-State
+    ueber die Perioden, also ein Historien-File. Ergebnis: **3 raus / 3 rein**.
+  * *Nur Konstituenten* (so liest sich Guideline §7): "Inkumbenten = die selektierten
+    Konstituenten (55 %) der Vorperiode", und die Coverage-Hysterese steht in derselben
+    Buffer-Tabelle. Braucht nur das CLOSING-File. Ergebnis: **5 raus / 5 rein**.
+  Guideline §4 formuliert es dagegen als "Segment der Vorperiode", was pool-weit klingt. Der
+  Text ist also an dieser Stelle nicht eindeutig, und die Frage ist keine Kosmetik: sie
+  entscheidet ueber 2 Netto-Positionen und ueber den Turnover (8,1 % gegen 13,5 %).
+  **Zur Entscheidung Nico.** Danach Guideline §4/§7 eindeutig machen und ggf. den Code angleichen.
+  Exporte: `..._2026-08-19.xlsx` (pool-weit) und `..._2026-08-19_2Files.xlsx` (nur Konstituenten).
+
+- **2026-08-29, Helvetica-Selection 19.08.2026 gerechnet: 3 Abgaenge, 3 Zugaenge.**
+  Datenbasis: FactSet-Screener `Swiss-Made Portfolio Index - Selection_19_08_2026.xlsx`
+  (268 CH-gelistete Titel, CHF) als 48. Periode an den Helvetica-Master angehaengt, plus
+  `CLOSING_DE000A4AV9S7_20260819.xlsx` als Bestand (37 selektierte Konstituenten).
+  Ergebnis: **raus** Partners Group (Mid Rang 11, nach den 8 harten Plaetzen nur 2
+  Bandplaetze frei), BKW (Small Rang 17, Halteband endet bei 13), Investis (3M-ADTV
+  640k unter der Maintenance-Schwelle 750k); **rein** Helvetia Baloise (Mid Rang 7),
+  SIG Group (Small Rang 8), Infracore (neuer RE-Titel, Micro, ADTV 1,79 Mio.).
+  Turnover 3 von 37. Export: `Helvetic Selection/NaroIX_Helvetica_Selection_2026-08-19.xlsx`
+  mit Zusammensetzung, Aenderungen samt Begruendung, CH-Universe und Settings-Stempel.
+
+- **2026-08-29, die Size-Buffer-Variante ist empirisch geklaert: der Live-Index laeuft
+  SYMMETRISCH, nicht "Aufstieg am Cut-off".**
+  Die Guideline (§4, §7) dokumentiert die symmetrischen Baender 65-90 / 84,5-99,5, die App
+  steht per Default auf "Aufstieg am Cut-off". Der Abgleich der nachgerechneten Vorperiode
+  20.05.2026 gegen den Live-Index entscheidet das: **symmetrisch trifft 36 von 37**,
+  "Aufstieg am Cut-off" nur 35 von 37 (dort fehlen Swisscom und Alcon, dafuer stehen Lindt PS
+  und Helvetia Baloise drin). Die Guideline hat also recht und der App-Default weicht ab.
+  Auf den 19.08. wirkt die Variante genau eine Position: symmetrisch faellt Partners Group,
+  bei "Aufstieg am Cut-off" faellt stattdessen Swisscom (dort ist Swisscom ueber die Kette in
+  Large gerutscht und wird als Rang 12 verworfen). Die restlichen 36 sind identisch.
+  OFFEN: Sidebar-Default auf Symmetrisch stellen, oder die Guideline auf die andere Variante
+  umschreiben. Bis dahin nicht blind mit App-Defaults rechnen.
+
+- **2026-08-29, das CLOSING-File hat jetzt eine Spalte `Segment` (Nico nachgeliefert): die
+  Vorperioden-Segmente sind damit belegt statt rekonstruiert.**
+  Damit faellt die groesste Unsicherheit des Laufs weg. Abgleich: **36 der 37 Live-Titel
+  stimmen Segment fuer Segment mit der nachgerechneten Kette** (Large 10, Mid 10, Small 10,
+  RE 7). Insbesondere bestaetigt: **SGS = Mid Cap**, Julius Baer und Logitech = Small Cap,
+  VAT / Swisscom / Sandoz / Partners Group = Mid Cap. Das waren genau die Faelle, die aus den
+  Index-Gewichten nicht ableitbar sind (Mid und Small haben beide 1,5 %).
+  Der Finallauf setzt die 30 Aktien-Segmente aus dem File und laesst nur den restlichen Pool
+  aus der Kette kommen; Ergebnis **Titel, Sleeve und True_Segment identisch** zum reinen
+  Kettenlauf. Die Selection 19.08. steht damit unveraendert.
+  **Merkregel fuer kuenftige Termine:** die Spalte `Segment` im CLOSING-File ist der SLEEVE.
+  Solange kein Sleeve Aufruecker enthaelt, ist er gleich dem True_Segment; sobald ein Segment
+  unter 10 Titel faellt, ist er es nicht mehr. Und fuer Titel ausserhalb des Index gibt es
+  weiterhin keinen externen Beleg.
+
+- **2026-08-29, wie stark der Lauf an den Vorperioden-Segmenten haengt: 13 von 112 Titeln.**
+  Vollstaendig ausgezaehlt (je Titel das Segment auf die Alternative gesetzt, Composite neu
+  gerechnet): 23 Titel liegen ueberhaupt in einer Hysterese-Zone, bei 13 davon verschiebt ein
+  anderes Vorsegment die Selektion. Ohne Vorperioden-Segmente waere das Ergebnis 5 raus / 5 rein
+  statt 3/3 (SGS und VAT fielen auf Small, das flutet den Small-Sleeve und draengt Galenica,
+  Barry Callebaut, Flughafen und SIG raus).
+  Nach dem Abgleich oben sind davon nur noch die **Nicht-Konstituenten** offen, praktisch
+  EMS-Chemie (86,65 %), Straumann (86,93 %) und Sonova (89,00 %): waere einer davon am 20.05.
+  Small statt Mid gewesen, verdraengte er SIG Group aus dem Small-Sleeve. Fuer die gibt es
+  ausserhalb der Kette keine Quelle.
+
+- **2026-08-29, die eine verbleibende Abweichung (Alcon) ist Pfadabhaengigkeit und folgenlos.**
+  Im Live-Index ist Alcon am 20.05. Mid Cap, in unserer ab 2014 kalt geseedeten Kette Large Cap
+  (Coverage 74,17 %, Halteband bis 75). Als Large landet Alcon auf Rang 11 und faellt ganz raus,
+  weil der Ueberschuss nicht nach unten weitergegeben wird; deshalb steht in der Rekonstruktion
+  Helvetia Baloise statt Alcon. Gegenprobe gerechnet (Vorperioden-Segment von Alcon auf Mid
+  gesetzt): der 19.08. ist **Titel fuer Titel und Sleeve fuer Sleeve identisch**. Fuer den
+  neuen Termin wurden ausserdem bewusst die ECHTEN Live-Konstituenten als Inkumbenten
+  verwendet, nicht die Rekonstruktion. Gleiches Muster wie [[cboe-smallcap-lockin]].
+
+- **2026-08-29, Nebenbefund: Galderma faellt als 11. Large Cap komplett aus dem Index.**
+  Coverage 67,98 %, also klar Large (Cut 70), aber nach Float nur Rang 11 im Segment. Die
+  Guideline verwirft den Ueberschuss eines Segments ausdruecklich, statt ihn nach unten
+  durchzureichen ("Kein Uebertrag nach unten"), also ist der groesste nicht enthaltene
+  Schweizer Titel mit 33 Mrd Float-MCap draussen, waehrend Mid-Titel mit 15 Mrd drin sind.
+  Regelkonform, aber erklaerungsbeduerftig. Betrifft auch schon den Live-Index (Galderma ist
+  dort ebenfalls nicht enthalten), ist also keine Aenderung, sondern ein Strukturthema.
+  Zur Entscheidung: so lassen, oder den Ueberschuss ins naechstkleinere Sleeve abstufen.
 
 - **2026-08-28, doppelte Captions im Helvetica-MP-Tab entfernt.**
   Mit der Kriterien-Box waren zwei der drei Hinweiszeilen redundant (Bestandsschutz-Zustand,
@@ -667,6 +809,422 @@ Auswertungs- und Exportblock wie der Multi-Period-Tab bekommen.
   In-Eligible-Eintrag notwendig.
   Regression: 138/138 PASS (inkl. Integrationstests auf dem echten Master).
 
+## Offene Methodikfrage: label_before_liquidity (2026-09-05)
+
+Anlass: Anbietervergleich der Selektionskette gegen die aktuellen Regelwerke (MSCI GIMI 05/2026,
+FTSE GEIS v14.3, Solactive GBS v3.05, STOXX IMI 08/2026, Morningstar TME, Bloomberg GEI 06/2026).
+Artefakt: https://claude.ai/code/artifact/91a2dde0-d0e8-40f8-bca2-821ce54212b1
+
+Frage: Segmentierung VOR oder NACH dem Liquiditaetsscreen. Default ist nach (Waterfall auf `gm_liq`).
+Nico weist darauf hin, dass die Methodik noch nicht live und damit nicht fixiert ist.
+
+Stand der Regelwerke: 5 von 6 segmentieren nach dem Screen wie wir. Nur FTSE stellt den Nenner
+(Index Universe, Top 98 %) in Regel 7.3 VOR die Screens aus Abschnitt 6. FTSE kumuliert dabei
+aber volle MCap, nicht Float.
+
+Messung 1, Einzelperiode 19.08.2026 ohne Buffer, ohne Pooling, global:
+- 727 illiquide Titel kommen unter B in den Nenner (Pool 9.390 -> 10.117)
+- Standard (L+M) 2.500 -> 2.599 (+99), Small -99, Micro unveraendert
+- 183 Segmentwechsel, davon 178 nach oben (101 Small->Mid, 77 Mid->Large), 5 nach unten
+- Standard deckt vom investierbaren Universum 85,19 % -> 85,51 % (+0,32 pp)
+- Produkte: NX-GM-LM +99, NX-DM-LM +20, NX-EU-LM (ungepoolt) +12
+- Verhaeltnis: +4 % Konstituenten fuer +0,32 pp Coverage, die neuen Titel tragen im Schnitt
+  ein Zehntel eines durchschnittlichen Standard-Konstituenten
+
+Messung 2, Europe Pooled, volle 48 Perioden, Config = P-Dict aus `run_eupool.py`,
+Endperiode 19.08.2026 gegen MSCI Europe (396 ISINs, 99,66 % Gewicht):
+
+| | A Default | B label first |
+|---|---|---|
+| Konstituenten | 403 | 429 |
+| Treffer in MSCI | 365 | 382 |
+| in MSCI, bei uns nicht | 31 | 14 |
+| bei uns, nicht in MSCI | 38 | 47 |
+| Namens-Overlap | 92,2 % | 96,5 % |
+| Gewichteter Overlap | 98,54 % | 99,13 % |
+
+B holt 17 MSCI-Titel zusaetzlich herein und verliert KEINEN. Die 17 sind alle klein
+(0,02 bis 0,06 % MSCI-Gewicht, zusammen 0,59 %): Trelleborg B, Securitas B, Spirax, Zalando,
+Italgas, Hensoldt, Land Securities, Beijer Ref, InPost, Tubize, Balder, Barry Callebaut,
+Demant, Ayvens, Rockwool und zwei weitere. Preis: 9 zusaetzliche Titel, die MSCI nicht haelt.
+
+Bewertung, noch nicht entschieden:
+- FUER B: streng dominant auf der Trefferseite (17 gewonnen, 0 verloren), fehlendes MSCI-Gewicht
+  halbiert (1,46 % -> 0,87 %), entkoppelt die Segmentgrenzen davon, ob fremde Titel liquide sind.
+- GEGEN B: die Paarung "min(Float, FOL)-Nenner + ungefilterter Pool" fahrt kein Anbieter.
+  FTSE ist kohaerent, weil dort volle MCap kumuliert wird. Das ist der einzige verbliebene Einwand.
+- ZURUECKGEZOGEN (2026-09-05, Nachrechnung): das Argument, IF-0-Titel wuerden aus dem Nenner
+  geworfen waehrend illiquide unter B voll mitzaehlten, war falsch. Adj_FF von IF-0-Titeln ist
+  definitionsgemaess 0, sie tragen also weder zu `tot` noch zum cumsum bei. Ihr Ein- oder
+  Ausschluss aus dem Waterfall-Pool ist arithmetisch ein No-op fuer jeden anderen Titel. Der
+  Ausschluss in `pipeline_core.py` dient dem Label ("Non-Investable" statt einer Groessenklasse)
+  und dem tot==0-Guard, nicht der Nenner-Korrektur. Gemessen 19.08.2026: 20 Adj_FF-0-Zeilen im
+  Universe (36.122), davon genau 1 nach EUMSS (Gulf International Services QSC, Qatar,
+  Industry-FOL 0), 0 Laender mit Pool-Summe 0, 0 davon illiquide.
+- Folgefrage von Nico (EUMSS -> label first -> IF-0-Ausschluss zuletzt): heute ein No-op, es
+  aendert nur die Buchhaltung zum Schlechteren (der eine Titel bekaeme eine Groessenklasse statt
+  "Non-Investable"). RELEVANT wird die Reihenfolge erst bei Nenner = Total MCap, denn dort sind
+  IF-0-Titel nicht mehr gewichtslos: der Qatar-Titel traegt 0,57 % der Total MCap seines Landes.
+  In der Total-MCap-Variante ist Nicos Reihenfolge die FTSE-konforme.
+- Der gewichtete Overlap war schon unter A bei 98,54 %. B verbessert vor allem die Namensanzahl,
+  also genau die Metrik, die wir im Kundencall bewusst NICHT fuehren wollten.
+- `label_before_liquidity` ist global, nicht EU-spezifisch: der EU-Gewinn kostet +99 Titel in
+  NX-GM-LM und +20 in NX-DM-LM, dort ohne Benchmark, gegen den sich das bewerten liesse.
+
+Messung 3 (2026-09-05), Europe Pooled, 48 Perioden, vier Varianten, Endperiode gegen MSCI Europe.
+ACHTUNG Vergleichbarkeit: Messung 2 lief mit `size_buffer_pp_ms=7.0` (Default von `run_eupool.py`),
+Messung 3 mit 5.0 (guideline-konform, Halteseite 75/90/99,5). Deshalb liegen A und B hier tiefer als
+in Messung 2 (A 403 -> 375, B 429 -> 394). Die Mid/Small-Bandbreite ist ein starker Hebel auf das
+Niveau; die Deltas zwischen den Varianten bleiben richtungsgleich.
+
+| | A Default | B Label first | C + Total MCap | D FTSE-nah |
+|---|---|---|---|---|
+| Reihenfolge | Liq. zuerst | Label zuerst | Label zuerst | Label zuerst |
+| Nenner | min(Float,FOL) | min(Float,FOL) | Total MCap | Total MCap |
+| Schwellen | 70/85/99 | 70/85/99 | 70/85/99 | 68/86/98 |
+| Halte-Buffer | 75/90/99,5 | 75/90/99,5 | 75/90/99,5 | 72/92/101 |
+| Konstituenten | 375 | 394 | 422 | 419 |
+| Treffer in MSCI | 343 | 360 | 373 | 376 |
+| in MSCI, uns fehlend | 53 | 36 | 23 | 20 |
+| bei uns, nicht MSCI | 32 | 34 | 49 | 43 |
+| Namens-Overlap | 86,6 % | 90,9 % | 94,2 % | 94,9 % |
+| Gewichteter Overlap | 97,54 % | 98,27 % | 98,84 % | 99,01 % |
+| fehlendes MSCI-Gewicht | 2,45 % | 1,72 % | 1,16 % | 0,99 % |
+| Turnover, Wechsel/Periode | 14,0 | 15,0 | 15,5 | 14,6 |
+| EUMSS-Boden | 759 Mio | 759 Mio | 759 Mio | 1.574 Mio |
+
+Befunde:
+- Monoton besserer Match A -> B -> C -> D auf jeder Metrik. Groesster Einzelhebel ist die
+  REIHENFOLGE (A->B, fehlend -17), dann der NENNER (B->C, -13), dann die Schwellen (C->D, -3).
+- D verliert gegenueber B KEINEN MSCI-Titel und holt 16 dazu (0,73 % Gewicht): Qiagen, Pandora,
+  Rexel, Addtech B, Kingfisher, Securitas B, Melrose, SCA B, Indra, Spirax u. a.
+- TURNOVER IST KEIN ARGUMENT GEGEN D: 14,6 vs 14,0 Wechsel/Periode bei A. Die offene Flanke aus
+  Messung 2 ist damit geschlossen.
+- Preis von C/D sind Nicht-MSCI-Titel: A 32, B 34, C 49, D 43. D ist effizienter als C.
+- D verdoppelt den EUMSS-Boden (759 -> 1.574 Mio USD), weil `small_thr` bei uns BEIDES steuert,
+  Small/Micro-Kante und EUMSS-Kalibrierungspunkt. D matcht also besser MIT kleinerem Universum.
+- Restliche Fehlliste unter D wird von Laender-/Listing-Faellen dominiert, nicht von Groesse:
+  Sunbelt Rentals (0,22 %), AerCap (0,16 %), Millicom, Abivax, Scout24, Land Securities, Beijer Ref,
+  Zalando, Avolta, CTS Eventim. Der Segmentierungs-Hebel ist bei D weitgehend ausgereizt, der Rest
+  haengt am Country-Mapping und an der Listing-Wahl.
+
+Messung 4 (2026-09-05), Verlauf derselben vier Varianten ueber alle 48 Perioden:
+
+| ueber 48 Perioden | A | B | C | D |
+|---|---|---|---|---|
+| Titel Median | 394 | 431 | 461 | 461 |
+| Titel Spanne | 289-453 | 321-494 | 345-512 | 343-507 |
+| Titel Mittel ggue. A | - | +36,6 | +63,0 | +61,9 |
+| groesser als A | - | 48/48 | 48/48 | 48/48 |
+| Turnover Mittel | 14,0 | 15,0 | 15,5 | 14,6 |
+| Turnover Median | 14,0 | 15,0 | 15,0 | 14,0 |
+| Turnover max | 35 | 27 | 27 | 25 |
+| Turnover Summe (47) | 658 | 703 | 727 | 684 |
+| Turnover in % der Titel | 3,6 % | 3,5 % | 3,4 % | 3,2 % |
+
+- RANGFOLGE HAELT: A < B < C in 48 von 48 Perioden, ausnahmslos. Der Endstand ist kein guenstiger
+  Stichtag. C und D liegen gleichauf (Median beide 461), D ist nur in 14/48 Perioden groesser als C.
+- TURNOVER-AUSSAGE KORRIGIERT: absolut wechseln bei B/C/D mehr Titel, aber nur weil der Index
+  groesser ist. Relativ zur Titelzahl dreht sich die Reihenfolge um, A ist mit 3,6 % am
+  SCHLECHTESTEN, D mit 3,2 % am besten. Auch die schlimmste Einzelperiode liegt bei A (35 Wechsel
+  gegen 25 bei D). Turnover ist damit kein Argument gegen die Umstellung, sondern eines dafuer.
+- Einschraenkung bleibt: die Match-Kennzahlen sind eine Momentaufnahme zum 19.08.2026, weil nur ein
+  MSCI-Europe-Stand vorliegt. Der Pfad ist ueber 48 Perioden gerechnet, die Bewertung nicht.
+  Historische MSCI-Mitgliederlisten waeren noetig, um die Rangfolge auch im Match zu belegen.
+
+Skripte: `cmp_trajectory.py` (Verlauf), `trajectory.csv` im Scratchpad.
+
+Messung 5 (2026-09-05), A/B/C ueber 48 Perioden fuer vier Produkt-Konfigurationen
+(`cmp_regions.py`, CSV `regions.csv`). Je Variante zwei Pipeline-Laeufe pro Periode, weil
+europe_pool die ganze Kette betrifft; sechs getrennte Incumbent-Ketten.
+
+| | Global A/B/C | Developed A/B/C | EU je Land A/B/C | EU gepoolt A/B/C |
+|---|---|---|---|---|
+| Titel Median | 2.996 / 3.289 / 3.870 | 1.708 / 1.854 / 1.945 | 451 / 492 / 510 | 394 / 431 / 461 |
+| Mittel ggue. A | - / +288,5 / +717,7 | - / +119,3 / +206,1 | - / +41,0 / +55,6 | - / +36,6 / +63,0 |
+| groesser als A | 48/48 beide | 48/48 beide | 48/48 beide | 48/48 beide |
+| Turnover in % | 5,80 / 6,17 / 6,65 | 3,94 / 3,78 / 3,80 | 4,47 / 4,24 / 3,99 | 3,55 / 3,47 / 3,36 |
+| Turnover max | 297 / 407 / 1026 | 149 / 151 / 145 | 39 / 47 / 39 | 35 / 27 / 27 |
+| Standard-Coverage | 87,69 / 88,58 / 89,17 | 87,66 / 88,29 / 88,78 | 87,59 / 88,93 / 89,72 | 87,28 / 88,55 / 89,56 |
+| MSCI Treffer | - | - | 334 / 342 / 353 | 343 / 360 / 373 |
+| MSCI gew. Overlap | - | - | 96,49 / 97,02 / 97,68 | 97,54 / 98,27 / 98,84 |
+
+BEFUNDE:
+- C IST BLOCKIERT. Bei Global springt C am 2018-08-15 von 2.979 auf 3.869 Titel (+890 in einer
+  Periode) und BLEIBT auf dem Niveau; A und B bewegen sich nur um +84. Dauerhafte
+  Niveauverschiebung, kein Rebalancing-Ausschlag, erklaert den Turnover-max von 1.026.
+  Geprueft und AUSGESCHLOSSEN: Klassifikationswechsel (keiner im Fenster) und die bekannten
+  falschen Total-MCap-Werte aus `Incorrect_Hitstorical_Prices_and_Total_MCap.xlsx` (nur
+  Venezuela/CARACAS, und Venezuela ist gar nicht klassifiziert). URSACHE OFFEN. Sie liegt in der
+  Total-MCap-Spalte, dieselbe Periode auf Float-Basis ist unauffaellig. Vor einer Entscheidung
+  fuer C muss das geklaert sein.
+- B IST UEBERALL GUTARTIG. Relativer Turnover sinkt bei DM (3,94 -> 3,78), EU je Land
+  (4,47 -> 4,24) und EU gepoolt (3,55 -> 3,47). Einzige Ausnahme Global: 5,80 -> 6,17.
+  Titelzahl in 48/48 Perioden ueber A, in jeder Konfiguration.
+- POOLING SCHLAEGT JE-LAND fuer Europa in JEDER Variante (gew. Overlap 97,54 vs 96,49 bei A,
+  98,27 vs 97,02 bei B, 98,84 vs 97,68 bei C). Bestaetigt die Pooling-Entscheidung unabhaengig
+  von der Reihenfolge-Frage.
+- DIE 85 % STIMMEN SCHON HEUTE NICHT: bereits unter A deckt der Standard-Index 87,3-87,7 % des
+  investierbaren Universums ab. Ursache ist die Straddle-Regel plus Size Buffer, nicht ein Fehler.
+  Liegt im MSCI-Zielband 85 +/- 5. Unter B 88,3-88,9, unter C 88,8-89,7 (bei EU je Land 89,72,
+  also fast an der Bandobergrenze). Fuer die Guideline-Kommunikation relevant.
+
+STAND DER EMPFEHLUNG: B ist die einzige Variante, die heute ohne Code auskommt UND in allen vier
+Konfigurationen unauffaellig ist. C bleibt bis zur Klaerung des 2018-Bruchs liegen. D erledigt.
+
+Messung 6 (2026-09-05), Buffer-Variante x Coverage-Reihenfolge im Kreuz, Europe Pooled,
+48 Perioden, Nenner Adj_FF_MCap, 70/85/99, Buffer 5 pp (`cmp_buffer_order.py`, `buffer_order.csv`).
+
+| | Cut-off / Liq zuerst (heute) | Cut-off / Label zuerst | Symm. / Liq zuerst | Symm. / Label zuerst |
+|---|---|---|---|---|
+| Titel Median | 394 | 431 | 348 | 380 |
+| Titel Mittel ggue. heute | - | +36,6 | -46,6 | -15,5 |
+| Turnover Mittel | 14,0 | 15,0 | 9,4 | 10,1 |
+| Turnover in % | 3,55 % | 3,47 % | 2,70 % | 2,65 % |
+| Turnover Summe (47) | 658 | 703 | 442 | 474 |
+| vom Buffer gehalten | 71 | 79 | 77 | 82 |
+| Standard-Coverage | 87,28 % | 88,55 % | 84,14 % | 86,02 % |
+| MSCI Treffer | 343 | 360 | 315 | 334 |
+| Gew. Overlap | 97,54 % | 98,27 % | 95,53 % | 96,69 % |
+
+BEFUNDE:
+- DIE ACHSEN SIND SAUBER GETRENNT und wirken gegenlaeufig. Reihenfolge: +17 Treffer beim
+  Cut-off-Buffer, +19 beim symmetrischen, also unabhaengig vom Buffer. Buffer: -28 Treffer bei
+  Liq zuerst, -26 bei Label zuerst, also unabhaengig von der Reihenfolge.
+- DIE BUFFER-ACHSE IST DER STAERKERE HEBEL: 2,01 Prozentpunkte gew. Overlap gegen 0,73 bei der
+  Reihenfolge. Und sie zieht in die falsche Richtung (symmetrisch = schlechterer Match).
+- ECHTER TRADE-OFF: symmetrisch senkt den Turnover um rund ein Drittel (658 -> 442 Wechsel,
+  relativ 3,55 -> 2,70 %), kostet aber 28 MSCI-Titel und 2 Prozentpunkte Overlap.
+- Symmetrisch liegt in 47/48 Perioden UNTER dem heutigen Stand, im Mittel 46,6 Titel tiefer.
+  Symmetrisch + Label zuerst in 44/48 Perioden darunter.
+- Standard-Coverage symmetrisch/Liq zuerst faellt auf 84,14 %, also unter die 85er-Linie.
+- EINORDNUNG DER ENTSCHEIDUNG VOM 29.08.2026 ("Aufstieg am Cut-off"): fuer Helvetica war sie zum
+  Stichtag wirkungslos, fuer den Europa-Pool ist sie es NICHT (46,6 Titel im Mittel). Sie fiel auf
+  die Seite, die MSCI naeher kommt. Fuer die NaroIX-Serie also deutlich folgenreicher als gedacht.
+
+Messung 7 (2026-09-05), Mid/Small-Haltekante 92 statt 90, Europe Pooled, 48 Perioden
+(`cmp_bw92.py`, `bw92.csv`). Wichtig: `_size_segment_entry` hat ZWEI Bandbreiten (bw, bw_ms),
+`_size_segment` nur EINE. Ein reines 75/92 geht deshalb nur im Cut-off-Ast; symmetrisch bedeutet
+"Mid bis 92" zwangslaeufig bw=7, also auch Large bis 77 und Small-Aufstieg erst unter 78 statt 80.
+
+| | Cut-off 75/90 + Label | Cut-off 75/92 + Label | Symm. bw7 + Label | Symm. bw7 + Liq |
+|---|---|---|---|---|
+| Titel Median | 431 | 461 | 385 | 350 |
+| Turnover Mittel | 15,0 | 13,4 | 8,7 | 7,8 |
+| Turnover in % | 3,47 % | 2,90 % | 2,26 % | 2,22 % |
+| Turnover max | 27 | 22 | 25 | 24 |
+| Standard-Coverage | 88,55 % | 89,08 % | 85,26 % | 83,39 % |
+| MSCI Treffer | 360 | 382 | 346 | 326 |
+| uns fehlend | 36 | 14 | 50 | 70 |
+| Gew. Overlap | 98,27 % | 99,13 % | 97,06 % | 95,97 % |
+
+BEFUNDE:
+- 75/92 MIT LABELING ZUERST IST DIE BESTE VARIANTE IM GANZEN VERGLEICH. Sie verbessert alle drei
+  Achsen gleichzeitig: mehr Titel (461 vs 431), WENIGER Turnover (2,90 % vs 3,47 %, max 22 vs 27)
+  und besserer Match (382 vs 360 Treffer, 99,13 % vs 98,27 %).
+- SIE SCHLAEGT AUCH VARIANTE D (FTSE-Nachbau): 382 vs 376 Treffer, 14 vs 20 Fehlstellen,
+  99,13 % vs 99,01 %, bei geringerem Turnover. Ohne Total-MCap-Nenner, ohne veraenderte Schwellen,
+  ohne den ungeklaerten 2018-Bruch.
+- SIE BRAUCHT KEINE CODEAENDERUNG: Toggle "Labeling vor Liquiditaet" an, Feld "Mid/Small Buffer pp"
+  auf 7. Beides vorhandene Sidebar-Elemente.
+- Kalibrierungsanker: FTSE faehrt auf 68/86-Basis Austritt bei 72/92, also Baender 4 und 6 pp.
+  Unsere 5 und 7 auf 70/85 sind dieselbe Kalibrierung.
+- ERWARTUNG WIDERLEGT: beim symmetrischen Ast war ein schlechterer Match erwartet worden (haerterer
+  Aufstieg, Small erst unter 78). Tatsaechlich verbessert bw=7 den Match ebenfalls: 346 statt 334
+  bzw. 326 statt 315 Treffer. Der Halteeffekt oben ueberwiegt den haerteren Aufstieg unten.
+- ALLGEMEINE LESART: breitere Haltebaender sind auf diesen Daten auf ALLEN Achsen besser. Die
+  Bandbreite gehoert bewusst kalibriert, nicht auf dem Default belassen. Ohne externen Anker (FTSE
+  4/6 pp) wird daraus schnell eine Anpassung an den Backtest.
+
+EMPFEHLUNGSSTAND: Cut-off (Aufstieg am Cut-off) + label_before_liquidity=True + Mid/Small-Bandbreite
+7 pp. Ohne Code umsetzbar. Offen bleibt die Wirkung auf GM/DM (Schalter ist global) und die
+Absicherung des Matches ueber die Historie (nur ein MSCI-Stand vorhanden).
+
+Messung 8 (2026-09-05), Schwellen-Raster: Aufnahme 85 vs 87 mal drei Haltekanten, alles
+Cut-off + Label zuerst, Europe Pooled, 48 Perioden (`cmp_grid6.py`, `grid6.csv`).
+
+| | A 70/85 75/90 | B 70/85 75/92 | C 70/85 77/92 | D 70/87 75/90 | E 70/87 75/92 | F 70/87 77/92 |
+|---|---|---|---|---|---|---|
+| Titel Median | 431 | 461 | 461 | 458 | 493 | 493 |
+| Turnover Mittel | 15,0 | 13,4 | 13,4 | 19,1 | 16,3 | 16,3 |
+| Turnover in % | 3,47 | 2,90 | 2,90 | 4,16 | 3,31 | 3,31 |
+| Turnover max | 27 | 22 | 22 | 34 | 34 | 34 |
+| Standard-Coverage | 88,55 | 89,08 | 89,08 | 89,81 | 90,48 | 90,48 |
+| MSCI Treffer | 360 | 382 | 382 | 366 | 386 | 386 |
+| uns fehlend | 36 | 14 | 14 | 30 | 10 | 10 |
+| nicht in MSCI | 34 | 47 | 47 | 43 | 60 | 60 |
+| Gew. Overlap | 98,27 | 99,13 | 99,13 | 98,56 | 99,33 | 99,33 |
+
+BEFUNDE:
+- REPRODUZIERBARKEIT BESTAETIGT: A und B liefern exakt die Werte aus Messung 6/7 (431/360/98,27
+  bzw. 461/382/99,13). Die Pfadabhaengigkeit ist damit stabil.
+- B == C UND E == F auf jeder Kennzahl (nur "vom Buffer gehalten" unterscheidet sich). Grund: NUR
+  die Mid/Small-Kante entscheidet ueber die Index-Zugehoerigkeit, die Large/Mid-Kante verteilt
+  zwischen zwei Segmenten, die BEIDE im Standard liegen. Die Wahl 75 vs 77 ist fuer NX-EU-LM
+  folgenlos und zaehlt erst fuer separat publizierte Large-/Mid-Sub-Indizes.
+- E HAT DEN BESTEN MATCH (386 Treffer, 99,33 %), IST ABER NICHT DIE BESTE WAHL: der Schritt von B
+  auf E bringt nur +4 Treffer und +0,20 pp, kostet aber +13 Nicht-MSCI-Titel, +32 Titel insgesamt
+  und Turnover von 2,90 auf 3,31 %. Entscheidend: Coverage 90,48 % liegt OBERHALB von MSCIs
+  Zielband 85 +/- 5. Ein Index ueber 90 % Coverage ist methodisch kein 85-%-Index mehr.
+- D IST DIE SCHLECHTESTE DER SECHS: Aufnahme 87 laesst das Halteband auf 3 pp schrumpfen,
+  Ergebnis 19,1 Wechsel/Periode (4,16 %), schlimmste Periode 34. Mehr Titel als A bei deutlich
+  mehr Turnover.
+
+EMPFEHLUNG UNVERAENDERT: B = Aufnahme 70/85, Halten 75/92, Labeling zuerst. Bester Kompromiss aus
+Match, Turnover und Coverage; dokumentierte Schwellen 70/85 bleiben; ohne Codeaenderung.
+
+Messung 9 (2026-09-05), Mechanik-Raster Cut-off vs Symmetrisch, alle mit Label zuerst,
+Europe Pooled, 48 Perioden (`cmp_grid6b.py`, `grid6b.csv`).
+
+| | A1 | B1 | C1 | D1 | E1 | F1 |
+|---|---|---|---|---|---|---|
+| Mechanik | Cut-off | Cut-off | Cut-off | Symm. | Symm. | Symm. |
+| Aufnahme | 70/85 | 70/85 | 70/87 | 70/85 | 70/85 | 70/87 |
+| Aufstieg ab | 70/85 | 70/85 | 70/87 | 65/80 | 65/78 | 65/82 |
+| Halten | 75/90 | 75/92 | 75/92 | 75/90 | 75/92 | 75/92 |
+| Im Tool einstellbar | ja | ja | ja | ja | NEIN | ja |
+| Titel Median | 431 | 461 | 493 | 380 | 385 | 428 |
+| Turnover in % | 3,47 | 2,90 | 3,31 | 2,65 | 2,26 | 2,56 |
+| Turnover max | 27 | 22 | 34 | 28 | 25 | 26 |
+| Standard-Coverage | 88,55 | 89,08 | 90,48 | 86,02 | 85,26 | 87,82 |
+| MSCI Treffer | 360 | 382 | 386 | 334 | 346 | 367 |
+| uns fehlend | 36 | 14 | 10 | 62 | 50 | 29 |
+| nicht in MSCI | 34 | 47 | 60 | 31 | 34 | 38 |
+| Abweichung gesamt | 70 | 61 | 70 | 93 | 84 | 67 |
+| Gew. Overlap | 98,27 | 99,13 | 99,33 | 96,69 | 97,06 | 98,38 |
+
+BEFUNDE:
+- A1 IST DOMINIERT UND SCHEIDET AUS. F1 ist auf JEDER Kennzahl besser (367 vs 360 Treffer,
+  98,38 vs 98,27 % Overlap, 2,56 vs 3,47 % Turnover, 67 vs 70 Abweichung, Coverage 87,82 vs 88,55).
+  B1 schlaegt A1 ebenfalls auf allem ausser der Zahl der Nicht-MSCI-Titel. Das entkraeftet das
+  Argument "A1 sitzt auf den Standard-Leveln": es gibt zwei Varianten, die es komplett schlagen.
+- AUSWAHL REDUZIERT SICH AUF DREI:
+  B1 = kleinste Gesamtabweichung (61), bester Match im Coverage-Zielband, Aufnahme auf Standard,
+       Mechanik gemaess Entscheidung 29.08., Haltekante nach FTSE, ohne Code.
+  F1 = Turnover-Alternative (2,56 %) mit noch brauchbarem Match (367 / 98,38 %), aber ZWEI
+       Framework-Abweichungen: Aufnahme 87 verlaesst den Marktstandard UND es kehrt die
+       Entscheidung vom 29.08. fuer "Aufstieg am Cut-off" um.
+  C1 = bester Match ueberhaupt (99,33 %), reisst aber mit 90,48 % die Coverage-Bandobergrenze und
+       faellt bei der Gesamtabweichung auf A1-Niveau zurueck (60 Nicht-MSCI-Titel).
+- E1 IST IM TOOL NICHT EINSTELLBAR: symmetrisch mit 70/85 und Halten 75/92 braucht zwei
+  Bandbreiten (5 und 7), `_size_segment` hat nur eine. Per lokalem Override gerechnet, Repo-Datei
+  unangetastet. Override als verhaltensneutral nachgewiesen: D1 durch dieselbe Funktion mit
+  gleicher Bandbreite reproduziert Messung 6 exakt (Median 380, 334 Treffer).
+- F1 braucht KEINEN Override: Aufnahme 87 plus Bandbreite 5 ergibt rechnerisch genau 75 / 92.
+- Korrektur zu einer Vorab-Aussage: die Bestandsbenachteiligung im symmetrischen Ast ist bei F1
+  NICHT kleiner als bei D1. Beide haben 5 pp Abstand zwischen Aufstiegs- und Aufnahmeschwelle
+  (F1: 82 vs 87, D1: 80 vs 85). Nur E1 ist mit 7 pp schlechter.
+
+EMPFEHLUNG UNVERAENDERT: B1 (= B aus Messung 8). Alternative mit Turnover-Prioritaet: F1, aber
+dann bewusst mit zwei Framework-Abweichungen.
+
+FIF-Luecke geklaert (2026-09-07, `chk_fif.py`). Bisher als offene Luecke gefuehrt: uns fehlt
+MSCIs Mindest-FIF von 0,15 und der Foreign-Room-Screen. Status jetzt: BEWUSSTE ABWEICHUNG,
+keine Baustelle.
+
+Gemessen 19.08.2026 auf 9.391 investierbaren Zeilen:
+- 2.371 Titel haben ueberhaupt IF < 1
+- 1.515 haetten FIF < 0,15 und wuerden bei MSCI ausscheiden, Gewicht 0,55 % des Adj_FF
+- davon 1.477 CHINA, nur 38 ausserhalb, davon 15 DM
+
+URSACHE UND WARNUNG: unser `IF` vermischt zwei Dinge, die MSCI getrennt haelt. Der China-Zweig in
+`apply_fol_matrix` ueberschreibt den FOL-Wert und setzt IF = china_if = 0,20. Damit gilt
+FIF = FF% x 0,20 < 0,15 fuer jeden chinesischen Titel mit unter 75 % Streubesitz, also fast alle.
+Bei MSCI ist der FIF Streubesitz-mal-FOL, die stufenweise China-A-Teilaufnahme ist ein SEPARATER
+Mechanismus (eigener Anhang, "third step of weight increase") und unterliegt dem 0,15er-Boden
+erkennbar nicht. WER DEN SCREEN EINBAUT, MUSS DEN IF VORHER IN ZWEI FAKTOREN ZERLEGEN:
+FOL-Faktor (dort gehoert die Grenze hin) und China-Teilaufnahmefaktor (dort nicht).
+
+Ausserhalb Chinas ist die Luecke faktisch bedeutungslos: 38 Titel, die groessten davon Southern
+Copper (FF 11 %, kein FOL), Zijin Gold HK (13,5 %), Ecopetrol (11,5 %). Alle scheitern am reinen
+Streubesitz, nicht an einer Auslandsbeschraenkung, und alle drei blieben bei MSCI ueber die
+Ausnahme in 2.3.6.1 drin (FIF < 0,15 zulaessig, wenn Float-MCap >= 1,8x der Mindestanforderung).
+
+Bestaetigt zugleich: die FOL-Anwendung sitzt bei uns an der richtigen Stelle. Berechnung im
+Universum, Kumulation und Segmentierung auf Adj_FF, Gewichtung auf Adj_FF. Das entspricht fuenf
+von sechs Anbietern; nur der Ausschluss-Screen fehlt. Der Sidebar-Radio steht korrekt auf
+"Selektion"; "Gewichtung" waere der Fehler (IF erst am Ende), und die App markiert das selbst.
+
+Was an D NICHT FTSE ist (Grenzen des Nachbaus): Segment weiter auf Wertpapier- statt Firmenebene,
+keine 10-%-Kappung des Regionaluniversums (7.3.4), keine absoluten Boeden 150/30 Mio USD.
+Ausserdem ist `if_cum_col = Total MCap` in der Sidebar nicht waehlbar, D braucht eine Codeaenderung.
+Nebenwirkung von Total MCap: die Segmentierung nutzt gar keinen Float mehr, ein Gigant mit winzigem
+Float waere Large Cap und fiele erst am 10-%-Free-Float-Gate raus. FTSE faengt das mit dem
+5-%-Float-Screen plus Investability-Gewichtung ab, wir haetten dort keinen Groessen-Waiver.
+
+Skript: `cmp_ftse_variant.py` im Scratchpad.
+
+Noch zu messen, bevor entschieden wird:
+1. ERLEDIGT (Messung 3): Turnover und die FTSE-Variante.
+2. OFFEN: was B bzw. D bei NX-GM-LM und NX-DM-LM anrichtet, mangels Benchmark ersatzweise ueber
+   Turnover und Coverage-Kennzahlen.
+3. OFFEN: Sensitivitaet auf `size_buffer_pp_ms` (5 vs 7) sauber durchmessen, siehe Warnung oben.
+4. OFFEN falls D verfolgt wird: Segment auf Firmenebene, sonst ist es FTSE-Logik auf der
+   falschen Aggregationsebene.
+
+Skripte: `cmp_label_order.py` und `cmp_pooled_msci.py` im Scratchpad dieser Session.
+
+Nebenbefund aus dem Regelwerksabgleich, betrifft bestehende Doku:
+- Unsere Kumulationsbasis ist Marktstandard, nicht Sonderweg. MSCI (FIF), Solactive (Final
+  Weighting Factor), Morningstar, STOXX und Bloomberg kumulieren alle min(Float, FOL), was
+  algebraisch unser `FF% x IF` ist. Nur FTSE nimmt volle MCap.
+- Die Laender-Mindestbesetzung im Europe-Pooling ist KEINE Eigenkonstruktion, wie es in
+  `MULTI_PERIOD.md` und im Code-Kommentar steht. Bloomberg (min. 3 Standard-Titel je Land,
+  aufgefuellt aus Small/Micro) und STOXX (min. 5 DM / 3 EM je Land, Bestand x1,5) fahren sie
+  je Land. MSCI fuehrt sie je Markt. Kommentar und Guideline sind noch nicht nachgezogen.
+- Luecken ohne Gegenstueck im Standard: keine Handelsfrequenz-Pruefung, keine Mindesthistorie,
+  kein Groessen-Waiver auf den Mindest-Free-Float (alle sechs haben einen).
+
+## Tool-Aufraeumen Segmentgrenzen (2026-09-07, NICHT committet)
+
+Acht Aenderungen, alle bei ihren Defaults verhaltensneutral. Regressionssuite 277 -> 312 Tests,
+0 Fehler. Ruff F821/F811 sauber. AppTest laeuft ohne Exception (kommt ohne Master-File nur bis
+`st.stop()`, der Sidebar-Block ist damit nicht end-to-end geprueft).
+
+UMGESETZT
+1. `segment_edges()` in `pipeline_core.py`: EINE Quelle fuer alle Segmentkanten aus
+   (Schwellen, drei Bandbreiten, Variante, Buffer an/aus). Rueckgabe thresholds/rise/hold/bands/rows.
+   Vier neue Tests sperren sie gegen `_size_segment`, `_size_segment_asym`, `_size_segment_entry`.
+2. `eumss_coverage` als eigener Pipeline-Parameter, Default None = small_thr, also identisch zu
+   frueher. Damit ist Small-Kante 98 mit Boden-Kalibrierung 99 moeglich, ohne den Boden
+   mitzuschleppen (frueher zwangslaeufig 759 -> 1.574 Mio USD). Sidebar-Feld "Kalibrierpunkt (%)"
+   unter der neuen Gruppe "Groessenboden (EUMSS)", an allen 5 Aufrufstellen durchgereicht.
+   Rueckgabe enthaelt jetzt `eumss_coverage_used`.
+3. Schwellenfelder von `int()` auf `float()`, Komma erlaubt. Frueher fiel "99,5" STILL auf 99
+   zurueck. Jetzt sichtbare Warnung bei unlesbarer Eingabe plus Plausibilitaetspruefung
+   (aufsteigend, <= 100) und ein Hinweis, dass 100 kein sinnvoller Kalibrierpunkt ist.
+4. Buffer-Block umgebaut: 179 Zeilen raus, 96 rein. Drei Bandbreitenfelder mit echten Defaults
+   5 / 5 / 0,5 statt Feld + Platzhalterfeld + Checkbox. `0 = aus`, damit ersetzt die dritte
+   Bandbreite die fruehere Small-Cut-Checkbox. Drei Prosa-Captions und der eingeklappte Expander
+   sind durch EINE sichtbare Tabelle aus `segment_edges()` ersetzt. Radio hat jetzt `captions=`
+   je Variante; der ueber 48 Perioden verifizierte Befund "Asym == Cut-off fuer Large+Mid" steht
+   im Gruppen-Hilfetext, damit er beim Umbau nicht verloren geht.
+5. Kriterienbox: Segmenttabelle unter der Box, EUMSS-Zeile zeigt Kalibrierpunkt, FF-Ratio und den
+   tatsaechlichen Boden in Mio USD (aus `st.session_state["_last_eumss_full"]`, also dem letzten
+   Lauf). Helvetica- und Serie-Zweig nutzen jetzt dieselbe Tabelle.
+6. Settings-Blatt: statt "Small-Cap Coverage-Cut 99/99,5" jetzt drei Bandbreiten einzeln, der
+   EUMSS-Kalibrierpunkt und vier Zeilen "Segmentgrenzen" mit Aufnahme / Aufstieg / Verbleib je
+   Segment. Bisher protokollierte das Blatt bei abweichender Small-Schwelle FALSCHE Werte.
+7. Hartkodierte 99 raus. Verblieben sind drei reine Kommentare (zwei davon bei den
+   Total-Markets-Aufrufen), keine benutzersichtbare Stelle mehr.
+
+NICHT ANGEFASST
+- Methodik: `label_before_liquidity`, Bandbreiten-Werte, Aufnahmeschwellen. Alles Entscheidungen,
+  keine Fixes.
+- Total MCap als Kumulationsbasis: bleibt blockiert bis der +890-Titel-Sprung am 2018-08-15 erklaert
+  ist.
+- Regel zur Listing-Wahl, Mindest-FIF, Handelsfrequenz, Mindesthistorie, Kontinuitaetsregel:
+  dokumentierte Abweichungen ohne gemessenen Schaden.
+
+OFFEN
+- Der Sidebar-Block ist nur statisch geprueft (Syntax, Ruff, Unit-Tests der Logik). Ein Lauf mit
+  Master-File fehlt, weil AppTest ohne Upload an `st.stop()` endet.
+- Migration: wer `apply_small_buffer` frueher abgewaehlt hatte, muss die dritte Bandbreite auf 0
+  setzen. Der alte Checkbox-Key `apply_small_buffer` existiert nicht mehr als Widget.
+- Mit `float()` wirken Dezimaleingaben, die vorher still verworfen wurden.
+- Nichts davon ist committet, der Arbeitsbaum enthaelt weiterhin auch die aelteren
+  Helvetica-Guideline-Aenderungen.
+
 ## Offene Punkte
 
 - Aenderung ist noch nicht committet (Code, Docs, progress.md).
@@ -832,3 +1390,528 @@ Europe Pooled: Pool DM-Europa 1.065 auf 1.076, EU L+M 299 auf 302, Nenner 16,340
 USD (+0,24 %), Titel ohne Float 1.947 auf 1.706 und deren MCap 0,146 auf 0,052 Bio. Die 52
 Ticker der Fehlliste bleiben ALLE Small Cap, Coverage-Median 90,56 auf 90,45. Damit ist der
 Float-Befund oben mit echten Werten bestaetigt, nicht nur mit imputierten.
+
+## Free-Float-Waiver: Ankervergleich (2026-09-08, gemessen)
+
+Anlass: Vorschlag, die 10-%-Mindest-Free-Float-Huerde fuer Titel ueber 10 Mrd USD Total MCap
+entfallen zu lassen, analog zum Solactive-Konzept. Gemessen am 19.08.2026, Boden 759 Mio USD,
+Skript `chk_waiver_anchors.py`. Gewaivert wird NUR das FF-%-Bein, die beiden Groessenbeine
+(Total >= Boden, Float >= halber Boden) und der Liquiditaetsscreen bleiben UND-verknuepft.
+
+| Anker | Kandidaten | davon liquide |
+|---|---|---|
+| MSCI-Stil: Float >= 1,8 x Boden (1.366 Mio) | 11 | 11 |
+| Solactive: Float >= 1,0 Mrd | 14 | 11 |
+| Vorschlag: Total >= 10 Mrd | 21 | 15 |
+| STOXX-Stil: Float >= 1,8 x halbem Boden (683 Mio) | 24 | 18 |
+
+BEFUNDE:
+- MSCI-Stil und Solactive treffen dieselben 11 Titel. Der Vorschlag ist auf diesen Daten eine
+  echte Obermenge davon (11 + 4), umgekehrt bringt Solactive keinen Titel, den der Vorschlag
+  nicht haette.
+- Die 4 zusaetzlichen: Hapag-Lloyd (DE, FF 3,6 %, Float 0,93 Mrd, ADTV 2,3 Mio), Chery Automobile
+  (CN, 9,7 %, 0,78 Mrd), Kingdom Holding (SA, 4,7 %, 0,56 Mrd), Guangxi Guiguan (CN, 5,5 %,
+  0,70 Mrd). Kleinster Float unter dem Vorschlag: 564 Mio USD.
+- ANKERFRAGE: alle fuenf Anbieter mit Waiver haengen ihn an den FLOAT, keiner an die Total MCap.
+  Solactive absolut (1,0 Mrd neu / 0,75 Mrd Bestand), MSCI relativ (1,8 x Mindestgroesse), STOXX
+  relativ (1,8 x halbem Country-Cutoff), Bloomberg ueber ein Laender-Perzentil, FTSE gar nicht
+  (dafuer nur 5 % Huerde). Inhaltlich folgerichtig: die Mindest-Float-Regel fragt nach
+  handelbaren Stuecken, dazu sagt die Total MCap nichts.
+- Ein relativer Float-Anker skaliert mit dem Boden mit und braucht keine Nachkalibrierung.
+- VORAUSSETZUNG UNVERAENDERT: kein Waiver ohne Mindesthistorie. SpaceX steckt in allen vier
+  Varianten (1 von 48 Perioden im Master, ADTV 16,87 Mrd, 3M = 6M = 12M identisch).
+
+## Bodenbewegung nachgemessen (2026-09-08, `chk_waiver.py`)
+
+Boden 2026-05-20: 664 Mio USD, 2026-08-19: 759 Mio USD, also +14,4 % in einer Periode.
+771 Titel liegen zwischen altem und neuem Boden (EM 489, DM 282), davon 409 liquide und
+float-gross genug, Adj_FF-Summe 201,4 Mrd USD. Diese 409 fallen allein aus der Bodenbewegung,
+nicht weil sie geschrumpft waeren. MSCI (3.1.2.2/3.1.2.3) und STOXX nehmen Bestandstitel von der
+Groessenanforderung komplett aus, FTSE faehrt asymmetrisch (150 Mio neu / 30 Mio Bestand),
+Bloomberg absolute Boeden, Solactive hat gar keinen separaten Boden. Wir pruefen jeden Titel
+jede Periode gegen den frisch gerechneten Boden, ohne Bestandsschutz.
+
+## Handelsfrequenz: nicht im Code (2026-09-08 geprueft)
+
+`grep` ueber `pipeline_core.py` und `naroix_benchmark.py` findet keinen Handelsfrequenz- oder
+Nichthandelstage-Screen. Der Check findet laut Fachseite beim Aufsetzen des Index statt (Titel
+faellt raus, Gewicht wird proportional verteilt), also am Gewichtungsende und ausserhalb der
+Pipeline. Konsequenz: KEINER der Backtests dieser Session bildet ihn ab, das Backtest-Universum
+ist entsprechend etwas weiter als das Live-Universum. Alle sechs Anbieter fuehren den Screen in
+der SELEKTION (MSCI 90/80 % ueber 3M, STOXX 90/80 neu und 80/70 Bestand, Solactive < 10
+Nichthandelstage in 3M, Morningstar < 20 in 6M / 30 Bestand, Bloomberg keine 10 am Stueck, FTSE
+eigener Trading Screen).
+
+## Waiver-Anker 2,0 x Boden (2026-09-08, `chk_anchor20_listing.py`)
+
+Gemessen 19.08.2026, Boden 759 Mio USD. Nur das FF-%-Bein wird gewaivert.
+
+| Anker | Schwelle | Kandidaten | liquide |
+|---|---|---|---|
+| STOXX-Stil 1,8 x halber Boden | 683 Mio | 24 | 18 |
+| Solactive 1,0 Mrd absolut | 1.000 Mio | 14 | 11 |
+| MSCI-Stil 1,8 x Boden | 1.366 Mio | 11 | 11 |
+| ENTSCHEIDUNGSKANDIDAT 2,0 x Boden | 1.518 Mio | 11 | 11 |
+| 2,5 x Boden | 1.898 Mio | 10 | 10 |
+
+2,0 x Boden trifft exakt dieselben 11 Titel wie Solactives fester 1-Mrd-Anker und wie MSCIs
+1,8-fache Mindestgroesse. Erst bei 2,5 x faellt der erste weg (Shanghai International Port,
+1,64 Mrd Float). Zwischen 1,0 und 1,9 Mrd liegt also ein Plateau, der Anker sitzt mittig und
+nicht auf einer Kante. Skalierungsargument: der Boden lief ueber die 48 Perioden von 152 bis
+759 Mio, ein fester 1-Mrd-Anker waere 2014 das 3,6-fache und heute nur noch das 1,3-fache des
+Bodens gewesen.
+
+Die 11 Titel: SpaceX, Saudi Aramco, Adnoc Gas, Itau Unibanco, Huaneng Lancang, Ubiquiti,
+Barito Renewables, Christian Dior, TAQA, LIC India, Shanghai International Port.
+
+Bloomberg wortwoertlich nachgelesen (1.2.6): Ausnahme, wenn "the security float market
+capitalization is greater than 0.5 times the 70th percentile of its country's cumulative float
+market capitalization". Damit haengt der Waiver bei ALLEN FUENF Anbietern am Float, bei keinem
+an der Total MCap.
+
+## Bestandsschutz am Boden: MSCI und STOXX machen ZWEI Dinge (2026-09-08)
+
+MSCI 3.1.2.2 und STOXX 3.3.1.2 sind inhaltlich deckungsgleich:
+1. RANG-MITNAHME. Der Rang, der den Boden zuletzt definiert hat, wird gemerkt. Liegt seine
+   Coverage jetzt zwischen 99 und 99,25 %, bleibt er der Boden. Unter 99 % wird auf die 99er-Kante
+   zurueckgesetzt, ueber 99,25 % auf die 99,25er-Kante.
+2. BESTANDSAUSNAHME. MSCI: "New companies are evaluated relative to this updated threshold,
+   whereas all existing constituents will not be evaluated relative to this investability
+   requirement" (gilt auch fuer das 50-%-Float-Bein, 3.1.2.3). STOXX: "Existing components are
+   exempt from the updated Full Market Capitalization screen."
+FTSE loest es ueber asymmetrische Absolutwerte (150 Mio Aufnahme / 30 Mio Ausschluss, Rule 7.6.2).
+Bloomberg ueber feste Boeden (100 Mio DM / 50 Mio EM), da bewegt sich nichts.
+SOLACTIVE HAT UNSER PROBLEM NICHT: es gibt gar keinen absoluten Boden. Das Universum entsteht aus
+den Screens, danach wird alles in Buckets geteilt (All Cap 0 bis 100 %). Die einzige Groessenkante
+ist der Coverage-Cut, und der hat einen Buffer (Small Cap 85 bis 99 %, Top 98,5 / Bottom 99,5).
+Unser Problem entsteht daraus, dass wir ZWEI Groessenkanten haben, den absoluten EUMSS-Boden und
+den Small/Micro-Coverage-Cut, und nur die zweite eine Hysterese hat.
+
+Messung ueber alle 48 Perioden (`chk_floor_maintenance.py`, `floor_maint.csv`). Proxy-Pool =
+Boden + Float-Bein + Liquiditaet, ohne Segmentierung, also Obergrenze fuer den Indexeffekt.
+- Boden min 152 / Median 349 / max 759 Mio USD
+- Periodenaenderung |%|: Median 4,6, Mittel 10,2, max 125,3
+- 7 von 47 Perioden mit ueber 10 % Bodenanstieg
+- Datenartefakt: 2019-08-21 faellt der Boden auf 152 Mio (-53,4 %) und springt zur Folgeperiode
+  auf 341 (+125,3 %). Genau die Sorte Ausschlag, die die Rang-Mitnahme abfaengt.
+- Abgaenge je Periode Median 547, Mittel 602, max 1.844
+- Maintenance-Schwelle k x Boden rettet davon: k=0,90 Median 115 (23 %), k=0,85 Median 152 (30 %),
+  k=0,75 Median 211 (41 %)
+
+## In-Eligible: Ort und Fuellstand (2026-09-08 geprueft)
+
+Handelsfrequenz und Sanktionen laufen laut Fachseite ueber In-Eligible.xlsx. Zwei Befunde:
+- Die Datei enthaelt heute NUR ZWEI BEISPIELZEILEN mit Dummy-ISINs (CNE100000XXX Stock Connect
+  Sell-Only, INE000000XXX FOL Breach India). Kein Backtest hat je einen echten Ausschluss
+  angewandt.
+- Der Filter laeuft in `run_selection_pipeline` als Schritt 7 (pipeline_core.py:2708), also NACH
+  der Segmentierung und vor der Gewichtung. Ein in-eligibler Titel steht damit noch im
+  Coverage-Nenner und verschiebt die Coverage-Position aller anderen. MSCI und STOXX entfernen ihn
+  vor der Segmentierung. Fix: Filter vor den Waterfall ziehen.
+Der Mechanismus als solcher ist periodenscharf (From/To je ISIN) und damit backtestfaehig.
+
+## Listing-Spalte bedeutet Gattung, nicht Boerse (2026-09-08, `chk_listing_dupes.py`)
+
+Wichtig fuer die geplante Regel "nur Primary Exchange": die Master-Spalte `Listing` markiert
+ueberwiegend ZWEITE GATTUNGEN und NVDR-Linien, nicht Zweitnotierungen.
+- Rohsnapshot 19.08.2026: 59.545 Zeilen, davon 2.387 Secondary
+- Waterfall-Pool: 9.390 Zeilen, davon 125 Secondary, und NULL davon teilen sich eine ISIN mit
+  einer Primary-Zeile im Pool
+- Die groessten Secondary-Titel: Alphabet C (1.832 Mrd Adj_FF), Berkshire B (242), Samsung
+  Electronics Vorzug (106), Petrobras (70), Delta Electronics Thailand (39), Atlas Copco B,
+  Investor A, HEICO A, Roche. Dazu 73 thailaendische NVDR-Linien.
+- Ein hartes Primary-only wuerde 125 Titel und 2,27 % des Pool-Adj_FF loeschen und dabei KEINEN
+  einzigen Doppeleintrag entfernen.
+
+Echte Mehrfachnotierungen sind fast nicht vorhanden: 59.496 eindeutige ISINs auf 59.545 Zeilen,
+nur 49 ISINs doppelt. Davon 34 dieselbe Boerse mit zweiter Handelswaehrung (Temenos CHF/USD an
+SIX, Accor EUR/USD Paris, Eiffage, Sirius GBP/EUR London), nur 15 wirklich zwei Boersen. Die
+Zweitlinie hat fast immer keinen ADTV-Wert und faellt am Liquiditaetsscreen. Auf Entity-ID-Ebene:
+2.183 Firmen mit mehreren Zeilen, davon 2.158 an EINER Boerse (Gattungen) und nur 25 an mehreren.
+
+Die beiden hartkodierten Muster sind heute wirkungslos: HK-Ticker in CNY trifft 1 Zeile,
+London-USD-Secondary trifft 0 Zeilen.
+
+Vorbild fuer die Regelformulierung, Solactive 2.1.2 Choice of Listing: liquideste HEIMISCHE
+Notierung (min aus 1M und 6M ADTV), sonst liquideste regionale, sonst liquideste auslaendische,
+und ein Wechsel zurueck erfordert VIER aufeinanderfolgende Selektionen. MSCI 3.1.2.4 fuehrt die
+Prioritaet Local > Foreign same region > Foreign other region. Unser Helvetica-Dedup (Schritt 3b)
+hat die Wechsel-Hysterese ausdruecklich NICHT.
+
+### Rang-Mitnahme nachgerechnet (`chk_floor_stability.py`, 48 Perioden)
+
+Heutige Regel (kalt auf 99 %) gegen MSCIs Rang-Mitnahme mit Band 99 bis 99,25:
+
+| Periode | Boden heute | Rang | Boden MSCI-Regel | Rang | zusaetzlich im Universum |
+|---|---|---|---|---|---|
+| 2026-02-18 | 639 | 6.015 | 495 | 6.577 | 1.515 |
+| 2026-05-20 | 664 | 5.905 | 483 | 6.577 | 1.782 |
+| 2026-08-19 | 759 | 5.725 | 557 | 6.394 | 1.796 |
+
+- In 33 von 47 Perioden ergaebe die MSCI-Regel einen NIEDRIGEREN Boden, im Median haelt sie
+  472 Titel zusaetzlich im Universum, max 1.851.
+- Grund: unsere Regel sitzt immer exakt auf 99 %, MSCIs Rang wandert im Band und landet meist
+  an der 99,25er-Kante. Die Uebernahme verschoebe unser All-Cap-Ziel faktisch von 99 auf 99,25 %.
+- NIVEAU-VALIDIERUNG: MSCIs publizierter EUMSR liegt im Mai 2026 bei 537 Mio USD. Unsere heutige
+  Regel kommt zum selben Termin auf 664 Mio (+24 %), die Rang-Mitnahme auf 483 Mio (-10 %).
+  Der Vergleich ist eine Indikation, kein Beweis, weil die Universen nicht identisch sind.
+- WIRKUNG AUFS PRODUKT: die zusaetzlichen Titel landen im Waterfall fast alle als Micro Cap. Der
+  Standard-Index (Large+Mid) aendert sich nur indirekt ueber den verschobenen Coverage-Nenner.
+  IMI und All Cap wachsen dagegen spuerbar.
+- In den ersten Perioden liegen beide Regeln nahezu gleichauf, die Schere oeffnet sich mit der
+  Zeit. Die Rang-Mitnahme braucht Zustand ueber Perioden, ist also wie der Size Buffer nur im
+  Multi-Period-Lauf definiert.
+
+## Groessen-Waiver eingebaut (2026-09-08, NICHT committet)
+
+ENTSCHEIDUNG Nico: der Mindest-Free-Float-Waiver haengt an 2,0 x EUMSS-Boden (relativ,
+skaliert mit dem Boden). Umgesetzt:
+
+- `pipeline_core.py`: neuer Parameter `ff_waiver_k` (Default 0.0 = aus, verhaltensneutral).
+  Der EUMSS-Filter ist in `size_ok` und `ff_ok` zerlegt; der Waiver hebt NUR das FF-%-Bein auf,
+  wenn `Free Float MCap >= ff_waiver_k * eumss_full`. Rueckgabe um `ff_waiver_k` und
+  `n_ff_waived` erweitert.
+- `pipeline_core.py`: zusaetzlich `eumss_maint_ratio` (Default None = 1.0 = aus). Incumbents
+  werden dann gegen `ratio x Boden` geprueft statt gegen den vollen Boden, auf BEIDEN
+  Groessenbeinen. Gebaut fuer die Bestandsschutz-Messung, im Tool noch nicht verdrahtet.
+- `naroix_benchmark.py`: Sidebar-Feld "FF-Waiver (x Boden)" unter Groessenboden (EUMSS),
+  Default 2,0, mit Plausibilitaetspruefung. Kriterienbox zeigt Vielfaches und die daraus
+  folgende absolute Float-Schwelle, Settings-Blatt protokolliert es.
+- Tests: 312 -> 328 PASS, 0 FAIL. Vier Signatur-Checks, drei Verdrahtungs-Checks, sechs
+  Waiver-Integrationschecks (Obermenge, Zaehler stimmt, jeder Zugang reisst wirklich die
+  FF-%-Huerde und erreicht 2,0 x Boden, Groessenbeine gelten weiter, k=0 identisch),
+  drei Maintenance-Checks.
+
+BUG DABEI GEFUNDEN UND BEHOBEN: `eumss_coverage` wurde nur an 3 der 5
+`run_selection_pipeline`-Aufrufstellen durchgereicht. Es fehlte ausgerechnet in den beiden
+MULTI-PERIOD-Schleifen (Standard-MP und Europe-Pooled-MP), das Sidebar-Feld "Kalibrierpunkt"
+war dort also wirkungslos. Der Eintrag vom 2026-09-07 ("an allen 5 Aufrufstellen durchgereicht")
+war falsch. Neuer Test `test_ff_waiver_wired_in_app` sperrt beide Parameter gegen genau diesen
+Fehler.
+
+NICHT VERIFIZIERT: der Sidebar-Block selbst. AppTest kommt weiterhin nur bis zur Datenquelle
+(`st.stop()` in der Sidebar), die neuen Felder sind damit nicht end-to-end geprueft.
+
+## Nebenbefund: Segment auf Wertpapier- statt Firmenebene (2026-09-08)
+
+Gemessen 19.08.2026 auf `gm_complete` (35.395 Zeilen, 35.140 Firmen):
+- 242 Firmen mit mehreren Linien
+- 76 davon mit Linien in VERSCHIEDENEN Segmenten
+- 16 davon mit einem Teil im Standard-Index und einem Teil ausserhalb
+- nur 1 Firma mit einem Split innerhalb des IMI (Grupo de Inversiones Suramericana, Mid/Small)
+
+Beispiele: Carlsberg B Mid / A Micro, Teck B Mid / A Micro, Tele2 B Mid / A Micro, Svenska
+Cellulosa B Mid / A Micro, Rogers B Mid / A Micro, Power Corp Large / Participating Micro,
+Hyundai Motor drei Linien Large und eine Micro. Itau Unibanco Pfd Large / ON Micro und Banco
+Santander Brasil Unit Large / Stammlinie Micro loesen sich mit dem neuen Waiver auf (beide
+Stammlinien scheitern heute am 10-%-FF-Gate, nicht an der Groesse).
+Alle sechs Anbieter vergeben das Segment firmenweit. MSCI woertlich: "all securities of a
+company are always classified in the same size-segment."
+
+## Bestandsschutz am Boden: Wirkung auf NX-EU-LM gemessen (2026-09-08, `cmp_floor_rules.py`)
+
+Europe Pooled, 48 Perioden, Labeling zuerst, Cut-off 70/85, Halten 75/90. Endperiode gegen
+MSCI Europe. Gegenprobe: H reproduziert A1 aus Messung 9 exakt (431 / 360 / 98,27 %).
+
+| | H heute | R Rang-Mitnahme | M Maint 0,75 | RM beides | X Bestand frei | S kein Boden |
+|---|---|---|---|---|---|---|
+| Boden Endperiode Mio | 759 | 557 | 759 | 557 | 759 | 0 |
+| Boden Median Mio | 349 | 301 | 349 | 301 | 349 | 0 |
+| Titel Endperiode | 394 | 405 | 394 | 405 | 394 | 427 |
+| Titel Median | 431 | 438 | 431 | 438 | 431 | 467 |
+| Turnover in % | 3,47 | 3,40 | 3,47 | 3,40 | 3,47 | 3,35 |
+| Standard-Coverage | 88,55 | 88,64 | 88,54 | 88,63 | 88,54 | 89,36 |
+| MSCI Treffer | 360 | 367 | 360 | 367 | 360 | 377 |
+| uns fehlend | 36 | 29 | 36 | 29 | 36 | 19 |
+| nicht in MSCI | 34 | 38 | 34 | 38 | 34 | 50 |
+| Abweichung gesamt | 70 | 67 | 70 | 67 | 70 | 69 |
+| Gew. Overlap % | 98,27 | 98,59 | 98,27 | 98,59 | 98,27 | 99,02 |
+
+BEFUNDE:
+- DER BESTANDSSCHUTZ TUT FUER NX-EU-LM NICHTS. M (Maintenance 0,75) und X (Bestand komplett
+  ausgenommen, MSCI/STOXX woertlich) sind auf JEDER Kennzahl identisch mit heute. Grund: der
+  Boden bindet im EM-Small-Cap-Schwanz, nicht bei europaeischen Large und Mid Caps. Die Frage
+  gehoert an All Cap / IMI und EM gemessen, nicht an diesem Produkt. Dort wurde sie separat
+  gemessen: 409 liquide Titel in einer Periode, 23 bis 41 % der Pool-Abgaenge je nach k.
+- WAS EUROPA BEWEGT, IST DAS NIVEAU DES BODENS, nicht der Bestandsschutz. Der Boden steuert den
+  Pool, der den Coverage-Nenner bildet. Ein niedrigerer Boden zieht kleine europaeische Titel in
+  den Nenner, alle bestehenden rutschen auf der Treppe nach unten, mehr passen unter die
+  85er-Kante. R bringt 394 -> 405 Titel, 360 -> 367 Treffer, 98,27 -> 98,59 % Overlap bei
+  gleichzeitig niedrigerem Turnover (3,47 -> 3,40 %).
+- R HAT DIE KLEINSTE GESAMTABWEICHUNG (67 gegen 70 heute, 69 bei Solactive).
+- SOLACTIVE (gar kein Boden) hat den besten gewichteten Overlap (99,02 %) und den niedrigsten
+  Turnover (3,35 %), erkauft das aber mit 50 Nicht-MSCI-Titeln (heute 34) und einer
+  Standard-Coverage von 89,36 %, die an die Obergrenze des MSCI-Zielbands 85 +/- 5 stoesst.
+  36 Titel mehr als heute im Index.
+- RM = R. Die Kombination bringt gegenueber R allein nichts, weil M ohnehin wirkungslos ist.
+
+EMPFEHLUNG: Rang-Mitnahme (R) einbauen, Bestandsschutz zurueckstellen und an All Cap / EM
+entscheiden. R ist von MSCI 3.1.2.2 und STOXX 3.3.1.2 woertlich abschreibbar, verbessert alle
+vier Kennzahlen gleichzeitig und bringt den Boden von 759 auf 557 Mio, naeher an MSCIs
+publizierte 537 Mio (Mai 2026).
+
+Artefakt mit der vollstaendigen Kette und den offenen Punkten:
+https://claude.ai/code/artifact/28fa9661-be94-4163-894a-d0f5cf96b918
+
+## Bodenregel: Messung an All Cap und EM (2026-09-08, `cmp_floor_allcap.py`)
+
+Die Europa-Messung war nicht aussagekraeftig fuer den Bestandsschutz. Nachgeholt an den
+Produkten, wo der Boden bindet. 48 Perioden, Europe Pooled, Labeling zuerst, Cut-off 70/85.
+Kein MSCI-Benchmark fuer diese Produkte, also Titelzahl und Turnover.
+
+| | H heute | R Rang-Mitnahme | M Maint 0,75 | RM beides | S kein Boden |
+|---|---|---|---|---|---|
+| Boden Endperiode Mio | 759 | 557 | 759 | 557 | 0 |
+| NX-GM-AC Titel Median | 8.764 | 9.652 | 9.093 | 9.892 | 12.607 |
+| NX-GM-AC Turnover % | 9,48 | 8,37 | 8,28 | **7,55** | 9,18 |
+| NX-EM-AC Titel Median | 4.054 | 4.623 | 4.390 | 4.783 | 6.766 |
+| NX-EM-AC Turnover % | 13,11 | 11,04 | 10,47 | **9,46** | 10,94 |
+| NX-EM-S Titel Median | 2.547 | 2.962 | 2.751 | 3.182 | 4.560 |
+| NX-EM-S Turnover % | 21,42 | 17,65 | 17,17 | **14,57** | 15,92 |
+| NX-GM-S Titel Median | 5.572 | 6.237 | 5.803 | 6.375 | 8.333 |
+| NX-GM-S Turnover % | 15,74 | 13,66 | 13,75 | **12,39** | 14,03 |
+
+BEFUNDE:
+- DER BESTANDSSCHUTZ WIRKT SEHR WOHL, nur nicht in Europa. An NX-EM-S faellt der relative
+  Turnover von 21,42 auf 17,17 % allein durch die Maintenance-Schwelle. Meine
+  Zwischeneinschaetzung "zurueckstellen" ist damit erledigt.
+- RM IST AUF ALLEN VIER PRODUKTEN DER BESTE RELATIVE TURNOVER, obwohl es unter den
+  Boden-Varianten die meisten Titel haelt. Genau das soll eine Hysterese leisten.
+- KEIN BODEN (S) IST DOMINIERT: mehr Titel als jede andere Variante (GM-AC Median +3.843,
+  EM-AC +2.712) UND schlechterer relativer Turnover als RM auf allen vier Produkten. Als
+  Methodik damit vom Tisch, als Research-Option bleibt sie im Tool.
+- Turnover max bleibt bei allen Boden-Varianten praktisch gleich (rund 2.200 bei NX-GM-AC).
+  Die Spitze kommt aus dem Datenbruch, nicht aus der Regel.
+- Perioden mit Unterschied zu heute (NX-GM-AC): R 37 von 48, M 47 von 48, RM 47 von 48,
+  S 48 von 48.
+
+EMPFEHLUNG: Rang-Mitnahme UND Bestandsschutz 0,75, also RM. In Europa traegt R, an All Cap
+und EM tragen beide.
+
+## Bodenregel im Tool (2026-09-08, NICHT committet)
+
+- `pipeline_core.py`: `eumss_carry_rank` und `eumss_carry_band` (Default None / 0.0, also aus).
+  Die DM-Primary-Kurve wird jetzt mit `reset_index(drop=True)` positionsindiziert, damit ein
+  Rang ueber Perioden weitergereicht werden kann. Rueckgabe um `eumss_rank_used` und
+  `eumss_carry_band_used` erweitert.
+- `naroix_benchmark.py`: Radio "Bodenregel" mit drei Optionen (Fest am Kalibrierpunkt /
+  Mit Rang-Mitnahme / Kein Boden), Default FEST = heutiges Verhalten. Kalibrierpunkt,
+  FF-Ratio und Bestandsschutz werden bei "Kein Boden" ausgegraut und neutralisiert.
+  Neues Feld "Bestandsschutz (x Boden)", Default 0,75, mit Bereichspruefung 0 bis 1.
+- Rang-Zustand: `_eumss_rank` in der Multi-Period-Hauptschleife, `_eumss_rank_ep` im
+  Europe-Pooled-Lauf, beide aus `result["eumss_rank_used"]` der Vorperiode. Im
+  Einzelperioden-Tab gibt es keinen Vorperioden-Rang, dort faellt die Regel bewusst auf den
+  kalten Schnitt zurueck (steht im Hilfetext). ENTSCHEIDUNG Nico 2026-09-08: der
+  Einzelperioden-Tab wird dabei nicht nachgezogen, RM gilt fuer den Multi-Period-Betrieb.
+  Folge: derselbe Termin zeigt einzeln Boden 759 Mio und im MP-Lauf 557 Mio. Kein Fehler,
+  aber beim Nebeneinanderlegen der Tabs zu wissen.
+- NX-GM-TM bleibt an beiden Stellen hart `eumss_enabled=False`. Ein Test sperrt das:
+  genau 3 Produktlaeufe an der Bodenregel, genau 2 Total-Markets-Laeufe ohne Boden.
+- Kriterienbox zeigt Bodenregel, Bandobergrenze und Bestandsschutz; Settings-Blatt
+  protokolliert alle vier Felder einzeln.
+
+ENTSCHEIDUNG Nico 2026-09-08: Default ist RM, also Radio auf "Mit Rang-Mitnahme" und
+Bestandsschutz 0,75. Das ist KEINE verhaltensneutrale Voreinstellung: jeder Lauf ohne
+manuelle Umstellung weicht ab jetzt von allen Messungen ab, die vor dem 08.09.2026 entstanden
+sind. Wer den alten Stand nachrechnen will, stellt Radio auf "Fest am Kalibrierpunkt" und
+Bestandsschutz auf 1. Der Settings-Stempel protokolliert beide Felder, alte Exporte bleiben
+also zuordenbar.
+
+## Kumulationsbasis des Waterfalls (2026-09-08, `cmp_cum_basis.py`)
+
+Frage: was passiert, wenn statt Adj_FF_MCap das rohe Free Float MCap kumuliert wird?
+Antwort: die interessante Alternative ist eine dritte, nicht das rohe Float.
+
+  A  Adj_FF_MCap                heute: Float x IF, IF enthaelt FOL UND China-Faktor 0,20
+  B  Float x FOL (ohne China)   Inclusion Factor erst beim Gewicht
+  C  Free Float MCap roh        ohne jede Auslandsbeschraenkung
+
+48 Perioden, Rang-Mitnahme + Bestandsschutz 0,75, Label zuerst, Cut-off 70/85, Europe Pooled.
+Gewichtung bleibt in ALLEN Varianten Adj_FF_MCap (`normalize_index_weight` haengt fest daran),
+es geht ausschliesslich um die Segmentierung.
+
+| | A heute | B Float x FOL | C Float roh |
+|---|---|---|---|
+| NX-EU-LM Titel Median | 438 | 438 | 438 |
+| NX-EU-LM MSCI-Treffer / Overlap | 367 / 98,59 % | 367 / 98,59 % | 367 / 98,59 % |
+| NX-EM-LM Titel Median | 1.497 | 2.420 | 2.414 |
+| NX-EM-LM Turnover % | 8,92 | 8,60 | 8,60 |
+| NX-GM-LM Titel Median | 3.366 | 4.339 | 4.332 |
+| NX-GM-LM Turnover % | 5,86 | 6,27 | 6,26 |
+
+BEFUNDE:
+- EUROPA IST IN ALLEN DREI VARIANTEN IDENTISCH, bis auf die letzte Stelle. DM-Europa hat
+  praktisch keine FOL und kein China. Saubere Kontrollprobe: der Effekt kommt nirgends sonst her.
+- B UND C UNTERSCHEIDEN SICH UM 6 BIS 9 TITEL. Ausserhalb Chinas haben nur 1,3 % der Zeilen
+  IF < 1. Die FOL-Kappung selbst ist auf diesen Daten also fast folgenlos. DIE GANZE FRAGE IST
+  DER CHINA-FAKTOR.
+- DER CHINA-FAKTOR IN DER KUMULATION KOSTET RUND 920 TITEL IM EM-STANDARD. Grund ist eine
+  Asymmetrie: der Override maskiert auf EXCHANGE COUNTRY NAME == CHINA, der Waterfall gruppiert
+  nach MAPPING COUNTRY. Im Markt CHINA bekommen A-Aktien (Boerse China) IF 0,20, H-Aktien und
+  Red Chips (Boerse Hongkong) IF 1,0. Ein einheitlicher Faktor je Markt wuerde sich in der
+  Coverage-Kurve herauskuerzen, dieser nicht: die Hongkong-Linien fressen das Coverage-Budget
+  und druecken die A-Aktien nach Small und Micro.
+- Nenner global: Float x FOL ist 1,035x Adj_FF, rohes Float 1,038x. Klein, weil China nur ein
+  Teil des Universums ist; innerhalb Chinas ist der Faktor 5x.
+
+WER MACHT WAS (aus den Regelwerken, woertlich geprueft):
+- MSCI = B. "all share classes from the integrated China Equity Universe will be included ... as
+  well as in the process of allocation of companies into the Size-Segments", IIF danach.
+- STOXX = B. "The China Connect Scaling Factor is applied after the component screens and
+  selection, and it is applied to the free float only at the final weighting of the components."
+- MORNINGSTAR = B. "China A shares THAT HAVE BEEN ASSIGNED large-cap and mid-cap will be
+  included ... at partial inclusion factor of 0.25 ... multiplied by factor of 0.25 for their
+  WEIGHTING."
+- BLOOMBERG = B im Ergebnis. Kein Phase-in-Faktor, sondern eine echte Kappung: "China A
+  companies' free float percentage are capped at 28%", plus Industrie-FIL. Die Kappung steckt
+  im Float und damit auch in der Segmentierung, wirkt aber wie ein FOL, nicht wie ein
+  Aufnahmefaktor.
+- SOLACTIVE = A, als einziger. "China A shares are included in the INDEX with an inclusion
+  factor of 20%. The inclusion factor is taken into account when calculating the FINAL WEIGHTING
+  FACTOR", und die FREE FLOAT MARKET CAPITALIZATION wird "adjusted by its FINAL WEIGHTING
+  FACTOR", waehrend die Size Buckets auf der "accumulated FREE FLOAT MARKET CAPITALIZATION"
+  beruhen. Das ist eine Lesart der Definitionen, keine ausdrueckliche Aussage zum
+  Segmentierungsschritt wie bei STOXX und Morningstar.
+- FTSE = eigene Variante, volle MCap. Die Frage stellt sich dort gar nicht.
+- ROHES FLOAT (C) NUTZT NIEMAND.
+
+FAZIT: die relevante Frage ist nicht A gegen C, sondern A gegen B, und dort stehen wir mit
+Solactive allein gegen vier. Der Schalter fuer C existiert bereits (Sidebar "IF
+Anwendungsmodus" -> "Gewichtung"), fuer B gibt es heute keinen. NICHT ENTSCHIEDEN, nur gemessen.
+
+### Variante B im Detail (2026-09-08, `cmp_variant_b_detail.py`, Endperiode 19.08.2026)
+
+Voller 48-Perioden-Pfad, ausgewertet wird die Endperiode.
+
+| Produkt | A heute | B | Delta | Turnover A | Turnover B |
+|---|---|---|---|---|---|
+| NX-GM-LM | 3.613 | 4.521 | +908 | 197,3 | 271,9 |
+| NX-EM-LM | 2.077 | 2.985 | +908 | 133,6 | 208,1 |
+| NX-GM-AC | 10.134 | 10.352 | +218 | 746,5 | 750,7 |
+| NX-EM-AC | 5.271 | 5.489 | +218 | 452,3 | 456,6 |
+| NX-GM-S | 6.521 | 5.831 | -690 | 789,7 | 783,7 |
+| NX-EM-S | 3.194 | 2.504 | -690 | 463,7 | 457,7 |
+| NX-DM-LM | 1.536 | 1.536 | +0 | 64,2 | 64,2 |
+
+- DM AENDERT SICH UM NULL. Alle 908 sind EM, praktisch alle China.
+- ES IST EINE UMSCHICHTUNG, KEIN ZUWACHS: alle 908 Zugaenge zum Standard waren in A Small Cap.
+  Gleichzeitig ruecken 218 Titel von Micro nach Small nach. 908 = 690 (Small-Verlust) + 218.
+  Abgaenge aus dem Standard: NULL.
+- Segmente im Markt CHINA (5.717 Titel, davon 4.407 A-Aktien und 1.310 ueber Hongkong):
+
+  | | Large | Mid | Small | Micro |
+  |---|---|---|---|---|
+  | A: A-Aktien | 235 | 750 | 2.101 | 1.321 |
+  | A: Hongkong | 157 | 131 | 151 | 871 |
+  | B: A-Aktien | 760 | 1.052 | 1.488 | 1.107 |
+  | B: Hongkong | 259 | 110 | 74 | 867 |
+
+  Auch die Hongkong-Linien gewinnen im Large-Segment (+102), verlieren aber in Mid und Small.
+  Der Markt-Nenner waechst, damit rutscht die 70er-Kante deutlich weiter nach unten im Ranking.
+- NX-EM-LM Laendergewichte: CHINA 1.273 -> 2.181 Titel, Gewicht 21,19 -> 22,29 % (+1,10 pp).
+  Alle anderen Laender unveraendert in der Titelzahl, minus 0,01 bis 0,32 pp Gewicht durch
+  Verwaesserung. Taiwan -0,32, Korea -0,23, Indien -0,16.
+- KOSTEN-NUTZEN: 908 zusaetzliche Positionen fuer 1,10 pp Gewichtsverschiebung. Der groesste
+  Zugang traegt 0,018 % Indexgewicht, die meisten deutlich unter 0,01 %. Grund: die Gewichte
+  laufen weiter auf Adj_FF, also mit dem 0,20-Faktor. Konzentration praktisch unveraendert
+  (NX-GM-LM Top10 24,00 -> 23,95 %, Top100 51,93 -> 51,83 %, China 2,90 -> 3,08 %).
+- TURNOVER im Standard steigt spuerbar: NX-GM-LM 197 -> 272 Wechsel im Mittel, relativ 5,5 auf
+  6,0 %. All Cap und Small Cap bleiben praktisch unveraendert. Die Mid/Small-Kante liegt nach
+  der Umstellung mitten im dichten A-Aktien-Feld.
+- DATENFRAGE NEBENBEI: unter den groessten Zugaengen steht "Chagee Holdings Limited Unspons...",
+  dem Namen nach eine unsponsored ADR-Linie. Vor einer Umstellung pruefen.
+
+BEWERTUNG: methodisch spricht B klar dafuer (4 von 6 Anbietern, saubere Rangfolge innerhalb
+Chinas). Operativ ist der Preis hoch: 908 Positionen mehr fuer 1,10 pp Exposure, hoeherer
+Turnover, und der EM-Standard waechst von 2.077 auf 2.985 Titel, obwohl er mit MSCI EM (rund
+1.200) ohnehin schon nicht vergleichbar ist. Der EM-Breite-Befund ist eine eigene Baustelle,
+B macht ihn nur sichtbarer. NICHT ENTSCHIEDEN.
+
+## ATVR-Kalibrierung auf Indien (2026-09-08, `cmp_atvr_sweep.py`)
+
+Vorgabe Nico: Schwelle finden, bei der Indien im NX-GM-LM der Endperiode bei rund 1 % steht.
+Setting: Labeling zuerst, Cut-off 70/85 mit Halten 75/90/99,5, Rang-Mitnahme, Kalibrierpunkt 99,
+FF-Ratio 50, Bestandsschutz 0,75, Min FF 10, FF-Waiver 2,0, IF in der Selektion, Europe Pooled.
+ADTV 1,0 / 0,75 Mio unveraendert. Variiert wurde nur das ATVR-Paar im MSCI-Verhaeltnis 20:15,
+Maintenance = 2/3 der Entry-Schwelle.
+
+| ATVR DM/EM | Titel GM-LM | Turnover % | INDIEN Titel | INDIEN Gewicht |
+|---|---|---|---|---|
+| 0 / 0 | 3.616 | 5,88 | 173 | 1,51 % |
+| 2 / 1,5 | 3.616 | 5,89 | 173 | 1,51 % |
+| 4 / 3 | 3.612 | 5,92 | 170 | 1,44 % |
+| **6 / 4,5** | **3.598** | **5,94** | **156** | **1,00 %** |
+| 8 / 6 | 3.573 | 5,94 | 131 | 0,64 % |
+| 10 / 7,5 | 3.558 | 5,95 | 117 | 0,51 % |
+| 14 / 10,5 | 3.512 | 5,92 | 74 | 0,25 % |
+| 20 / 15 (MSCI) | 3.472 | 5,93 | 46 | 0,13 % |
+
+SWEETSPOT: DM 6 % / EM 4,5 %, Maintenance 4 % / 3 %. Trifft die 1,00 % punktgenau.
+
+BEFUNDE:
+- AUSSERHALB INDIENS PASSIERT FAST NICHTS. Global verliert der Index 18 Titel (3.616 -> 3.598),
+  davon 17 indische. China 2,89 -> 2,95, Taiwan 3,14 -> 3,20, Korea 2,28 -> 2,32: das sind reine
+  Verwaesserungseffekte aus Indiens Gewichtsverlust, keine echten Zugaenge.
+- TURNOVER BLEIBT UNVERAENDERT (5,88 -> 5,94 %). Der Screen kostet nichts an Stabilitaet.
+- UNTER 3 % EM WIRKT DER SCHIRM GAR NICHT. Erst ab etwa 3 % beginnt er zu greifen, dann sehr
+  steil: ein Prozentpunkt EM-Schwelle bewegt Indien um rund 0,3 bis 0,4 pp Gewicht.
+- WARNUNG, WICHTIG: das ist die Kalibrierung eines Screens GEGEN EINEN DATENFEHLER. Indiens ADTV
+  ist 10 bis 20-fach zu niedrig, weil der Master die IN-Titel als BSE statt NSE zieht. Eine
+  EM-Schwelle von 4,5 % entspricht auf korrekten NSE-Daten grob 45 bis 90 % und wuerde Indien
+  praktisch komplett entfernen. Fuer jedes andere EM-Land liegt 4,5 % dagegen weit unter MSCIs
+  15 %, dort ist der Screen faktisch aus. Mit NSE-Daten springen alle 173 Titel wieder durch und
+  Indien steht wieder bei 1,51 %.
+- STOXX loest genau das per Regel: "For India volumes from National Stock Exchange ... are
+  added" (Fussnote 5 zum Turnover-Ratio-Screen).
+- OFFENE FRAGE ZUM ZIEL: 1,51 % liegt bereits unter dem, was Indien in den gaengigen globalen
+  Benchmarks traegt. Eine Kuerzung auf 1,0 % vergroessert diesen Abstand. Ein ACWI-Referenzfile
+  liegt nicht im Repo, der Vergleich ist also nicht nachgerechnet.
+
+## ATVR scharf gestellt und ATVR-Doku korrigiert (2026-09-08, NICHT committet)
+
+ENTSCHEIDUNG Nico: ATVR Entry 5 / 5, Maintenance 2,5 / 2,5, bewusst OHNE DM-EM-Unterschied.
+
+BEGRUENDUNG (Nicos Argument, gemessen bestaetigt): unser absoluter ADTV-Screen ist symmetrisch
+(1,0 / 0,75 Mio fuer DM wie EM). Ein asymmetrischer relativer Screen daneben laedt die Frage
+ein "warum ATVR getrennt, ADTV aber nicht". Die beiden Regelwerksfamilien sind je fuer sich
+konsistent: MSCI und STOXX trennen DM/EM beim ATVR (20/15), fuehren dafuer GAR KEINEN absoluten
+Umsatzscreen. Solactive ist auf BEIDEN Beinen symmetrisch (ADTV 1,0/0,75 Mio, Liquidity Ratio
+0,03 % / 0,015 % taeglich = annualisiert rund 7,6 / 3,8 %). Wir haben Solactives absolutes Bein
+woertlich uebernommen, also gehoert das relative in dieselbe Struktur. Unser Niveau liegt
+bewusst unter Solactive, solange die indischen Volumina von der BSE statt der NSE kommen.
+
+MESSUNG (48 Perioden, Endperiode 19.08.2026, `cmp_atvr_sym.py`):
+
+| Entry DM/EM | Maint DM/EM | GM-LM | DM-LM | EM-LM | Turnover | Indien |
+|---|---|---|---|---|---|---|
+| 0 / 0 | 0 / 0 | 3.616 | 1.538 | 2.078 | 5,88 % | 1,52 % |
+| 5 / 5 | 2,5 / 2,5 | 3.590 | 1.538 | 2.052 | 5,90 % | 0,95 % |
+| 10 / 5 | 5 / 2,5 | 3.590 | 1.538 | 2.052 | 5,90 % | 0,95 % |
+| 7,6 / 7,6 (Solactive) | 3,8 / 3,8 | 3.560 | 1.538 | 2.022 | 5,90 % | 0,52 % |
+
+- 5/5 UND 10/5 SIND BITGLEICH, bis auf die letzte Stelle. Der DM-Teil des Screens ist zwischen
+  5 und 10 vollstaendig wirkungslos: es gibt keinen DM-Standard-Titel mit ATVR unter 10 %.
+  Erst bei MSCIs 20 % fallen 8 DM-Titel. Die Symmetrie kostet also nichts.
+- Kosten global: 26 Titel (3.616 -> 3.590), davon 25 indische. Turnover unveraendert.
+- Bei Solactive-Niveau 7,6/3,8 verliert Indien die Haelfte (0,52 %). Dort waere zu pruefen, ob
+  auch andere EM-Maerkte ausduennen; bei 5 % ist nachweislich nur Indien betroffen.
+
+UMGESETZT
+- Sidebar-Defaults: DM ATVR 5, EM ATVR 5, ATVR DM Maint. 2,5, ATVR EM Maint. 2,5. Alle vier
+  Parser akzeptieren jetzt Komma und fallen auf den jeweiligen Default statt auf 0 zurueck.
+- Zweite Caption unter den ATVR-Feldern haelt die Begruendung samt Quellen und dem
+  NSE-Vorbehalt fest.
+- "Labeling vor Liquiditaet" ist von `st.toggle(value=False)` auf `st.checkbox(value=True)`
+  umgestellt, Hilfetext mit den Messwerten (431 statt 394 Titel, 360 statt 343 MSCI-Treffer,
+  98,27 statt 97,54 % Overlap).
+
+ZWEI ALTLASTEN DABEI BEHOBEN
+- Die Sammelspalte `ATVR` rechnete `min(ATVR_3M, ATVR_12M)`, waehrend der Screen laengst 3M/6M
+  prueft. Wer im Export nachsah, warum ein Titel durchfiel, las eine Zahl, die mit der Pruefung
+  nichts zu tun hatte. Jetzt `min(ATVR_3M, ATVR_6M)`. `ATVR_12M` bleibt als eigene Spalte.
+- Der Sidebar-Text behauptete "Screen MSCI-Stil auf 3M UND 12M". Korrigiert, samt Hinweis, dass
+  3M/6M eine bewusste Abweichung ist.
+
+Tests 349 -> 359+, alle Methodik-Defaults sind jetzt einzeln gesperrt (Labeling-Checkbox mit
+value=True, Bodenregel Rang-Mitnahme, Bestandsschutz 0,75, FF-Waiver 2,0, ATVR 5/5 und 2,5/2,5)
+plus vier Checks auf die ATVR-Spalte und die geprueften Horizonte.

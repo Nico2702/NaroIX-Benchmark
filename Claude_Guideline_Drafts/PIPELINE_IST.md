@@ -78,10 +78,14 @@ Universe-Parametern zulässig).
    - Override Thailand bei NVDR-Modi: `IF = 1,0`
    - `pre_investable` aus dem Resolver: `IF = 0`
    - **`Adj_FF_MCap = Free Float MCap × IF`**
-7. **ATVR** in zwei Horizonten, mit Fallback-Kaskade bei Datenlücken:
+7. **ATVR** in drei Horizonten, mit Fallback-Kaskade bei Datenlücken:
    - `ATVR_3M = ADTV_3M × 252 / MCap`, ADTV-Fallback 3M → 1M
+   - `ATVR_6M = ADTV_6M × 252 / MCap`, ADTV-Fallback 6M → 3M → 1M
    - `ATVR_12M = ADTV_12M × 252 / MCap`, ADTV-Fallback 12M → 6M → 3M → 1M
-   - `ATVR = min(ATVR_3M, ATVR_12M)` (nur Anzeige)
+   - `ATVR = min(ATVR_3M, ATVR_6M)` (Export und Diagnostik) — **genau das, was der Screen
+     prüft**. Bis 09/2026 stand hier `min(ATVR_3M, ATVR_12M)`, während der Screen längst auf
+     3M/6M lief; wer im Export nachsah, warum ein Titel durchfiel, las eine Zahl ohne Bezug
+     zur Prüfung. `ATVR_12M` bleibt als eigene Spalte, wird aber nicht gescreent.
    - Bezugs-MCap steuerbar über `atvr_mcap_col` (Default Free Float MCap)
 
 ### Schritt 2: EUMSS-Kalibrierung (`pipeline_core.py:1762-1790`)

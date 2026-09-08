@@ -86,7 +86,11 @@ Alle übrigen Parameter kommen aus der **Sidebar** und gelten für den gesamten 
 | **Capping** (UCITS 5/10/40) | aus | Nur für die sechs Tech-Produkte mit `cap`-Flag. |
 | **MSCI Logic (GIMI)** | aus | Full-MCap-Cutoffs, GMSR als IMI-Floor (EM = ½), Migrations-Buffer 2/3 und 1,5. Überschreibt den Coverage-Buffer. |
 | **Asymmetrischer Size-Buffer** | aus | Mid wird bis 90 % gehalten, Small steigt ungepuffert auf. |
-| **Labeling vor Liquidität** | aus | Coverage-Waterfall auf dem vollen post-EUMSS-Pool, Liquidität wirkt danach nur als Mitgliedschafts-Gate. |
+| **Labeling vor Liquidität** | **an** (seit 08.09.2026) | Coverage-Waterfall auf dem vollen post-EUMSS-Pool, Liquidität wirkt danach nur als Mitgliedschafts-Gate. Gemessen NX-EU-LM pooled: 431 statt 394 Titel, 360 statt 343 MSCI-Treffer, Overlap 98,27 statt 97,54 %. |
+| **Bodenregel (EUMSS)** | **Rang-Mitnahme** (seit 08.09.2026) | Der Rang, der den Boden zuletzt definierte, hält, solange seine Coverage im Band 99 bis 99,25 % liegt (MSCI 3.1.2.2, STOXX 3.3.1.2). Braucht Vorperiodenzustand, im Einzelperioden-Tab deshalb wirkungslos. Alternativen: fester Schnitt am Kalibrierpunkt, oder gar kein Boden. |
+| **Bestandsschutz am Boden** | **0,75 × Boden** (seit 08.09.2026) | Incumbents werden gegen 75 % des Bodens geprüft, auf beiden Größenbeinen. Erst ab Periode 2. Wirkung stark produktabhängig: bei NX-EU-LM fast null, bei NX-EM-S fällt der relative Turnover von 21,4 auf 17,2 %. |
+| **FF-Waiver** | **2,0 × Boden** (seit 08.09.2026) | Die 10-%-Free-Float-Hürde entfällt ab 2,0 × Boden Float-MCap. Größenbeine und Liquidität bleiben UND-verknüpft. |
+| **ATVR-Schwellen** | **5 % neu / 2,5 % Bestand** (seit 08.09.2026) | Symmetrisch für DM und EM, wie der absolute ADTV-Screen. Bewusst unter Solactive-Niveau, solange indische Volumina von der BSE statt der NSE kommen. |
 
 **Rang-Band-Buffer** (Fixed-Count-Produkte, keine eigene Sidebar-Option): aktiv, wenn Buffer
 Rules an sind und das Produkt `buffer_hard` / `buffer_exit` trägt. Gezählt wird auf

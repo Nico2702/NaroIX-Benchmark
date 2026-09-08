@@ -63,7 +63,9 @@ Then **FOL / Inclusion Factor**:
 
 - Take **DM + Listing = Primary** only; sort by **Total MCap** desc (tiebreaker: `Adj_FF_MCap` desc).
 - Cumulate **raw `Free Float MCap`** (not adjusted): `_cum_ff_pct = cumsum(FF) / Σ FF × 100`.
-- At the **99 %** point (`small_thr`), take that stock's **`Total MCap`** as **`eumss_full`**; set **`eumss_ff = eumss_full × eumss_ff_ratio`** (default 0.50).
+- At the **calibration point** (`eumss_coverage`, default 99 %; a separate field since 09/2026 — it used to be hard-wired to `small_thr`), take that stock's **`Total MCap`** as **`eumss_full`**; set **`eumss_ff = eumss_full × eumss_ff_ratio`** (default 0.50).
+- **Rank carry-over (default since 08.09.2026, `eumss_carry_band` = 0.25).** The rank that defined the floor at the previous rebalance is remembered. If its coverage now sits between the calibration point and `+0.25 pp`, that rank stays the floor and only its current Total MCap is read off; below the band the floor resets to the calibration point, above it to the upper edge. Verbatim MSCI 3.1.2.2 / STOXX 3.3.1.2. Needs cross-period state, so the single-period tab falls back to the cold cut. Measured over 48 periods: floor 557 instead of 759 m USD at 19.08.2026.
+- **No floor at all** is selectable as a third mode (`eumss_enabled=False`, the Solactive approach). `NX-GM-TM` always runs that way regardless of the setting.
 - Result: an **absolute size floor** (a Total-MCap threshold and an FF-MCap threshold) applied **globally** (DM **and** EM) in Step 3.
 
 Calibrated on DM-Primary, before liquidity, per MSCI §2.2.3 (otherwise multi-listings / the liquidity filter would distort the calibration).
@@ -75,6 +77,11 @@ Keep a stock only if **all** hold:
 - `Free Float MCap ≥ eumss_ff` **and**
 - `Free Float % ≥ Min FF%` (incumbents get the relaxed `buffer_min_ff`, e.g. 7.5 %, when the maintenance buffer is on)
 
+Two modifiers, both default-on since 08.09.2026:
+
+- **Maintenance floor (`eumss_maint_ratio`, default 0.75).** Incumbents are measured against `0.75 × eumss_full` and `0.75 × eumss_ff` instead of the full floor — the same two-tier logic already used for Min FF% and ADTV. Without it a stock that has not shrunk at all drops out purely because the floor moved up (measured: 409 liquid names between the May and August 2026 floors). MSCI 3.1.2.2/3.1.2.3 and STOXX 3.3.1.2 exempt incumbents entirely; FTSE runs 150 m inclusion against 30 m exclusion.
+- **Size waiver on the minimum free float (`ff_waiver_k`, default 2.0).** The `Free Float %` leg is waived when `Free Float MCap ≥ 2.0 × eumss_full`. The two size legs and the liquidity screen stay AND-linked, so a tiny absolute float can never get in this way. All five providers that have such a waiver anchor it on the **float**, none on total mcap: Solactive 1.0 bn absolute (0.75 bn incumbents), MSCI 1.8 × minimum size, STOXX 1.8 × half the country cutoff, Bloomberg 0.5 × the country's 70th percentile. At 19.08.2026 the waiver admits 11 names — exactly the same set as Solactive's fixed 1 bn anchor. **Open dependency:** without a minimum-history rule the waiver also pulls in names with a single data period (SpaceX).
+
 **Key asymmetry — calibration vs. filter:** the *calibration* (Step 2) uses **DM-Primary only** (to avoid double-counting multi-listings in the 99 % point), but this *filter* runs on the **entire universe — DM + EM, Primary + Secondary**. A secondary is therefore checked on **its own values**: `Total MCap` is company-level (identical across the company's share classes) and `Free Float MCap` / `Free Float %` are the listing's own. So a secondary clears EUMSS independently — it is never "added back" (see §6).
 
 **Stocks failing EUMSS → `Micro`** (`gm_micro`). **Output:** `gm_eumss`.
@@ -82,8 +89,12 @@ Keep a stock only if **all** hold:
 ### Step 4 — Liquidity filter (buffer-aware)
 
 ADTV / ATVR, DM/EM differentiated:
-- DM: 3M ADTV ≥ $2M; EM: ≥ $1M (+ optional ATVR minimum). Incumbents get relaxed maintenance thresholds.
-- **ATVR** = annualized traded value ratio = `ADTV × 252 / MCap` (1.0 = 100% of the float turns over per year). Denominator is Free Float MCap (MSCI-conform, default) or Total MCap (conservative), a sidebar toggle. Screened **MSCI-style on two horizons**: a name must clear the threshold on **both** the 3M **and** the 12M ATVR (each falls back to the next-shorter ADTV window on a data gap). Default threshold 0 (screen off). Note: this is a mean-based approximation of MSCI's median-based ATVR, since the master file carries pre-aggregated ADTV windows, not daily traded values.
+- **ADTV**, symmetric across DM and EM: ≥ $1.0M for new candidates, ≥ $0.75M for incumbents, checked on the 3M **and** the 6M window. Identical to Solactive; the other five providers run no absolute turnover screen at all.
+- **ATVR** = annualized traded value ratio = `ADTV × 252 / MCap` (1.0 = 100 % of the float turns over per year). Denominator is Free Float MCap (MSCI-conform, default) or Total MCap (conservative), a sidebar toggle. Screened on **3M and 6M** — both horizons must clear the threshold, which is the same as `min(ATVR_3M, ATVR_6M) ≥ threshold`. Each horizon falls back to the next-shorter ADTV window on a data gap. The exported `ATVR` column carries exactly that minimum; `ATVR_12M` is computed and exported but **not** screened.
+  - **Deliberate deviation:** MSCI and STOXX screen 3M and 12M. Ours runs on the same windows as the ADTV legs and matches Solactive.
+  - **Thresholds (default since 08.09.2026): 5 % new, 2.5 % incumbents, symmetric across DM and EM.** No DM/EM split, because our absolute ADTV screen has none either — Solactive is symmetric on both legs (ADTV 1.0/0.75 m, liquidity ratio 0.03 %/0.015 % daily ≈ 7.6 %/3.8 % annualized), while MSCI and STOXX split DM/EM (20/15 %) but carry no absolute screen. The level sits deliberately below Solactive's for as long as the Indian volumes come from the BSE rather than the NSE, which understates Indian ATVR by a factor of 10 to 20. STOXX solves the same problem by rule: *"For India volumes from National Stock Exchange … are added."*
+  - Measured at 19.08.2026: 26 names lost globally, 25 of them Indian, DM completely untouched, turnover unchanged.
+- Note: this is a mean-based approximation of MSCI's median-based ATVR, since the master file carries pre-aggregated ADTV windows, not daily traded values.
 
 **Variante A (HANDOVER §2.11): stocks that pass EUMSS but FAIL liquidity are excluded entirely** — not Small, not Micro, not in IMI. The liquidity bar applies to all tiers; failing it means the stock is not investable, so it is out. They are returned as `gm_liq_excluded` (audit only). **Output:** `gm_liq` (the only stocks that proceed to the coverage waterfall).
 
