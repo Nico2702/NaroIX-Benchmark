@@ -1842,7 +1842,19 @@ with st.sidebar:
              "Boden, das ist seine Definition.")
     _no_floor = (eumss_mode == "Kein Boden")
     eumss_enabled_ui = not _no_floor
-    eumss_carry_band = 0.25 if eumss_mode == "Mit Rang-Mitnahme" else 0.0
+    _carry_on = (eumss_mode == "Mit Rang-Mitnahme")
+    _cba, _cbb = st.columns([3,4])
+    with _cba: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Halteband (pp)</div>", unsafe_allow_html=True)
+    with _cbb: _carry_band_raw = st.text_input(
+        "EUMSS Halteband", value="0,25", key="eumss_carry_band_input",
+        label_visibility="collapsed", disabled=not _carry_on,
+        help="Breite des Bands OBERHALB des Kalibrierpunkts, in dem der gemerkte Rang den "
+             "Boden behaelt. Mit Kalibrierpunkt 99 ergibt 0,25 das Band 99 bis 99,25.\n\n"
+             "MSCI 3.1.2.2 und STOXX 3.3.1.2 nennen beide exakt 0,25 pp. Der Wert ist also "
+             "zitiert, nicht kalibriert — Abweichungen sind Vergleichslaeufe.\n\n"
+             "0 = aus, dann verhaelt sich der Lauf wie die Bodenregel 'Fest am "
+             "Kalibrierpunkt'. Nur im Modus 'Mit Rang-Mitnahme' aktiv."
+    )
     _eca, _ecb = st.columns([3,4])
     with _eca: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Kalibrierpunkt (%)</div>", unsafe_allow_html=True)
     with _ecb: _eumss_cov_raw = st.text_input(
@@ -1861,11 +1873,16 @@ with st.sidebar:
     with _ffa: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>EUMSS FF Ratio (%)</div>", unsafe_allow_html=True)
     with _ffb: _eumss_ff_raw = st.text_input("EUMSS FF Ratio", value="50", key="eumss_ff_ratio",
                                              label_visibility="collapsed", disabled=_no_floor)
+    _maint_on = st.checkbox(
+        "Bestandsschutz am Boden anwenden", value=True, key="eumss_maint_on",
+        disabled=_no_floor,
+        help="Aus = jeder Titel wird jede Periode gegen den vollen Boden geprueft, wie bis "
+             "09/2026. Entspricht dem Wert 1 im Feld darunter.")
     _mra, _mrb = st.columns([3,4])
     with _mra: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Bestandsschutz (x Boden)</div>", unsafe_allow_html=True)
     with _mrb: _eumss_maint_raw = st.text_input(
         "EUMSS Bestandsschutz", value="0,75", key="eumss_maint_ratio_input",
-        label_visibility="collapsed", disabled=_no_floor,
+        label_visibility="collapsed", disabled=(_no_floor or not _maint_on),
         help="Bestandstitel werden gegen dieses Vielfache des Bodens geprueft statt gegen den "
              "vollen Boden, auf BEIDEN Groessenbeinen (Total MCap und Float MCap). "
              "1 = aus, jeder Titel jede Periode gegen den vollen Boden; das war der Stand bis "
@@ -1881,10 +1898,16 @@ with st.sidebar:
     _eua, _eub = st.columns([3,4])
     with _eua: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>Min Free Float (%)</div>", unsafe_allow_html=True)
     with _eub: _ff_raw = st.text_input("Min FF", value="10", key="min_ff_input", label_visibility="collapsed")
+    _waiver_on = st.checkbox(
+        "Groessen-Waiver auf den Mindest-Free-Float", value=True, key="ff_waiver_on",
+        help="Aus = die 10-%-Huerde gilt ausnahmslos. Entspricht dem Wert 0 im Feld darunter. "
+             "ACHTUNG: mit Waiver und ohne wirksame Mindesthistorie kommt SpaceX als Large Cap "
+             "in den Global-Index.")
     _wva, _wvb = st.columns([3,4])
     with _wva: st.markdown("<div style='padding-top:8px;font-size:13px;color:#e8eaf6;'>FF-Waiver (x Boden)</div>", unsafe_allow_html=True)
     with _wvb: _ff_waiver_raw = st.text_input(
         "FF-Waiver", value="2,0", key="ff_waiver_k", label_visibility="collapsed",
+        disabled=not _waiver_on,
         help="Groessen-Waiver auf den Mindest-Free-Float: ein Titel, der die FF-%-Huerde "
              "reisst, bleibt drin, wenn seine Free Float MCap mindestens dieses Vielfache "
              "des Groessenbodens erreicht. 0 = aus.\n\n"
@@ -1918,7 +1941,11 @@ with st.sidebar:
     min_ff_pct = _num(_ff_raw, 10, "Min FF%") / 100
     new_eumss_ff_ratio = _num(_eumss_ff_raw, 50, "EUMSS FF Ratio") / 100
     eumss_coverage = _num(_eumss_cov_raw, 99, "EUMSS Kalibrierpunkt")
-    ff_waiver_k = _num(_ff_waiver_raw, 2.0, "FF-Waiver")
+    ff_waiver_k = _num(_ff_waiver_raw, 2.0, "FF-Waiver") if _waiver_on else 0.0
+    eumss_carry_band = (_num(_carry_band_raw, 0.25, "EUMSS Halteband") if _carry_on else 0.0)
+    if eumss_carry_band < 0:
+        st.error(f"Halteband darf nicht negativ sein ({eumss_carry_band:g}).")
+        eumss_carry_band = 0.0
     if ff_waiver_k < 0:
         st.error(f"FF-Waiver darf nicht negativ sein ({ff_waiver_k:g}). 0 schaltet ihn ab.")
         ff_waiver_k = 0.0
@@ -1936,7 +1963,8 @@ with st.sidebar:
         st.warning("Kalibrierpunkt 100 % ergibt praktisch keinen Groessenboden. Wer das will, "
                    "nimmt oben die Bodenregel „Kein Boden“ oder den Total-Markets-Index "
                    "NX-GM-TM, der ist dafuer gebaut.")
-    eumss_maint_ratio = _num(_eumss_maint_raw, 0.75, "EUMSS Bestandsschutz")
+    eumss_maint_ratio = (_num(_eumss_maint_raw, 0.75, "EUMSS Bestandsschutz")
+                         if _maint_on else 1.0)
     if not (0 <= eumss_maint_ratio <= 1):
         st.error(f"Bestandsschutz muss zwischen 0 und 1 liegen, nicht {eumss_maint_ratio:g}. "
                  f"1 = aus, 0 = Bestand komplett vom Boden ausgenommen (MSCI/STOXX).")
@@ -2541,6 +2569,9 @@ def _settings_snapshot():
          "—" if _no_floor else f"{eumss_coverage:g}"),
         ("Size Segmentation", "EUMSS-Halteband (pp)",
          f"{eumss_carry_band:g}" if eumss_carry_band > 0 else "aus"),
+        ("Size Segmentation", "FF-Waiver aktiv", bool(ff_waiver_k > 0)),
+        ("Size Segmentation", "Bestandsschutz aktiv",
+         bool(not _no_floor and eumss_maint_ratio < 1)),
         ("Size Segmentation", "EUMSS-Bestandsschutz (x Boden)",
          "aus" if (_no_floor or eumss_maint_ratio >= 1) else f"{eumss_maint_ratio:g}"),
         ("Size Segmentation", "FF-Waiver (x Boden)",

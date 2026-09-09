@@ -1904,7 +1904,10 @@ def test_app_defaults_methodik():
             ("ATVR Entry DM 5", '"DM ATVR", value="5"'),
             ("ATVR Entry EM 5", '"EM ATVR", value="5"'),
             ("ATVR Maint DM 2,5", '"ATVR DM Maint.", value="2,5"'),
-            ("ATVR Maint EM 2,5", '"ATVR EM Maint.", value="2,5"')):
+            ("ATVR Maint EM 2,5", '"ATVR EM Maint.", value="2,5"'),
+            ("EUMSS Halteband 0,25", '"EUMSS Halteband", value="0,25"'),
+            ("Waiver-Checkbox an", 'key="ff_waiver_on"'),
+            ("Bestandsschutz-Checkbox an", 'key="eumss_maint_on"')):
         check(f"App-Default: {label}", needle in src, f"nicht gefunden: {needle}")
     # label_before_liquidity muss checkbox(value=True) sein, nicht toggle(value=False)
     i = src.find('label_before_liquidity = st.')
@@ -1913,6 +1916,17 @@ def test_app_defaults_methodik():
           "st.checkbox" in seg and "value=True" in seg, seg[:80])
     check("Sidebar-Text nennt nicht mehr faelschlich 3M und 12M",
           "auf 3M UND 12M" not in src)
+    # Die drei Regeln muessen einzeln abschaltbar sein und dabei den neutralen Wert liefern.
+    for label, needle in (
+            ("FF-Waiver aus -> 0.0", 'if _waiver_on else 0.0'),
+            ("Bestandsschutz aus -> 1.0", 'if _maint_on else 1.0'),
+            ("Halteband aus -> 0.0", 'if _carry_on else 0.0')):
+        check(f"App: {label}", needle in src, f"nicht gefunden: {needle}")
+    for label, needle in (
+            ("Waiver-Feld", 'disabled=not _waiver_on'),
+            ("Bestandsschutz-Feld", 'disabled=(_no_floor or not _maint_on)'),
+            ("Halteband-Feld", 'disabled=not _carry_on')):
+        check(f"App: {label} wird ausgegraut", needle in src, f"nicht gefunden: {needle}")
 
 
 def test_ineligible_is_a_universe_exclusion():
