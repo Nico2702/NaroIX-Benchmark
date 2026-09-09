@@ -2259,13 +2259,14 @@ with st.sidebar:
     small_buffer_pp   = _band("Small / Micro", "0,5", "small_buffer_pp_raw",  _bw_disabled)
     if not apply_size_buffer:
         size_buffer_pp, size_buffer_pp_ms, small_buffer_pp = 5.0, 5.0, 0.5
-    # Der Small/Micro-Cut ist keine eigene Regel mehr, sondern die dritte Bandbreite.
-    # 0 = aus, dann laeuft Small bis zum EUMSS-Floor durch (frueher: Checkbox).
-    apply_small_buffer = bool(apply_size_buffer and small_buffer_pp > 0
+    # 0 pp heisst an allen drei Kanten dasselbe: keine Hysterese, der Schnitt bleibt. Bis 09/2026
+    # nahm eine 0 bei Small/Micro den ganzen Schnitt mit, das war die Ausnahme unter den dreien.
+    apply_small_buffer = bool(apply_size_buffer
                               and not st.session_state.get("msci_logic", False))
     if apply_size_buffer and not st.session_state.get("msci_logic", False):
-        st.caption("Jede Kante frei setzbar, **0 schaltet die jeweilige Hysterese ab**. "
-                   "Small/Micro auf 0 laesst Small bis zum EUMSS-Floor durchlaufen.")
+        st.caption("Jede Kante frei setzbar, **0 schaltet die jeweilige Hysterese ab**, der "
+                   "Schnitt bleibt. Small/Micro auf 0: alles ab der Small-Schwelle wird Micro, "
+                   "Bestand wie Neuzugang.")
     else:
         st.caption("→ Size Buffer inaktiv — Segmente werden bei jedem Rebalancing neu am "
                    "Cut-off bestimmt.")
@@ -2277,7 +2278,7 @@ with st.sidebar:
     _edges = segment_edges(
         large_thr, mid_thr, small_thr,
         bw_lm=size_buffer_pp, bw_ms=size_buffer_pp_ms, bw_sm=small_buffer_pp,
-        variant=_sb_variant,
+        variant=_sb_variant, small_cut=apply_small_buffer,
         size_buffer=(apply_size_buffer and not st.session_state.get("msci_logic", False)))
     st.markdown("<div style='font-size:11px;font-weight:700;letter-spacing:.09em;"
                 "text-transform:uppercase;color:#7f8bb0;padding-top:8px;'>"
@@ -2496,13 +2497,14 @@ def _criteria_box(variant="serie"):
                            bw_sm=_r["hold_small_pp"],
                            variant=("entry" if entry_at_cutoff else
                                     ("asym" if asym_buffer else "sym")),
-                           size_buffer=apply_size_buffer)
+                           small_cut=apply_small_buffer, size_buffer=apply_size_buffer)
     else:
         _e = segment_edges(large_thr, mid_thr, small_thr,
                            bw_lm=size_buffer_pp, bw_ms=size_buffer_pp_ms,
                            bw_sm=small_buffer_pp,
                            variant=("entry" if entry_at_cutoff else
                                     ("asym" if asym_buffer else "sym")),
+                           small_cut=apply_small_buffer,
                            size_buffer=(apply_size_buffer and not msci_logic))
     st.caption("**Resultierende Segmentgrenzen** — Coverage je Segmentierungsmarkt, "
                "nicht Indexgewicht.")
@@ -2555,6 +2557,7 @@ def _settings_snapshot():
                             bw_sm=small_buffer_pp,
                             variant=("entry" if entry_at_cutoff else
                                      ("asym" if asym_buffer else "sym")),
+                            small_cut=apply_small_buffer,
                             size_buffer=(apply_size_buffer and not msci_logic))
     for _row in _edges_table_rows(_e_snap):
         _rows.append(("Segmentgrenzen", _row["Segment"],

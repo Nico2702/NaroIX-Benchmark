@@ -203,6 +203,9 @@ _size_segment_asym (einseitig)
 
 **5g. Optional `apply_small_buffer`** (nicht bei `msci_logic`): kappt Small nach Micro an der
 99-%-Kante, Incumbents des IMI erst bei `small_thr + small_buffer_pp` (Default 99,5).
+`small_buffer_pp = 0` heisst kein Halteband, also glatter Schnitt bei `small_thr` fuer Bestand
+wie Neuzugang. Bis 09/2026 nahm eine 0 im Sidebar-Feld den ganzen Schnitt mit, als einzige der
+drei Kanten; jetzt verhaelt sich das Feld wie Large/Mid und Mid/Small.
 
 **5h. Nach dem Loop, in dieser Reihenfolge:**
 

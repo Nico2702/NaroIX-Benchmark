@@ -375,7 +375,7 @@ SEGMENT_ORDER = ("Large Cap", "Mid Cap", "Small Cap", "Micro Cap")
 
 def segment_edges(large_thr=70.0, mid_thr=85.0, small_thr=99.0,
                   bw_lm=5.0, bw_ms=None, bw_sm=0.0,
-                  variant="entry", size_buffer=True):
+                  variant="entry", size_buffer=True, small_cut=True):
     """Alle Segmentkanten aus den aktiven Schwellen und Bandbreiten.
 
     EINE Quelle der Wahrheit fuer Sidebar-Tabelle, Kriterienbox, Coverage-Grafik und
@@ -387,7 +387,13 @@ def segment_edges(large_thr=70.0, mid_thr=85.0, small_thr=99.0,
     variant: "entry" (Aufstieg am Cut-off) | "sym" (Symmetrisch) | "asym" (Asymmetrisch)
     bw_ms:   None = wie bw_lm. Wirkt getrennt NUR im entry-Ast, sonst nutzen alle
              Kanten dieselbe Bandbreite (so rechnen _size_segment/_size_segment_asym).
-    bw_sm:   Bandbreite der Small/Micro-Kante (0 = Small-Cut aus, laeuft bis EUMSS durch).
+    bw_sm:   Bandbreite der Small/Micro-Kante. 0 = keine Hysterese an dieser Kante, der
+             Schnitt bei small_thr bleibt. Analog zu bw_lm und bw_ms, wo 0 ebenfalls nur
+             die Hysterese abschaltet und nicht den Schnitt. Bis 09/2026 bedeutete 0 hier
+             abweichend, dass der ganze Cut entfiel — das war die einzige Kante mit dieser
+             Sonderbedeutung und ist jetzt in small_cut ausgelagert.
+    small_cut: False = gar kein Small/Micro-Schnitt, Small laeuft bis zum EUMSS-Floor durch.
+             Micro enthaelt dann nur noch die Titel, die den Groessenboden gerissen haben.
     size_buffer: False = keine Hysterese, Aufstieg = Aufnahme, kein Verbleib.
 
     Rueckgabe-Dict:
@@ -420,7 +426,7 @@ def segment_edges(large_thr=70.0, mid_thr=85.0, small_thr=99.0,
         else:
             rise = {"large": lt - _lm, "mid": mt - _ms}
         hold = {"large": lt + _lm, "mid": mt + _ms,
-                "small": (st_ + _sm) if _sm > 0 else None}
+                "small": (st_ + _sm) if small_cut else None}
 
     def _f(v):
         return None if v is None else round(v, 4)
@@ -430,16 +436,18 @@ def segment_edges(large_thr=70.0, mid_thr=85.0, small_thr=99.0,
          "rise": _f(rise["large"]), "hold": _f(hold["large"])},
         {"segment": "Mid Cap", "admission_from": lt, "admission_to": mt,
          "rise": _f(rise["mid"]), "hold": _f(hold["mid"])},
-        {"segment": "Small Cap", "admission_from": mt, "admission_to": st_,
+        {"segment": "Small Cap", "admission_from": mt,
+         "admission_to": (st_ if small_cut else None),
          "rise": None, "hold": _f(hold["small"])},
-        {"segment": "Micro Cap", "admission_from": st_, "admission_to": None,
-         "rise": None, "hold": None},
+        {"segment": "Micro Cap", "admission_from": (st_ if small_cut else None),
+         "admission_to": None, "rise": None, "hold": None},
     ]
     return {"thresholds": {"large": lt, "mid": mt, "small": st_},
             "rise": {k: _f(v) for k, v in rise.items()},
             "hold": {k: _f(v) for k, v in hold.items()},
             "bands": {"lm": _lm, "ms": _ms, "sm": _sm},
             "variant": variant, "size_buffer": bool(size_buffer),
+            "small_cut": bool(small_cut),
             "rows": rows}
 
 

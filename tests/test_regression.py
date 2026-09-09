@@ -1782,8 +1782,14 @@ def test_segment_edges_small_micro_and_off():
     check("segment_edges: Small-Aufnahme folgt small_thr",
           e["rows"][2]["admission_to"] == 98 and e["rows"][3]["admission_from"] == 98)
     e0 = C.segment_edges(70, 85, 99, bw_lm=5, bw_ms=5, bw_sm=0, variant="entry")
-    check("segment_edges: Bandbreite 0 schaltet die Small/Micro-Hysterese ab",
-          e0["hold"]["small"] is None)
+    check("segment_edges: Bandbreite 0 nimmt die Hysterese, nicht den Schnitt",
+          e0["hold"]["small"] == 99 and e0["rows"][2]["admission_to"] == 99,
+          f'hold {e0["hold"]["small"]} to {e0["rows"][2]["admission_to"]}')
+    ec = C.segment_edges(70, 85, 99, bw_lm=5, bw_ms=5, bw_sm=0.5, variant="entry",
+                         small_cut=False)
+    check("segment_edges: small_cut=False nimmt Kante und Verbleib",
+          ec["hold"]["small"] is None and ec["rows"][2]["admission_to"] is None
+          and ec["rows"][3]["admission_from"] is None)
     eo = C.segment_edges(70, 85, 99, size_buffer=False)
     check("segment_edges: ohne Size Buffer kein Aufstieg und kein Verbleib",
           all(v is None for v in eo["rise"].values())
@@ -1844,6 +1850,23 @@ def test_eumss_floor_rule_defaults_neutral():
         check(f"{name}: Parameter existiert", name in sig.parameters)
         check(f"{name}: Default {default!r} (verhaltensneutral)",
               sig.parameters[name].default == default)
+
+
+def test_small_band_zero_means_no_buffer():
+    """Bandbreite Small/Micro = 0 heisst kein Halteband, nicht kein Schnitt. Bis 09/2026
+    nahm eine 0 im Feld den ganzen Cut mit, als einzige der drei Kanten — dann landeten
+    Titel jenseits der Small-Schwelle wieder in Small statt in Micro."""
+    src = open(os.path.join(_ROOT, "naroix_benchmark.py"), encoding="utf-8").read()
+    check("App: Schnitt nicht mehr an die Bandbreite gekoppelt",
+          "apply_size_buffer and small_buffer_pp > 0" not in src
+          and "apply_small_buffer = bool(apply_size_buffer" in src)
+    check("App: Kantentabelle kennt den Schnitt",
+          src.count("small_cut=apply_small_buffer") == 4,
+          str(src.count("small_cut=apply_small_buffer")))
+    # Engine: das Halteband ist eine reine Addition, 0 laesst den Schnitt bei small_thr.
+    eng = open(os.path.join(_ROOT, "pipeline_core.py"), encoding="utf-8").read()
+    check("Engine: Small-Limit ohne Sonderfall fuer Band 0",
+          "_limit = small_thr + small_buffer_pp if _held else small_thr" in eng)
 
 
 def test_eumss_floor_rule_wired_in_app():
@@ -1969,7 +1992,8 @@ def main():
             test_liquidity_exempt_neutral,
             test_spinoff_loader_validation,
             test_segment_edges_matches_engine, test_segment_edges_separate_ms_band,
-            test_segment_edges_small_micro_and_off, test_eumss_coverage_default_neutral,
+            test_segment_edges_small_micro_and_off, test_small_band_zero_means_no_buffer,
+            test_eumss_coverage_default_neutral,
             test_ff_waiver_and_maint_defaults_neutral, test_ff_waiver_wired_in_app,
             test_eumss_floor_rule_defaults_neutral, test_eumss_floor_rule_wired_in_app,
             test_atvr_column_matches_screen, test_app_defaults_methodik,
