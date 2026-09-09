@@ -1198,8 +1198,9 @@ UMGESETZT
    zurueck. Jetzt sichtbare Warnung bei unlesbarer Eingabe plus Plausibilitaetspruefung
    (aufsteigend, <= 100) und ein Hinweis, dass 100 kein sinnvoller Kalibrierpunkt ist.
 4. Buffer-Block umgebaut: 179 Zeilen raus, 96 rein. Drei Bandbreitenfelder mit echten Defaults
-   5 / 5 / 0,5 statt Feld + Platzhalterfeld + Checkbox. `0 = aus`, damit ersetzt die dritte
-   Bandbreite die fruehere Small-Cut-Checkbox. Drei Prosa-Captions und der eingeklappte Expander
+   5 / 5 / 0,5 statt Feld + Platzhalterfeld + Checkbox. `0 = keine Hysterese an dieser Kante`.
+   (Nachtrag 09.09.2026: die dritte Bandbreite schaltete zunaechst auch den ganzen Small/Micro-
+   Schnitt ab, das ist zurueckgebaut, siehe unten.) Drei Prosa-Captions und der eingeklappte Expander
    sind durch EINE sichtbare Tabelle aus `segment_edges()` ersetzt. Radio hat jetzt `captions=`
    je Variante; der ueber 48 Perioden verifizierte Befund "Asym == Cut-off fuer Large+Mid" steht
    im Gruppen-Hilfetext, damit er beim Umbau nicht verloren geht.
@@ -2011,3 +2012,94 @@ des IMI.
 STATUS geaendert von "abweichend, keiner" auf "Variante, Solactive 2.1.3". Die Optionen bleiben:
 A firmenweiter Waterfall (vier Anbieter, aendert die Kurve global), B Post-Step auf das groesste
 Segment (Bloomberg 1.4.5 woertlich, Kurve unangetastet), C so lassen mit Solactive als Beleg.
+
+## Szenariomatrix A1 bis D3 (2026-09-08, `cmp_matrix_0908.py`, `matrix_0908.csv`)
+
+12 Szenarien x 2 Pooling-Modi x 48 Perioden, alle mit den Defaults vom 08.09.2026
+(Rang-Mitnahme, Bestandsschutz 0,75, FF-Waiver 2,0, ATVR 5/2,5, Aufstieg am Cut-off).
+Kalibrierpunkt in ALLEN Szenarien fest auf 99 %, auch bei Small-Schwelle 98 — ohne die
+Entkopplung waere der Boden bei B und D auf 1.574 Mio gesprungen.
+Excel: `NaroIX_Szenariomatrix_2026-09-08.xlsx`.
+
+Titel Endperiode und Europe-Pooled-Overlap:
+
+| | Aufnahme | Buffer | Global | Emerging | Developed | EU | EU Pooled | Overlap |
+|---|---|---|---|---|---|---|---|---|
+| A1 | 70/85/99 | 75/90/99,5 | 3.645 | 2.052 | 1.593 | 461 | 406 | 98,59 % |
+| A2 | 70/87/99 | 75/92/99,5 | 4.233 | 2.383 | 1.850 | 518 | 461 | 99,50 % |
+| A3 | 70/85/99 | 75/92/99,5 | 3.987 | 2.206 | 1.781 | 504 | 443 | 99,37 % |
+| C1 | 70/85/99 | 75/90/99,5 | 3.510 | 1.972 | 1.538 | 435 | 380 | 97,68 % |
+
+BEFUNDE:
+- A UND B SIND PAARWEISE IDENTISCH, nur permutiert: A1 = B1 exakt, A3 = B2, A2 = B3. Die
+  Small-Schwelle 99 gegen 98 trennt Small von Micro und bewegt im Standard fast nichts
+  (global 14 Titel, in Europa null). Fuer Large+Mid ist die B-Reihe redundant, fuer All Cap
+  und Small Cap nicht.
+- LABELING ZUERST SCHLAEGT LIQUIDITAET ZUERST auf allen fuenf Produkten und in jeder
+  Buffer-Variante. A1 gegen C1 pooled: 406 statt 380 Titel, 367 statt 347 Treffer,
+  98,59 statt 97,68 % Overlap.
+- BESTER MATCH IST A2 / B3 mit 99,50 % und nur 5 fehlenden MSCI-Titeln, reisst aber mit
+  90,66 % Coverage das Zielband 85 +/- 5 und bringt 70 Nicht-MSCI-Titel statt 39.
+- A3 waere der beste Kompromiss gewesen: 99,37 % Overlap, Coverage 89,12 % noch im Band,
+  niedrigster Turnover aller Varianten (pooled 2,85 % gegen 3,39 % bei A1).
+
+ENTSCHEIDUNG Nico 2026-09-08: **A1 bleibt.** Aufnahme 70 / 85 / 99, Halten 75 / 90 / 99,5.
+Begruendung: die klassischen Ranges. Das ist auch methodisch tragfaehig, die Baender sind
+mit 5 / 5 / 0,5 pp auf beiden Hauptkanten gleich breit; A3 waere mit 5 / 7 asymmetrisch und
+haette als einzigen Anker FTSEs 4/6 pp. Der Preis ist bekannt und dokumentiert: rund
+0,8 Prozentpunkte gewichteter Overlap und 0,5 Prozentpunkte Turnover gegenueber A3.
+Damit entspricht die Sidebar unveraendert der Entscheidung, keine Code-Aenderung noetig.
+
+## Foreign Ownership Room: bewusst anderer Ansatz (2026-09-08)
+
+Solactives FINAL WEIGHTING FACTOR hat drei Bestandteile: min(FOL, Free Float %), eine Anpassung
+fuer niedrigen FOREIGN OWNERSHIP ROOM, und den Inclusion Factor. Bausteine eins und drei haben
+wir eins zu eins (`IF = min(1, FOL/FF%)` und `china_if`), Baustein zwei nicht.
+
+Room ist bei Solactive definiert als verfuegbare Auslandsanteile geteilt durch das FOL. Unter
+15 % halbiert sich das Gewicht, unter 7,5 % bleibt die Firma nur mit handelbarem Depositary
+Receipt drin, ebenfalls mit halbem Gewicht. MSCI verlangt Room mindestens 15 % und adjustiert
+den FIF mit 0,5 zwischen 15 und 25 %; STOXX 15 % neu und 3,75 % Bestand; FTSE 5 % Headroom.
+
+BEI UNS: kein Room-Screen und keine Room-Gewichtsanpassung. Ein Titel mit FOL 49 % und 47 %
+bereits in auslaendischer Hand hat denselben IF wie einer mit 49 % Limit und 0 % Auslandsbesitz.
+ENTSCHEIDUNG Nico 2026-09-08: vorerst bewusst anderer Ansatz, kein Handlungsbedarf. Bleibt als
+benannte Abweichung stehen, nicht als Luecke.
+
+## Bandbreite Small/Micro: 0 heisst kein Halteband (2026-09-09)
+
+BEFUND: `small_buffer_pp = 0` schaltete den kompletten Small/Micro-Schnitt ab statt nur die
+Hysterese. Large/Mid und Mid/Small verhalten sich bei 0 anders, da bleibt der Schnitt und nur der
+Verbleib faellt weg. Die Kantentabelle zeigte in dem Fall Verbleib "—", die Aufnahmespalte aber
+weiter "85 – 99 %", obwohl gar kein 99er-Schnitt lief.
+
+Gemessen am 19.08.2026, Global, Einzelperiode:
+
+| Einstellung | Small Cap | Micro Cap |
+|---|---|---|
+| Band 0,5 | 5.425 | 27.364 |
+| Band 0, alte Semantik (Schnitt faellt mit weg) | 6.796 | 25.993 |
+| Band 0, neue Semantik (Schnitt bleibt) | 5.425 | 27.364 |
+
+FIX: `apply_small_buffer` haengt nur noch an Size Buffer und MSCI Logic, nicht mehr an der
+Bandbreite. `segment_edges()` bekam `small_cut=`, damit bei Band 0 der Verbleib 99 % zeigt statt
+"—" und die Aufnahmekante verschwindet, wenn wirklich kein Schnitt laeuft.
+
+VERHALTENSAENDERUNG: wer bisher 0 eingetragen hat, bekam 1.371 Titel mehr in Small. Jetzt bekommt
+er den Schnitt, alles ab der Small-Schwelle ist Micro, Bestand wie Neuzugang. Betrifft Small Cap
+und All Cap, der Standard-Index (Large + Mid) bleibt unberuehrt.
+
+WAS DAS BAND WERT IST (`chk_small_band.py`, zwei 48-Perioden-Ketten, Global, nur die dritte
+Bandbreite verschieden, Endperiode 19.08.2026):
+
+| | Small Cap | Micro Cap | NX-GM-AC | Turnover SC |
+|---|---|---|---|---|
+| Band 0,5 | 6.491 | 24.952 | 10.136 | 12,55 % |
+| Band 0 | 5.890 | 25.562 | 9.518 | 16,37 % |
+
+Das Band traegt in der letzten Periode 521 Titel, ueber alle Perioden Median 333, Spanne 76 bis
+521. All Cap verliert mit 618 mehr als Small mit 601, weil ein einmal nach Micro gerutschter Titel
+den Bestandsstatus verliert und danach auch ueber die Large/Mid-Hysterese nicht zurueckkommt.
+Preis der 601 Titel: gut ein Drittel mehr Wechsel im Small-Cap-Index. 0,5 pp sind an dieser Kante
+also keine Kosmetik. Einzelperiode zeigt davon nichts (5.425 statt 6.491), weil ein Kaltstart
+keine ueber 48 Perioden akkumulierten Incumbents hat.
